@@ -9,6 +9,7 @@ risen_ori/
 
 # C++ / CMake
 /client/build/
+/client/build-*/
 /client/out/
 *.obj
 *.pdb
