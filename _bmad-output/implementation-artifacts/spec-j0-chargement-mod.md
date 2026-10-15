@@ -88,6 +88,7 @@ Dépôt vierge côté code. Faits établis par rétro-ingénierie (REA/Hopper + 
 - Ordre d'initialisation : log → version → config (toujours lue) → descripteur seulement si la version est reconnue. Version inconnue ou ABI introuvable : tables vides, rejet silencieux par le chargeur, aucun appel au code du jeu.
 
 - Audit de la matrice (session principale) : les lignes « config absente » et « log impossible » n’étaient couvertes que par un banc Wine resté hors du dépôt. Ajout de `client/tests/wine/harness.cpp` (cible Windows `mp_harness`) et de `client/tests/wine/run_scenarios.sh`. Le script est enregistré dans ctest sous le nom `wine_scenarios` quand wine, le build Windows et les DLL du jeu sont présents. Il couvre 6 vérifications (nominal, champ inconnu, config absente, champ invalide, log impossible), toutes passantes. La ligne « version inconnue » est couverte par les tests unitaires.
+- Validation en jeu (2026-10-15, Steam/Proton, `S:\steamapps\common\Risen`) : log complet jusqu’à « mod actif », empreinte reconnue, `MP_Probe` exposé. Le critère « 5 minutes de jeu solo sans crash » n’est pas encore confirmé par l’humain.
 
 ## Spec Change Log
 
