@@ -1,7 +1,11 @@
 # Risen Multiplayer
 
-Mod multijoueur en ligne (coop 2–8 joueurs) pour **Risen 1** (Piranha Bytes, 2009), version Steam.
-Projet perso, pour le fun, publié en open source. Méthode de travail : BMAD (Analyst → PM → Architect → Dev).
+Mod multijoueur en ligne (coop **strictement 2 joueurs**) pour **Risen 1** (Piranha Bytes, 2009), version Steam.
+Projet perso, pour le fun, publié en open source (**GPL-3.0**). Méthode de travail : BMAD (Analyst → PM → Architect → Dev).
+
+Docs de référence : brief `_bmad-output/planning-artifacts/briefs/brief-risen-multiplayer-2026-10-15/`
+(+ `addendum.md` = écarts avec ce fichier), recherche technique
+`_bmad-output/planning-artifacts/research/technical-faisabilite-multijoueur-risen-2026-10-15/research.md`.
 Langue de travail : français.
 
 ## Cible : le jeu (`risen_ori/`, NON versionné)
@@ -22,32 +26,43 @@ Copie de l'install Steam (app 40300). **Ne jamais commiter ni redistribuer de fi
   (ex. `?CreatePlayerEntity@gCSession@@IEAAXXZ`). On peut résoudre les fonctions par nom
   (`GetProcAddress`) au lieu de chercher des signatures/adresses. Lister : `objdump -p <dll>`,
   démangler avec `llvm-undname` ou Ghidra.
+- **Point d'entrée du mod** : chargeur natif de plugins — le jeu charge `bin/scripts/Script_*.dll` et
+  appelle l'export `ScriptInit` (vérifié en x64 : `Script_Game.dll`, chaînes dans `Game.dll`). Pas
+  d'injecteur ni de proxy DLL. Signature de `ScriptInit` encore à retrouver.
+- **Piège ABI** : >1 300 méthodes exportées retournent un objet par valeur (ex. `Entity::GetPose → bCMatrix`).
+  MSVC x64 passe alors un pointeur de retour caché **après** `this` (RCX=this, RDX=sret). Déclarer ces
+  appels explicitement `Ret* (*)(This*, Ret* out, …)` ; jamais de pointeur de membre C++.
 - Données : archives `.pak` dans `risen_ori/data/{common,compiled}`, config XML dans `data/ini`.
 
 ## Architecture prévue
 
 ```
-client/    DLL C++ injectée dans Risen.exe (x64, CMake) — hooks MinHook, net KCP (ikcp.c)
-server/    Serveur Go — binaire unique, relais + arbitrage, ne simule pas le jeu
+client/    DLL C++ Script_<nom>.dll chargée par Risen (x64, CMake) — hooks MinHook, net KCP (ikcp.c)
+server/    Serveur Go — tourne chez l'hôte, relais + stockage du profil invité, ne simule pas le jeu
 protocol/  PROTOCOL.md — contrat des messages client⇄serveur
 docs/      Docs BMAD (brief, PRD, architecture) + notes de rétro-ingénierie
 ```
 
 - Transport : UDP. État à haute fréquence (position/rotation/anim) en non fiable,
-  événements (connexion, chat, dégâts, objets) en fiable via KCP (`xtaci/kcp-go` côté Go).
+  événements (connexion, dialogues, dégâts, objets) en fiable via KCP (`xtaci/kcp-go` côté Go).
+  KCP n'a ni session ni canal non fiable : 1 octet de canal en tête de datagramme, heartbeat
+  applicatif, kcp-go **sans FEC ni chiffrement** (sinon incompatible avec `ikcp.c`).
 - Sérialisation : structs binaires fixes little-endian (`encoding/binary` / struct packée C++).
   Pas de protobuf.
-- Autorité PNJ : le premier client connecté (« hôte ») simule les PNJ, le serveur rediffuse.
-- MVP : deux joueurs voient le personnage de l'autre bouger et s'animer. Pas de combat ni de PNJ synchronisés.
+- Autorité : le jeu de l'hôte fait foi (monde, PNJ, combats, quêtes) ; chez l'invité les PNJ sont des
+  répliques. Les dialogues sont simplement déclenchés en miroir.
+- Départ : sauvegarde préparée en zone neutre (hors trame principale/factions), commune aux 2 joueurs.
+- Jalons : J0 ça charge → J1 on se voit bouger → **J2 combat coop (réussite)** → J3 dialogues →
+  J4 persistance profil invité + quêtes annexes → J5 relever un joueur à terre.
 
 ## Environnement
 
 - Dev sous Fedora Linux, IDE GoLand. Le jeu tourne sous Proton/Wine.
 - Serveur : `go build`, compilation croisée avec `GOOS=windows`.
-- Client : compilation croisée possible avec MinGW‑w64 (`x86_64-w64-mingw32-g++`), mais
-  attention à l'ABI : le jeu est compilé en MSVC, donc appeler ses méthodes C++ exportées
-  impose la convention MSVC x64 (appeler via pointeurs de fonction, pas en liant les .lib).
-  Plan B : clang-cl + xwin, ou MSVC sous Windows/VM.
+- Client : **clang-cl + lld-link + xwin** (toolchain CMake LLVM `WinMsvc.cmake`), qui suit l'ABI MSVC.
+  MinGW‑w64 g++ écarté : il gère mal les retours d'objets des méthodes MSVC (GCC PR 64384).
+  Appeler les méthodes du jeu via pointeurs de fonction (pas en liant les .lib). Aucun
+  cross-compilateur n'est encore installé sur la machine.
 
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
