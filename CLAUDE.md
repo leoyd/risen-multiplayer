@@ -28,27 +28,32 @@ Copie de l'install Steam (app 40300). **Ne jamais commiter ni redistribuer de fi
   démangler avec `llvm-undname` ou Ghidra.
 - **Point d'entrée du mod** : chargeur natif de plugins — le jeu charge `bin/scripts/Script_*.dll` et
   appelle l'export `ScriptInit` (vérifié en x64 : `Script_Game.dll`, chaînes dans `Game.dll`). Pas
-  d'injecteur ni de proxy DLL. Signature de `ScriptInit` encore à retrouver.
+  d'injecteur ni de proxy DLL. `ScriptInit()` sans argument retourne 4 tables (AIState, AIFunction,
+  AICallback, Script) ; tables vides = rejet silencieux. Implémenté et validé en jeu (J0).
 - **Piège ABI** : >1 300 méthodes exportées retournent un objet par valeur (ex. `Entity::GetPose → bCMatrix`).
   MSVC x64 passe alors un pointeur de retour caché **après** `this` (RCX=this, RDX=sret). Déclarer ces
   appels explicitement `Ret* (*)(This*, Ret* out, …)` ; jamais de pointeur de membre C++.
 - Données : archives `.pak` dans `risen_ori/data/{common,compiled}`, config XML dans `data/ini`.
 
-## Architecture prévue
+## Architecture (spine : `_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md`)
+
+Les invariants AD-1 à AD-11 de la spine font foi. Résumé :
 
 ```
-client/    DLL C++ Script_<nom>.dll chargée par Risen (x64, CMake) — hooks MinHook, net KCP (ikcp.c)
-server/    Serveur Go — tourne chez l'hôte, relais + stockage du profil invité, ne simule pas le jeu
-protocol/  PROTOCOL.md — contrat des messages client⇄serveur
-docs/      Docs BMAD (brief, PRD, architecture) + notes de rétro-ingénierie
+client/src/core/    logique pure (config, version, protocole, interpolation) — testée sous Linux
+client/src/net/     UDP + KCP (ikcp.c), démultiplexage des canaux, thread réseau
+client/src/game/    adaptateur ABI Risen — SEUL endroit qui appelle le jeu
+client/src/sync/    session, avatars, réplication des PNJ, tick par frame
+client/src/win/     ScriptInit, hooks MinHook ; client/src/common/ : log
+protocol/           PROTOCOL.md — contrat binaire hôte⇄invité
 ```
 
-- Transport : UDP. État à haute fréquence (position/rotation/anim) en non fiable,
-  événements (connexion, dialogues, dégâts, objets) en fiable via KCP (`xtaci/kcp-go` côté Go).
-  KCP n'a ni session ni canal non fiable : 1 octet de canal en tête de datagramme, heartbeat
-  applicatif, kcp-go **sans FEC ni chiffrement** (sinon incompatible avec `ikcp.c`).
-- Sérialisation : structs binaires fixes little-endian (`encoding/binary` / struct packée C++).
-  Pas de protobuf.
+- **Pas de serveur séparé** : la DLL de l'hôte héberge (1 invité max). Plus de Go ni de `server/` pour le MVP.
+- Transport : un socket UDP, octet 0 = canal (0 KCP fiable, 1 snapshot non fiable 20 Hz, 2 contrôle
+  Hello/Welcome/Reject). KCP `ikcp_nodelay(1,10,2,1)`, `ikcp_setmtu(1199)`, datagramme ≤ 1200 o.
+- Tout appel au jeu sur le thread principal, depuis le hook `eCApplication::OnProcess`.
+- ABI : retours d'objets via sret explicite ; classes passées par valeur détruites par l'appelé.
+- Sérialisation : structs binaires little-endian empaquetées. Pas de protobuf.
 - Autorité : le jeu de l'hôte fait foi (monde, PNJ, combats, quêtes) ; chez l'invité les PNJ sont des
   répliques. Les dialogues sont simplement déclenchés en miroir.
 - Départ : sauvegarde préparée en zone neutre (hors trame principale/factions), commune aux 2 joueurs.
@@ -58,11 +63,10 @@ docs/      Docs BMAD (brief, PRD, architecture) + notes de rétro-ingénierie
 ## Environnement
 
 - Dev sous Fedora Linux, IDE GoLand. Le jeu tourne sous Proton/Wine.
-- Serveur : `go build`, compilation croisée avec `GOOS=windows`.
 - Client : **clang-cl + lld-link + xwin** (toolchain CMake LLVM `WinMsvc.cmake`), qui suit l'ABI MSVC.
   MinGW‑w64 g++ écarté : il gère mal les retours d'objets des méthodes MSVC (GCC PR 64384).
-  Appeler les méthodes du jeu via pointeurs de fonction (pas en liant les .lib). Aucun
-  cross-compilateur n'est encore installé sur la machine.
+  Appeler les méthodes du jeu via pointeurs de fonction (pas en liant les .lib). Installé :
+  clang/lld 23.1.3 (dnf), xwin 0.10.0 (`~/.local/bin`), CRT+SDK dans `~/.xwin`. Voir `client/README.md`.
 
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
