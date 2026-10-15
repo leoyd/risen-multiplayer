@@ -1,0 +1,26 @@
+# Fichiers du jeu original (propriété de THQ Nordic / Piranha Bytes) — ne jamais publier
+risen_ori/
+
+# Go
+/server/bin/
+*.exe
+*.test
+*.out
+
+# C++ / CMake
+/client/build/
+/client/out/
+*.obj
+*.pdb
+*.ilk
+
+# Outils RE (bases de travail locales, souvent volumineuses)
+*.gpr
+*.rep/
+*.i64
+*.idb
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
