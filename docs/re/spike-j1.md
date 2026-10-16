@@ -83,3 +83,11 @@ Hook `OnProcess` (thread, fps, état de session, pose du joueur, une fois par se
   - **Légères saccades** : la pose est imposée sans interpolation. Ce sera le rôle de l’interpolation d’AD-7.
   - **Arme absente de la main** en combat : l’animation d’attaque est jouée, mais l’arme reste rangée. Sortir ou ranger l’arme est un état de combat ou d’inventaire (`PSCombatSystem`, `gECombatMode`), pas une animation. À synchroniser à part (J2).
   - **Traverse les objets et les PNJ** : attendu avec une pose imposée. Pour un avatar distant, c’est plutôt souhaitable (ses collisions sont résolues chez son propriétaire). En revanche, les PNJ doivent pouvoir toucher l’avatar en J2 (AD-9), à vérifier à ce moment-là.
+
+## Sonde v5 en jeu (2026-10-16)
+- **`Entity::MoveTo` confirmé :** en mode miroir, au saut, l’équipement porté dans le dos reste avec le personnage en l’air (constaté par l’utilisateur). Le placement d’avatar se fait donc par `MoveTo`.
+- **Non testés à ce stade :**
+  - le chemin récepteur par nom (`eCResource2::GetMotion`) ;
+  - un descripteur reconstruit (le miroir rejoue le pointeur de ressource et le descripteur brut) ;
+  - le retour au menu ;
+  - le chargement rapide (AD-11).

@@ -7,7 +7,7 @@ paradigm: 'Réplication à autorité hôte (snapshots non fiables + événements
 scope: 'Client C++ Script_Multiplayer.dll pour J1 (présence) et J2 (combat coop), 2 joueurs'
 status: final
 created: '2026-10-15'
-updated: '2026-10-15'
+updated: '2026-10-16'
 binds: [FR-4, FR-5, FR-6, FR-7, FR-8, FR-9, FR-10, FR-11, FR-12]
 sources:
   - '_bmad-output/planning-artifacts/prds/prd-risen-multiplayer-2026-10-15/prd.md'
@@ -15,6 +15,8 @@ sources:
   - '_bmad-output/planning-artifacts/briefs/brief-risen-multiplayer-2026-10-15/addendum.md'
   - '_bmad-output/planning-artifacts/research/technical-faisabilite-multijoueur-risen-2026-10-15/research.md'
   - '_bmad-output/implementation-artifacts/spec-j0-chargement-mod.md'
+  - '_bmad-output/implementation-artifacts/spec-j1-sonde-reverse.md'
+  - 'docs/re/spike-j1.md'
 companions: []
 ---
 
@@ -49,13 +51,27 @@ graph TD
 
 - **Binds:** all
 - **Prevents:** des courses entre le thread réseau et le moteur, qui n’est pas thread-safe.
-- **Rule:** Tout appel à une fonction du jeu se fait **uniquement** depuis le hook de `eCApplication::OnProcess` (une fois par frame). Le thread réseau ne fait qu’envoyer et recevoir. Il échange avec la frame par deux files (entrante et sortante) protégées par un verrou ; aucune autre donnée n’est partagée.
+- **Rule:**
+  - Tout appel à une fonction du jeu se fait **uniquement** depuis le hook de `eCApplication::OnProcess`. Exception : le hook `PlayMotion` (AD-8), qui ne fait que copier des octets ou bloquer l’appel.
+  - Le thread réseau ne fait qu’envoyer et recevoir. Il échange avec la frame par deux files (entrante et sortante) protégées par un verrou ; aucune autre donnée n’est partagée.
+  - **Hook `PlayMotion` ↔ frame.** Leur seul état partagé est un objet unique, `sync::AnimFilter`, protégé par un verrou. Il contient :
+    - le PS d’animation du héros local, dont les appels sont capturés ;
+    - l’ensemble des PS des répliques, sur lesquels l’appel du moteur est bloqué ;
+    - l’anneau des captures.
+
+    Règles d’usage :
+    - Le rejeu (`SetMotion` + `PlayMotion` + `MoveTo`) se fait sous un garde de rejeu `thread_local`, que le hook laisse passer.
+    - Le hook ne bloque **jamais** un appel sur le PS du héros local.
+    - Une entité est retirée du filtre **avant** d’être oubliée ou détruite.
+
+    `[ASSUMPTION : le hook est appelé sur le thread principal ; la première story le journalise]`
+  - `OnProcess` est appelé une fois par itération de la boucle principale, toujours sur le même thread (vérifié en jeu). Il n’est pas bridé : 160 à 250 appels/s en partie, plus de 2 000 au menu. Toute cadence et tout délai (snapshots 20 Hz, heartbeat, timeouts, interpolation) se mesurent donc **à l’horloge** (`QueryPerformanceCounter`), jamais en nombre d’appels.
 
 ### AD-3 — Un seul adaptateur ABI, résolu en bloc [ADOPTED]
 
 - **Binds:** all
 - **Prevents:** des appels au jeu dispersés, avec des signatures fausses ou des erreurs de sret.
-- **Rule:** Seul `game/` appelle le jeu. Chaque fonction est résolue par son nom décoré (`GetProcAddress`) à l’initialisation, en **tout ou rien** : un symbole manquant laisse le mod inactif. Les retours d’objets passent par la forme explicite `Ret* (*)(This*, Ret* out, …)`, et les statiques par `Ret* (*)(Ret* out, …)`. Une classe passée **par valeur** (par exemple `Template` ou `bCString`) est une copie construite par l’appelant et **détruite par l’appelé**. Le mod ne détruit donc jamais une copie qu’il a passée. Jamais de pointeur de membre C++. Chaque appel au jeu est protégé par SEH. L’empreinte de version couvre tout module appelé (`Game.dll`, `Engine.dll`, `Script.dll`, `SharedBase.dll`).
+- **Rule:** Seul `game/` appelle le jeu. Chaque fonction est résolue par son nom décoré (`GetProcAddress`) à l’initialisation, en **tout ou rien** : un symbole manquant laisse le mod inactif. Les retours d’objets passent par la forme explicite `Ret* (*)(This*, Ret* out, …)`, et les statiques par `Ret* (*)(Ret* out, …)`. Une classe passée **par valeur** (par exemple `Template` ou `bCString`) est une copie construite par l’appelant et **détruite par l’appelé**. Le mod ne détruit donc jamais une copie qu’il a passée. À l’inverse, un objet **retourné** par valeur (sret, par exemple le `bCString` de `GetFileTitleA`) appartient au mod, qui le détruit. Les offsets codés en dur (emplacements de motion, AD-8) sont documentés dans `docs/re/` et couverts par l’empreinte de version. Jamais de pointeur de membre C++. Chaque appel au jeu est protégé par SEH. L’empreinte de version couvre tout module appelé (`Game.dll`, `Engine.dll`, `Script.dll`, `SharedBase.dll`).
 
 ### AD-4 — Un socket, un octet de canal
 
@@ -72,7 +88,7 @@ graph TD
 
 - **Binds:** FR-5, FR-8
 - **Prevents:** deux builds différents qui se parlent et désynchronisent en silence.
-- **Rule:** L’invité envoie sur le canal de contrôle un `Hello` qui contient `{version du protocole, version du mod, empreinte du jeu, pseudo, équipement}`. L’hôte répond `Welcome{conv, pose de l’avatar hôte}` ou `Reject{raison: u8}`. Le KCP de chaque côté n’est créé qu’après `Welcome`. Le moindre écart donne un `Reject`, et la raison est journalisée des deux côtés. Un heartbeat circule à 1 Hz ; 5 s sans paquet mettent fin à la session.
+- **Rule:** L’invité envoie sur le canal de contrôle un `Hello` qui contient `{version du protocole, version du mod, empreinte du jeu, pseudo, équipement}`. L’hôte répond `Welcome{conv, pose de l’avatar hôte}` ou `Reject{raison: u8}`. Le KCP de chaque côté n’est créé qu’après `Welcome`. Un `Hello` venant de la **même** adresse `ip:port` (retransmission) reçoit le **même** `Welcome`, avec le même `conv`. L’hôte cesse de renvoyer `Welcome` dès le premier segment KCP portant ce `conv`. Seule une autre adresse reçoit `Reject` (AD-1). Le moindre écart donne un `Reject`, et la raison est journalisée des deux côtés. Un heartbeat circule à 1 Hz ; 5 s sans paquet mettent fin à la session.
 
 ### AD-6 — Identité réseau NetId
 
@@ -84,18 +100,35 @@ graph TD
 
 - **Binds:** FR-7, FR-9
 - **Prevents:** des schémas de delta incompatibles, et des répliques qui se téléportent.
-- **Rule:** Chaque pair envoie à **20 Hz** l’état **complet** des entités dont il a l’autorité : l’hôte envoie son avatar et les PNJ, l’invité envoie son seul avatar. Chaque snapshot contient : `tick`, puis 25 octets par entité : `NetId` u32, position 3×f32, lacet f32, `AniId` u16, compteur de redémarrage d’animation u8, PV u16. Pas de delta. Si un datagramme ne suffit pas, les entités les plus proches d’un joueur passent en premier et les autres au tick suivant. Le récepteur affiche avec **150 ms** de retard, par interpolation (Hermite pour la position, slerp pour la rotation). Il n’attend jamais une retransmission et extrapole au plus 250 ms. `[ASSUMPTION : 20 Hz et 150 ms suffisent]`
+- **Rule:** Chaque pair envoie à **20 Hz** l’état **complet** des entités dont il a l’autorité : l’hôte envoie son avatar et les PNJ, l’invité envoie son seul avatar. Datagramme de snapshot (canal 1) : `u8 canal`, `u32 tick`, `u8 nombre`, puis 22 octets par entité : `NetId` u32, position 3×f32, lacet f32 (radians, `atan2(m[8], m[10])`), PV u16. Pas de delta. La vitesse utilisée par Hermite se dérive des snapshots successifs.
+  - **Temps.** `tick = floor((QPC − t0) / 50 ms)` chez l’émetteur, où `t0` est son entrée en `InSession`. `Motion` est daté en millisecondes (u32) dans la même base. Chaque pair tient **une seule** horloge distante par pair, dans `core/`.
+  -  L’animation **n’est pas** dans le snapshot : c’est un flux d’événements `Motion` (AD-8). Si un datagramme ne suffit pas, les entités les plus proches d’un joueur passent en premier et les autres au tick suivant. Le récepteur affiche avec **150 ms** de retard, par interpolation (Hermite pour la position, slerp pour la rotation). Il n’attend jamais une retransmission et extrapole au plus 250 ms. `[ASSUMPTION : 20 Hz et 150 ms suffisent]`
 
-### AD-8 — Un seul encodage d’animation, choisi par le spike J1
+### AD-8 — Animation : rejeu des `PlayMotion` par nom [ADOPTED]
 
-- **Binds:** FR-7
-- **Prevents:** deux encodages d’animation concurrents.
+- **Binds:** FR-6, FR-7, FR-9
+- **Prevents:** deux encodages d’animation concurrents ; une réplique (avatar ou PNJ) animée à la fois par le moteur et par la réplication.
 - **Rule :**
-  - **Préférence de l’utilisateur : la synchro par nom.** L’émetteur lit le nom de l’animation en cours, et le récepteur la rejoue avec `Entity::StartPlayAni`.
-  - Mais `Entity::GetAni` **construit** un nom à partir de paramètres : il ne lit pas l’animation en cours. Le premier spike de J1 doit donc trouver un accesseur de l’animation courante.
-  - **Si le spike n’en trouve pas, on passe à la synchro par état**, le repli validé par l’utilisateur : `GetMovementMode`, `GetCurrentAniDirection` et la posture de combat sont envoyés, et le récepteur reconstruit le nom avec `GetAni`.
-  - Dans les deux cas, les noms sont **internés** : un événement fiable `AniName{AniId, nom}` part la première fois, puis seul l’`AniId` (u16) circule.
-  - Le choix est inscrit ici avant la story « avatar ».
+  - **Portée.** Ce rejeu vaut pour toute entité répliquée : le pair qui en a l’autorité émet ses `Motion`, l’autre la rejoue. En J1, c’est le héros de chacun. En J2, l’hôte émet aussi pour les PNJ ; leur budget de `Motion` est fixé avant toute story `sync/npc`.
+  - **Émetteur.** Le hook de `eCAnimation_PS::PlayMotion` (Engine.dll) ne retient que les appels sur un PS capturé (`AnimFilter`, AD-2), et n’y copie que des octets.
+    - Le nom vient de la ressource rangée dans l’emplacement du type : `this + 0x120 + type*0x10`, puis `eCResource2::GetFileTitleA()`, résolu depuis la frame.
+    - Les noms sont **internés** : un événement fiable `AniName{AniId, nom}` part la première fois, puis seul l’`AniId` (u16) circule. Chaque émetteur a son propre espace d’`AniId`, remis à zéro à `Ended`. `AniName` précède toujours son premier `Motion` sur le même canal fiable. Un `AniId` inconnu fait ignorer le `Motion`, avec une ligne de log.
+    - Chaque appel donne un événement fiable `Motion{NetId, tick, type u8, AniId u16, flag u8, paramètres}`.
+  - **Récepteur.** Il applique `Motion` au même retard d’interpolation que les snapshots (AD-7). Un `Motion` en retard s’applique tout de suite. Pour les types 0 et 1 (locomotion), seul le plus récent par type et par frame est appliqué. La disposition exacte de `Motion` est fixée dans `PROTOCOL.md`. Ordre d’application :
+    1. `eCResource2::GetMotion(nom)` donne la ressource ;
+    2. `eCAnimation_PS::SetMotion(type, ressource)` la range dans l’emplacement ;
+    3. `PlayMotion(type, descripteur reconstruit, flag)` la lance.
+  - **Le descripteur `eSMotionPlayBackDesc` (0x60 octets) n’est jamais transmis brut**, car il contient des pointeurs. `Motion` ne porte que des champs scalaires identifiés. `[ASSUMPTION : temps de fondu f32 à +0x00, poids à +0x0C/+0x14 ; à établir dans la story avatar]`
+  - **Seule la réplication anime une réplique.** Le hook bloque (n’appelle pas l’original) tout `PlayMotion` que le moteur lance de lui-même sur le PS d’une réplique.
+  - **Avatar.**
+    - Il est créé **uniquement** à réception de `Spawn{NetId}`, par `Entity::Spawn(template du héros local, pose, temporary = true)` ; la copie ne prend pas le contrôle du joueur (vérifié).
+    - `sync/avatar` est le **seul** propriétaire de sa pose et de son animation.
+    - `Spawn` et `Respawn` réinitialisent l’interpolation.
+    - La sonde (`probe = 1`) et la session sont exclusives : un seul détour `PlayMotion` est actif.
+  - **Placement.** À chaque frame, `Entity::MoveTo(bCMatrix)` place l’avatar. `SetPose` seul laisse le contrôleur de personnage et l’équipement en place.
+  - **Repères.** `bCMatrix` est en lignes : translation en `m[12..14]`, Y vertical, axe avant en ligne 2, unités en centimètres (vérifié).
+  - **Validé en local** (sonde, mode miroir, `docs/re/spike-j1.md`) : rejeu par **pointeur** de ressource avec le descripteur **brut**, dans le même processus, et placement par `MoveTo` (l’équipement suit au saut).
+  - **Non validé :** le chemin par nom (`GetMotion`) et le descripteur reconstruit. `[ASSUMPTION]` La première tâche de la story avatar est un miroir local **par nom**.
 
 ### AD-9 — Les PNJ n’obéissent qu’à l’hôte (J2)
 
@@ -112,7 +145,7 @@ graph TD
 
 - **Binds:** FR-5, FR-6, FR-8, FR-9, FR-10, FR-12
 - **Prevents:** des messages ad hoc ajoutés sans contrat.
-- **Rule:** Le canal de contrôle ne transporte que `Hello`, `Welcome` et `Reject`. Le canal fiable ne transporte que ces types : `Heartbeat`, `AniName`, `Spawn{NetId, type, pose}`, `Despawn{NetId}`, `HitRequest`, `HitOnGuest`, `Death{NetId}`, `Respawn{NetId, pose}`, `SessionEnd{raison: u8}`. Ajouter un type exige de mettre à jour `PROTOCOL.md` et d’incrémenter la version du protocole.
+- **Rule:** Le canal de contrôle ne transporte que `Hello`, `Welcome` et `Reject`. Le canal fiable ne transporte que ces types : `Heartbeat`, `AniName`, `Motion` (AD-8), `Spawn{NetId, type, pose}`, `Despawn{NetId}`, `HitRequest`, `HitOnGuest`, `Death{NetId}`, `Respawn{NetId, pose}`, `SessionEnd{raison: u8}`. Ajouter un type exige de mettre à jour `PROTOCOL.md` et d’incrémenter la version du protocole.
 
 ### AD-11 — Session : une machine à états
 
@@ -120,15 +153,18 @@ graph TD
 - **Prevents:** des fins de session traitées différemment selon l’endroit du code.
 - **Rule :**
   - Chemin nominal : `Inactive → Hosting | Connecting → InSession → Ended → Inactive`.
-  - Si le mod est actif, les hooks sont installés dans `ScriptInit`. `Hosting` et `Connecting` démarrent au premier `OnProcess` où un monde est chargé ; le moyen de le détecter est établi par le spike J1.
+  - Si le mod est actif, les hooks sont installés dans `ScriptInit`.
+  - **Monde chargé = `Entity::GetPlayer()` non nul** ; il est nul au menu principal (vérifié). `Hosting` et `Connecting` démarrent au premier `OnProcess` où c’est le cas.
+  - **Fin de monde** = changement du pointeur du joueur **ou** d’un second signal de génération du monde. `[ASSUMPTION : gCSession::AccessState() ou eCEntity::GetID() du héros ; à valider en jeu dans la première story de session, retour au menu et chargement rapide compris]` Une fin de monde vaut fin de session.
+  - Aucun pointeur d’entité n’est gardé hors de la table `NetId` (AD-6), ni réutilisé au-delà de `Ended`.
   - Tout ce qui termine une session (mort de l’hôte, timeout, quitter, rechargement de sauvegarde, retour au menu, `Reject`) passe par **la même** transition vers `Ended`. Elle supprime les avatars et les répliques, puis rend la main au jeu solo.
-  - À la mort de l’invité, l’hôte envoie `Respawn` près de l’avatar de l’hôte, PV pleins (FR-12).
+  - À la mort de l’invité, celui-ci émet `Death{2}`, et l’hôte envoie `Respawn` près de son avatar, PV pleins (FR-12). `[ASSUMPTION : la mort native recharge une sauvegarde et finirait la session ; l’interception est à trancher au spike J2]`
 
 ## Consistency Conventions
 
 | Concern | Convention |
 | --- | --- |
-| Espaces de noms | `mp::core`, `mp::net`, `mp::game`, `mp::sync`, `mp::win`, `mp::log` ; un dossier par couche dans `client/src/`. Migration du code J0 (`win/game_abi` vers `game/`, `win/log` vers `common/`, `mp::abi` vers `mp::game`) dans la **première story de J1** |
+| Espaces de noms | `mp::core`, `mp::net`, `mp::game`, `mp::sync`, `mp::win`, `mp::log` ; un dossier par couche dans `client/src/`. Migration du code J0 vers ces couches : faite (spec de la sonde J1) |
 | Messages | `enum class MsgType : u8`, une struct empaquetée par message dans `core/protocol.h`, encodage et décodage testés sous Linux |
 | Données | Little-endian ; positions en `float` (centimètres du jeu) ; temps en `tick` (`u32`, 20 Hz) ; textes en UTF-8 préfixés par une longueur `u8` |
 | Erreurs | Pas d’exception qui franchit une couche. `game/` et `net/` retournent `bool` ou un résultat, et `sync/` décide. Toute erreur d’initialisation laisse le mod **inactif**, sans crash ni boîte de dialogue |
@@ -155,7 +191,7 @@ graph TD
 client/
   src/core/      # config, version (J0), protocol (codec), interpolation, netid — pur, testé sous Linux
   src/net/       # socket UDP non bloquant, KCP, démultiplexage des canaux, thread réseau
-  src/game/      # adaptateur ABI : Entity (Spawn, GetPlayer, Get/SetPose, MoveTo, StartPlayAni, GetAni, Kill), dégâts, IA
+  src/game/      # adaptateur ABI : Entity (Spawn, GetPlayer, GetPose, MoveTo, Kill), animation (PlayMotion, SetMotion, noms de ressources), dégâts, IA
   src/sync/      # session (AD-11), avatars (J1), réplication des PNJ (J2), tick par frame
   src/win/       # ScriptInit (J0), installation des hooks MinHook
   src/common/    # log (J0), utilitaire transverse
@@ -174,8 +210,8 @@ sequenceDiagram
   P->>N: datagrammes UDP (KCP / snapshot)
   N->>S: file entrante
   G->>S: OnProcess (chaque frame)
-  S->>G: appliquer les répliques (SetPose, StartPlayAni…)
-  S->>G: lire l’état local (GetPose, GetAni, PV)
+  S->>G: appliquer les répliques (MoveTo, SetMotion + PlayMotion…)
+  S->>G: lire l’état local (GetPose, PlayMotion capturés, PV)
   S->>N: file sortante (snapshot 20 Hz, événements)
   N->>P: datagrammes UDP
 ```
@@ -213,10 +249,13 @@ graph LR
 
 ## Open Questions
 
-1. Accesseur de l’animation courante (AD-8) : spike au début de J1.
-2. Template de l’avatar pour `Entity::Spawn`, et détection du « monde chargé » (AD-11) : spike au début de J1.
-3. Appariement des PNJ natifs de l’invité et neutralisation de leur IA, fonction de dégâts côté hôte, invulnérabilité de l’avatar invité (AD-9) : spike au début de J2.
-4. Vérifier en jeu que `eCApplication::OnProcess` est appelé une fois par frame, sur le thread principal (AD-2) : premier test de J1.
+1. ~~Accesseur de l’animation courante (AD-8)~~ : **résolu** par le spike J1 (rejeu des `PlayMotion` par nom).
+2. ~~Template de l’avatar et détection du « monde chargé » (AD-11)~~ : **résolu** (template du héros local ; `GetPlayer` non nul).
+3. Appariement des PNJ natifs de l’invité et neutralisation de leur IA, fonction de dégâts côté hôte, invulnérabilité de l’avatar invité (AD-9) : spike au début de J2. Identifiant candidat pour l’appariement : `eCEntity::GetID` (`bCPropertyID`) ou `Entity::GetNetIndex`. Budget de `Motion` pour les PNJ (AD-8).
+4. ~~`OnProcess` une fois par frame sur le thread principal (AD-2)~~ : **confirmé** en jeu, non bridé (cadences à l’horloge).
+5. Arme dégainée et mode de combat de l’avatar (`gECombatMode`, `PSCombatSystem`) : le rejeu d’animation joue l’attaque sans arme en main. Spike au début de J2, avant la story « combat ».
+6. Collisions entre PNJ et avatar : l’avatar placé par `MoveTo` traverse les objets et les PNJ. C’est acceptable en J1 ; à vérifier pour AD-9 (un PNJ doit pouvoir toucher l’avatar invité) au début de J2.
+7. Mort native de l’invité (rechargement de sauvegarde) et son interception, avant `Respawn` (AD-11) : spike J2.
 
 ## Deferred
 
