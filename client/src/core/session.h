@@ -1,4 +1,4 @@
-// Machine à états de session, hôte et invité (story 1.4, protocol/PROTOCOL.md §8).
+// Machine à états de session, hôte et invité (stories 1.4 et 1.5, protocol/PROTOCOL.md §8).
 //
 // Logique pure : ni horloge système, ni socket, ni appel au jeu. L'appelant (le pilote
 // Windows sync/session, ou l'hôte Linux de test) lui donne à chaque tick le temps en ms
@@ -6,8 +6,12 @@
 // à exécuter dans l'ordre et des lignes de log. Les deux appelants exécutent ainsi
 // exactement la même logique.
 //
-// États : Inactive → Hosting | Connecting → InSession → Ended. L'armement a lieu au premier
-// tick où le monde est chargé. Ended est final (le réarmement vient en story 1.5).
+// États : Inactive → Hosting | Connecting → InSession → Ended → Inactive. L'armement a lieu
+// au premier tick où le monde est chargé (joueur non nul et partie en cours). Toutes les fins
+// passent par la même transition : SessionEnd{raison} si la cause est locale et qu'on est en
+// session, Ended (raison au log), maintien du KCP pendant kLingerMs, puis CloseReliable, Stop
+// et Ended → Inactive. La session se réarme ensuite au monde chargé suivant ; l'hôte dont
+// l'invité est parti (timeout, SessionEnd reçu) se réarme aussitôt, dans le même monde.
 #pragma once
 
 #include <array>
@@ -30,6 +34,7 @@ inline constexpr std::uint64_t kHelloIntervalMs = 500;
 inline constexpr std::uint64_t kConnectTimeoutMs = 10000;
 inline constexpr std::uint64_t kHeartbeatIntervalMs = 1000;
 inline constexpr std::uint64_t kPeerTimeoutMs = 5000;
+inline constexpr std::uint64_t kLingerMs = 1000;  // maintien du KCP après Ended (SessionEnd)
 
 enum class State { Inactive, Hosting, Connecting, InSession, Ended };
 const char* state_name(State state);  // "Inactive", "Hosting"…
@@ -47,9 +52,13 @@ struct Settings {
 
 // État du monde lu par l'appelant à chaque tick.
 struct World {
-    bool loaded = false;  // Entity::GetPlayer() non nul
-    bool pose_ok = false; // pose lue (utile seulement en Hosting, pour le Welcome)
+    std::uintptr_t player = 0;  // Entity::GetPlayer(), entier opaque (jamais déréférencé ici)
+    bool running = false;       // gCSession::IsGameRunning (instance nulle : false)
+    bool dead = false;          // Entity::IsDead du joueur
+    bool pose_ok = false;       // pose lue (utile seulement en Hosting, pour le Welcome)
     float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f;
+
+    bool loaded() const { return player != 0 && running; }  // monde chargé
 };
 
 // Entrées : ce que le transport a rendu depuis le tick précédent.
@@ -99,8 +108,9 @@ public:
     // Un tick : entrées traitées dans l'ordre, puis délais (Hello, heartbeat, timeouts).
     Output tick(std::uint64_t now_ms, const World& world, const std::vector<Input>& inputs);
 
-    // Échec d'exécution d'une commande (port occupé…) : la session passe en Ended avec
-    // `cause` au log, et rend Stop. Sans effet si elle est déjà terminée ou inactive.
+    // Échec d'exécution d'une commande (port occupé…) : la session se termine (transition
+    // unique, SessionEnd{4} si en session) avec `cause` au log. Sans effet si elle est déjà
+    // terminée ou inactive. Réarmement au monde suivant.
     Output fail(std::uint64_t now_ms, const std::string& cause);
 
     State state() const { return state_; }
@@ -115,8 +125,17 @@ private:
     void guest_on_control(std::uint64_t now, const ControlIn& in, Output& out);
     void timers(std::uint64_t now, Output& out);
     void enter_session(std::uint64_t now, Output& out);
-    void end(const std::string& reason, Output& out);
-    void transition(State next, const std::string& detail, Output& out);
+    // Transition de fin unique. `local_reason` ≠ 0 : cause locale, SessionEnd{local_reason}
+    // envoyé si InSession. `rearm_now` : l'hôte se réarme dès la fin du maintien, dans le
+    // même monde ; sinon, au monde suivant.
+    // `level` : niveau du log de Ended (Info pour une fin de routine, Warn sinon).
+    void end(std::uint64_t now, const std::string& reason, std::uint8_t local_reason, bool rearm_now, Level level,
+             Output& out);
+    void finish_linger(const World& world, Output& out);
+    void track_world(const World& world, bool revived);
+    bool can_arm(const World& world) const;
+    void maybe_arm(std::uint64_t now, const World& world, Output& out);
+    void transition(State next, const std::string& detail, Output& out, Level level = Level::Info);
     void send_reject(const Endpoint& to, std::uint8_t reason, Output& out);
     void send_hello(Output& out);
     std::uint32_t draw_conv();
@@ -140,6 +159,10 @@ private:
     std::uint64_t rng_ = 0;
     bool foreign_warned_ = false;  // invité : réponse d'une autre adresse déjà signalée
     World world_;             // monde du tick en cours (pose du Welcome)
+
+    std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)
+    std::uint64_t linger_until_ = 0;   // Ended : fin du maintien du KCP
+    bool wait_new_world_ = false;      // Inactive : attendre que le monde change
 };
 
 }  // namespace mp::core::session

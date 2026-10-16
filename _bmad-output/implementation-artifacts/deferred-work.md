@@ -37,13 +37,13 @@
   summary: Tester les filtres adresse et `conv` du faux invité (datagramme d'un tiers, segment portant un autre `conv`), quand il sera utilisé contre la DLL.
   evidence: Aucun test n'envoie ce trafic à l'invité ; sans le filtre d'adresse, un tiers maintiendrait une session muette au-delà du timeout.
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-3-faux-invite.md`
-  summary: [partiellement fait 2026-10-17, story 1.4 ; reporté en 1.5 : durée du maintien du KCP après SessionEnd] Rendre normatif dans `PROTOCOL.md` §8 : Welcome ou Reject reçu en session, durée du maintien du KCP après SessionEnd, Hello invalide venant du pair accepté, `conv` neuf après un timeout.
+  summary: [fait 2026-10-17 : story 1.4, puis story 1.5 pour la durée du maintien du KCP après SessionEnd (1 s, §8)] Rendre normatif dans `PROTOCOL.md` §8 : Welcome ou Reject reçu en session, durée du maintien du KCP après SessionEnd, Hello invalide venant du pair accepté, `conv` neuf après un timeout.
   evidence: Ces comportements n'existent que dans le code et le README du faux invité ; la story 1.4 doit les fixer pour la DLL.
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-heberger-rejoindre.md`
   summary: Valider à deux machines le côté invité de la DLL (Welcome reçu, session, heartbeats, Reject reçu, timeout) ; une seule instance ne vérifie que « hôte injoignable ».
   evidence: Deux Risen ne tournent pas sur la même machine ; ce côté n'est couvert que par `tests/test_session.cpp` (logique pure).
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-heberger-rejoindre.md`
-  summary: Durée de maintien du KCP après un `SessionEnd` envoyé : la DLL n'envoie pas encore de `SessionEnd` (story 1.5), à fixer dans §8 avec la fin de session volontaire.
+  summary: [fait 2026-10-17, story 1.5 : maintien de 1 s, normatif au §8] Durée de maintien du KCP après un `SessionEnd` envoyé, fixée dans §8 avec la fin de session volontaire. Vérifié côté hôte seulement (tests Linux et faux invité) ; côté invité de la DLL, non validé (deux machines).
   evidence: En 1.4, `Ended` suit toujours un timeout, un `SessionEnd`/`Reject` reçu ou un hôte injoignable : rien à envoyer.
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-heberger-rejoindre.md`
   summary: Mesurer en jeu si `OnProcess` s'arrête plus de 5 s (écran de chargement, saccade) ; si oui, envoyer le heartbeat depuis le thread réseau ou prévenir le pair.
@@ -54,3 +54,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-heberger-rejoindre.md`
   summary: Partager l'exécuteur de commandes (`core::session::Output` → `net::Transport`) entre la DLL et `session_host`, pour que les tests sans le jeu couvrent le câblage réseau de la DLL.
   evidence: `sync/session.cpp::execute` est une copie de la boucle de `session_host_main.cpp` ; seul le test en jeu l'exerce.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-fin-de-session.md`
+  summary: Faire le test en jeu de la story 1.5 (3 chargements rapides puis menu, mort de l'hôte, `log_level = debug`) et recopier les lignes `[sync] signaux` dans `docs/re/fin-de-monde.md`.
+  evidence: La règle de fin de monde (`player`, `running`, `dead`) repose sur le désassemblage ; son comportement pendant un chargement rapide n'est pas observé.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-fin-de-session.md`
+  summary: Si le test en jeu montre que `running` ne retombe pas et que `player` garde son adresse pendant un chargement rapide, ajouter le signal de remplacement `eCEntity::GetID` du héros (story suivante).
+  evidence: Sans ce signal, un rechargement d'un monde vivant ne serait pas détecté (seul le repli « dead 1 → 0 » couvre la mort de l'hôte).
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-fin-de-session.md`
+  summary: Valider à deux machines le côté invité de la story 1.5 (SessionEnd{2}/{3} reçu de l'hôte, fin de monde de l'invité avec SessionEnd{2}, attente du monde suivant).
+  evidence: Une seule instance de Risen par machine ; ce côté n'est couvert que par `tests/test_session.cpp`.

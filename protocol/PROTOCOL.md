@@ -343,6 +343,25 @@ d'appels.
   rendus par KCP) plutôt que chaque datagramme : les heartbeats à 1 Hz suffisent à maintenir
   l'activité. C'est le cas de la DLL.
 - Fin volontaire = envoi de `SessionEnd{raison}` sur le canal fiable, puis fermeture du KCP.
-  Le KCP peut être gardé brièvement pour laisser partir le segment (et son acquittement), mais
-  la session est terminée dès l'envoi. Un `SessionEnd` reçu termine la session avec la raison
-  qu'il porte.
+  La session est terminée dès l'envoi, mais le KCP est **gardé 1 s** (horloge monotone) pour
+  laisser partir le segment et recevoir son acquittement ; pendant ce maintien, tout message
+  reçu est ignoré. Ensuite le KCP est fermé et le socket aussi. Un `SessionEnd` reçu termine la
+  session avec la raison qu'il porte, sans rien renvoyer.
+- **Raisons locales** envoyées par la DLL en session : `2` fin de monde (rechargement,
+  chargement rapide, retour au menu), `3` mort de l'hôte (hôte seulement), `4` erreur interne.
+  Hors session (`Hosting`, `Connecting`), une fin locale n'envoie rien.
+- **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
+  conclut au timeout de 5 s.
+
+### Réarmement
+
+- Après une fin et son maintien de 1 s, la session revient à l'état inactif. Elle se réarme
+  (hôte : nouvelle écoute ; invité : nouveaux `Hello`) au **monde chargé suivant**, avec un
+  `conv` tiré à neuf par l'hôte.
+- Exception : l'**hôte** dont l'invité part dans le même monde (timeout ou `SessionEnd` reçu) se
+  réarme aussitôt, sans attendre un rechargement.
+- L'**invité** attend toujours le monde suivant (après `Reject`, hôte injoignable, timeout ou
+  `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
+  Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
+  `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
+  chargement. Pas de reconnexion automatique en v1.

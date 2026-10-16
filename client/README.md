@@ -81,12 +81,17 @@ dossier ; il n'est enregistré que si `go` est trouvé (cgo demande aussi `gcc`)
 ### Hôte de session face au faux invité (`session_fake_guest`)
 
 `session_host` (build Linux) est un hôte sans le jeu : la **même** machine à états que la DLL
-(`src/core/session`) avec le vrai transport (`src/net`) et un monde simulé toujours chargé.
+(`src/core/session`) avec le vrai transport (`src/net`) et un monde simulé chargé. Il sort
+après `--ends E` fins de session (défaut 1) ou `--max-ms T`. `SIGUSR1` simule une fin de monde
+(rechargement : le héros change d'adresse) et `SIGUSR2` la mort du héros de l'hôte.
 `tests/session_fake_guest.sh` le lance face au faux invité (compilé à la volée par `go build`)
-et vérifie les codes de sortie et le log de l'hôte : nominal, `--dup-hello`, `--bad-version`,
-deux invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte). Le
-test CTest `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure
-environ 30 s. Lancement à la main :
+et vérifie les codes de sortie et les logs : nominal, `--dup-hello`, `--bad-version`, deux
+invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte), puis
+(story 1.5) trois cycles « rejoindre, fin de monde, réarmer » avec `SessionEnd{2}` reçu par le
+faux invité et trois `conv` distincts, le réarmement de l'hôte après `--quit` (un second invité
+rejoint le même monde) et la mort de l'hôte (`SessionEnd{3}`). Le test CTest
+`session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
+45 s. Lancement à la main :
 
 ```bash
 client/tests/session_fake_guest.sh client/build-tests/session_host tools/fake-guest
@@ -128,10 +133,10 @@ de Risen l'ignore alors silencieusement (pas de boîte de dialogue). Après une 
 jeu, il faut revérifier la rétro-ingénierie puis ajouter la nouvelle empreinte à la
 liste blanche (`src/core/version.cpp`).
 
-## Tester une session (`probe = 0`, story 1.4)
+## Tester une session (`probe = 0`, stories 1.4 et 1.5)
 
-Sans sonde, le mod hooke seulement `eCApplication::OnProcess`. Au premier appel où
-`Entity::GetPlayer()` est non nul (partie chargée), la session démarre, avec le préfixe
+Sans sonde, le mod hooke seulement `eCApplication::OnProcess`. Au premier appel où le monde est
+chargé (`Entity::GetPlayer()` non nul **et** `gCSession::IsGameRunning()`), la session démarre, avec le préfixe
 `[sync]` au log pour chaque transition, chaque `Hello` reçu et chaque `Reject` :
 
 - **hôte** (`role = host`) : `Inactive → Hosting`, écoute sur `port` ; un invité compatible
@@ -145,9 +150,25 @@ Réseau : l'hôte écoute sur le port UDP `port` (27960 par défaut), à ouvrir 
 à rediriger (UDP) sur la box si l'invité vient d'Internet. L'invité se connecte à ce port depuis
 un port local éphémère : rien à ouvrir de son côté.
 
-`Ended` rend le solo et reste final **jusqu'au redémarrage du jeu** (le réarmement au monde
-suivant vient en story 1.5). Un échec (port occupé, ABI, nom d'hôte au lieu d'une IPv4) est
-journalisé et le jeu reste en solo.
+**Fin de session (story 1.5).** Toutes les fins passent par la même transition : si la cause
+est locale et qu'on est en session, `SessionEnd{raison}` part (2 = fin de monde, 3 = mort de
+l'hôte, 4 = erreur) ; puis `… → Ended : <raison> ; retour au solo` ; le KCP est gardé **1 s**
+pour laisser partir le `SessionEnd`, puis `Ended → Inactive : transport arrêté ; …`. Causes :
+
+- **fin de monde** (rechargement, chargement rapide, retour au menu) : le joueur devient nul,
+  change d'adresse, ou `IsGameRunning` retombe, en `Hosting`, `Connecting` ou `InSession` ;
+- **mort de l'hôte** (rôle hôte, `Hosting` ou `InSession`) : `Entity::IsDead` du héros ;
+- timeout, `SessionEnd` reçu, `Reject` reçu, hôte injoignable, erreur.
+
+Réarmement : au prochain monde chargé, avec un `conv` neuf. Exception : l'hôte dont l'invité
+part (timeout ou `SessionEnd` reçu) se réarme **aussitôt** dans le même monde (« réarmement
+immédiat »). L'invité, lui, attend toujours le monde suivant (pas de boucle de `Reject`).
+Quitter le jeu n'envoie rien : le pair conclut au timeout de 5 s. Une erreur de config (nom
+d'hôte au lieu d'une IPv4) laisse le jeu en solo jusqu'au redémarrage.
+
+Diagnostic : avec `log_level = debug`, une ligne `[sync] signaux : player=0x… running=0|1
+dead=0|1 (état …)` est écrite à chaque changement d'un des trois signaux (jamais à chaque
+frame). Elle sert au test en jeu ci-dessous.
 
 ### Risen hôte + faux invité (une machine)
 
@@ -161,6 +182,31 @@ journalisé et le jeu reste en solo.
    tard `InSession → Ended : fin de session par le pair : départ du joueur (1)`. Le faux invité
    sort avec le code 0. Variantes : `--bad-version` (log : `Reject envoyé … (1)`, l'hôte reste
    en attente), `--kill` (log : `timeout` 5 s après la fin).
+
+### Fin de session en jeu (story 1.5, une machine)
+
+Prérequis : `role = host`, `probe = 0`, **`log_level = debug`**, une sauvegarde rapide.
+
+1. **Trois rechargements puis menu.** Charger la partie, puis lancer en boucle le faux invité,
+   qui se reconnecte après chaque fin :
+   `while true; do tools/fake-guest/fake-guest --host 127.0.0.1; sleep 0.5; done`
+   (il sort sur `SessionEnd` reçu, ou après 10 s sans réponse pendant un chargement ; la
+   boucle le relance). Attendre
+   `Hosting → InSession`, faire un chargement rapide, attendre la session suivante, et ainsi
+   trois fois ; puis revenir au menu principal. Arrêter la boucle (Ctrl-C).
+2. Attendu dans `Script_Multiplayer.log` : trois `Hosting → InSession` avec trois `conv`
+   distincts, chacun suivi de `SessionEnd envoyé : fin de monde (2)`,
+   `InSession → Ended : fin de monde ; retour au solo`, puis `Ended → Inactive` ; après le
+   retour au menu, pas de nouveau `Inactive → Hosting`. Côté faux invité :
+   `<- SessionEnd raison=2` trois fois. Aucun crash.
+3. **Mort de l'hôte.** Recharger une partie, relancer la boucle du faux invité de l'étape 1,
+   attendre `Hosting → InSession`, puis faire mourir le héros
+   (chute, combat) : `SessionEnd envoyé : mort de l'hôte (3)`, `InSession → Ended : mort de
+   l'hôte`, et `<- SessionEnd raison=3` côté faux invité. Arrêter la boucle (Ctrl-C).
+4. Recopier les lignes `[sync] signaux` (et les transitions qui les entourent) dans
+   [`../docs/re/fin-de-monde.md`](../docs/re/fin-de-monde.md), section « Résultats du test en
+   jeu ». Point à surveiller : `running` retombe-t-il pendant un chargement rapide, et le
+   pointeur `player` change-t-il ?
 
 ### Risen invité, hôte injoignable (une machine)
 

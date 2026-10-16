@@ -63,35 +63,91 @@ std::uint32_t Session::draw_conv() {
     }
 }
 
-void Session::transition(State next, const std::string& detail, Output& out) {
+void Session::transition(State next, const std::string& detail, Output& out, Level level) {
     std::string line = std::string("[sync] ") + state_name(state_) + " → " + state_name(next);
     if (!detail.empty()) line += " : " + detail;
     state_ = next;
-    out.logs.push_back({next == State::Ended ? Level::Warn : Level::Info, std::move(line)});
+    out.logs.push_back({level, std::move(line)});
 }
 
-void Session::end(const std::string& reason, Output& out) {
-    if (state_ == State::Ended) return;
-    transition(State::Ended, reason + " ; retour au solo", out);
+void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t local_reason, bool rearm_now,
+                  Level level, Output& out) {
+    if (state_ == State::Ended || state_ == State::Inactive) return;
+    if (state_ == State::InSession && local_reason != 0) {
+        Bytes bytes;
+        if (proto::encode_reliable(proto::SessionEnd{local_reason}, bytes)) {
+            out.commands.push_back(SendReliable{std::move(bytes)});
+            out.logs.push_back({Level::Info, "[sync] SessionEnd envoyé : " + end_text(local_reason)});
+        }
+    }
+    transition(State::Ended, reason + " ; retour au solo", out, level);
+    linger_until_ = now + kLingerMs;  // le KCP reste ouvert pour laisser partir le SessionEnd
+    wait_new_world_ = !rearm_now;
+    track_world(world_, false);  // fin de monde : le monde a déjà changé
+}
+
+void Session::finish_linger(const World& world, Output& out) {
     out.commands.push_back(CloseReliable{});
     out.commands.push_back(Stop{});
+    transition(State::Inactive,
+               can_arm(world) ? "transport arrêté ; réarmement immédiat"
+                              : "transport arrêté ; nouvelle session au prochain monde chargé",
+               out);
 }
 
-Output Session::fail(std::uint64_t /*now_ms*/, const std::string& cause) {
+Output Session::fail(std::uint64_t now_ms, const std::string& cause) {
     Output out;
     if (state_ == State::Inactive || state_ == State::Ended) return out;
     out.logs.push_back({Level::Error, "[sync] " + cause});
-    end("échec : " + cause, out);
+    end(now_ms, "échec : " + cause, static_cast<std::uint8_t>(proto::EndReason::InternalError), false, Level::Warn,
+        out);
     return out;
+}
+
+void Session::track_world(const World& world, bool revived) {
+    // Le monde a changé depuis l'armement (menu, chargement, autre joueur) : le prochain
+    // monde chargé est forcément un nouveau monde. Repli : le héros mort revit (rechargement
+    // qui redonne la même adresse sans que `running` retombe).
+    if (wait_new_world_ && (!world.loaded() || world.player != armed_player_ || revived)) wait_new_world_ = false;
+}
+
+bool Session::can_arm(const World& world) const {
+    // Un hôte au héros mort n'arme pas : il finirait aussitôt en « mort de l'hôte ».
+    return !disabled_ && !wait_new_world_ && world.loaded() && !(settings_.role == Role::Host && world.dead);
+}
+
+void Session::maybe_arm(std::uint64_t now, const World& world, Output& out) {
+    if (can_arm(world)) arm(now, world, out);
 }
 
 Output Session::tick(std::uint64_t now, const World& world, const std::vector<Input>& inputs) {
     Output out;
-    if (state_ == State::Ended) return out;
+    const bool revived = world_.dead && !world.dead;  // world_ = monde du tick précédent
     world_ = world;
+    if (state_ == State::Ended) {
+        track_world(world, revived);
+        if (now < linger_until_) return out;  // maintien : entrées et monde sans objet
+        finish_linger(world, out);
+        // Les entrées de ce tick viennent du transport qu'on vient d'arrêter : ignorées.
+        maybe_arm(now, world, out);
+        timers(now, out);
+        return out;
+    }
     if (state_ == State::Inactive) {
-        if (!disabled_ && world.loaded) arm(now, world, out);
+        track_world(world, revived);
+        maybe_arm(now, world, out);
         if (state_ == State::Inactive) return out;  // entrées éventuelles sans objet
+    }
+    // Signaux du monde, lus à chaque tick, avant les entrées : une fin de monde l'emporte sur
+    // un SessionEnd arrivé dans le même tick (entrées alors ignorées).
+    if (!world.loaded() || world.player != armed_player_) {
+        end(now, "fin de monde", static_cast<std::uint8_t>(proto::EndReason::WorldEnded), false, Level::Info, out);
+        return out;
+    }
+    if (settings_.role == Role::Host && world.dead &&
+        (state_ == State::Hosting || state_ == State::InSession)) {
+        end(now, "mort de l'hôte", static_cast<std::uint8_t>(proto::EndReason::HostDied), false, Level::Info, out);
+        return out;
     }
     for (const Input& in : inputs) {
         if (state_ == State::Ended) break;
@@ -101,11 +157,19 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_reliable(now, std::get<ReliableIn>(in), out);
         }
     }
-    timers(now, out);
+    if (state_ != State::Ended) timers(now, out);
     return out;
 }
 
-void Session::arm(std::uint64_t now, const World& /*world*/, Output& out) {
+void Session::arm(std::uint64_t now, const World& world, Output& out) {
+    // Nouvelle session : rien ne survit de la précédente (le conv sera tiré à neuf).
+    armed_player_ = world.player;
+    peer_ = Endpoint{};
+    conv_ = 0;
+    welcome_.clear();
+    reliable_seen_ = false;
+    heartbeats_rx_ = 0;
+    foreign_warned_ = false;
     if (settings_.role == Role::Host) {
         out.commands.push_back(Start{settings_.port});
         transition(State::Hosting,
@@ -305,7 +369,7 @@ void Session::guest_on_control(std::uint64_t now, const ControlIn& in, Output& o
         if (state_ != State::Connecting) return;  // Reject reçu en session : ignoré (§8)
         out.logs.push_back({Level::Info, "[sync] Reject reçu de " + net::to_string(host_) + " : " +
                                              reject_text(r->reason)});
-        end("rejeté par l'hôte : " + reject_text(r->reason), out);
+        end(now, "rejeté par l'hôte : " + reject_text(r->reason), 0, false, Level::Warn, out);
         return;
     }
     // Hello reçu par l'invité : sans objet.
@@ -328,7 +392,11 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
     }
     const auto& e = std::get<proto::SessionEnd>(decoded.message);
     out.logs.push_back({Level::Info, "[sync] SessionEnd reçu : " + end_text(e.reason)});
-    end("fin de session par le pair : " + end_text(e.reason), out);
+    // L'hôte dont l'invité part se réarme aussitôt ; l'invité attend le monde suivant.
+    const bool routine = e.reason == static_cast<std::uint8_t>(proto::EndReason::PlayerLeft) ||
+                         e.reason == static_cast<std::uint8_t>(proto::EndReason::WorldEnded);
+    end(now, "fin de session par le pair : " + end_text(e.reason), 0, settings_.role == Role::Host,
+        routine ? Level::Info : Level::Warn, out);
 }
 
 void Session::enter_session(std::uint64_t now, Output& /*out*/) {
@@ -346,7 +414,8 @@ void Session::timers(std::uint64_t now, Output& out) {
     switch (state_) {
         case State::Connecting:
             if (now >= connect_deadline_) {
-                end("hôte injoignable (aucune réponse en " + std::to_string(kConnectTimeoutMs / 1000) + " s)", out);
+                end(now, "hôte injoignable (aucune réponse en " + std::to_string(kConnectTimeoutMs / 1000) + " s)", 0,
+                    false, Level::Warn, out);
                 return;
             }
             if (now >= next_hello_) {
@@ -357,7 +426,8 @@ void Session::timers(std::uint64_t now, Output& out) {
             return;
         case State::InSession:
             if (now - last_peer_ >= kPeerTimeoutMs) {
-                end("timeout (" + std::to_string(kPeerTimeoutMs / 1000) + " s sans nouvelles du pair)", out);
+                end(now, "timeout (" + std::to_string(kPeerTimeoutMs / 1000) + " s sans nouvelles du pair)", 0,
+                    settings_.role == Role::Host, Level::Warn, out);
                 return;
             }
             if (now >= next_heartbeat_) {

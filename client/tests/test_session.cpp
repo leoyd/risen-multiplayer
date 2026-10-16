@@ -1,4 +1,4 @@
-// Machine à états de session (story 1.4) : matrice I/O de la spec, sans socket ni jeu.
+// Machine à états de session (stories 1.4 et 1.5) : matrices I/O des specs, sans socket ni jeu.
 #include "core/session.h"
 #include "core/protocol.h"
 #include "test.h"
@@ -40,9 +40,13 @@ Settings guest_settings(const std::string& ip = "192.168.1.20") {
     return s;
 }
 
-World loaded_world() {
+constexpr std::uintptr_t kPlayer = 0x1000;
+constexpr std::uintptr_t kPlayer2 = 0x2000;
+
+World loaded_world(std::uintptr_t player = kPlayer) {
     World w;
-    w.loaded = true;
+    w.player = player;
+    w.running = true;
     w.pose_ok = true;
     w.x = 100.0f;
     w.y = -50.5f;
@@ -144,6 +148,37 @@ Session hosting_with_a(std::uint32_t& conv) {
     CHECK(sent_welcome(out, w));
     conv = w.conv;
     return s;
+}
+
+// Fin du maintien : CloseReliable puis Stop, Ended → Inactive, dans le tick de `now`.
+bool linger_closed(const Output& out) {
+    std::size_t close_at = out.commands.size(), stop_at = out.commands.size();
+    for (std::size_t i = 0; i < out.commands.size(); ++i) {
+        if (std::holds_alternative<CloseReliable>(out.commands[i]) && close_at == out.commands.size()) close_at = i;
+        if (std::holds_alternative<Stop>(out.commands[i]) && stop_at == out.commands.size()) stop_at = i;
+    }
+    return close_at < stop_at && stop_at < out.commands.size() && has_log(out, "Ended → Inactive");
+}
+
+// SessionEnd{reason} envoyé dans `out`.
+bool sent_session_end(const Output& out, std::uint8_t reason) {
+    for (const auto* s : commands_of<SendReliable>(out)) {
+        const auto d = proto::decode_reliable(s->bytes.data(), s->bytes.size());
+        if (!d.ok()) continue;
+        if (const auto* e = std::get_if<proto::SessionEnd>(&d.message)) {
+            if (e->reason == reason) return true;
+        }
+    }
+    return false;
+}
+
+std::size_t session_ends_sent(const Output& out) {
+    std::size_t n = 0;
+    for (const auto* s : commands_of<SendReliable>(out)) {
+        const auto d = proto::decode_reliable(s->bytes.data(), s->bytes.size());
+        if (d.ok() && std::holds_alternative<proto::SessionEnd>(d.message)) ++n;
+    }
+    return n;
 }
 
 }  // namespace
@@ -313,11 +348,19 @@ TEST("session hôte : 5 s sans événement du pair → Ended « timeout », sans
     CHECK(has_log(out, "timeout"));
     CHECK(commands_of<Send>(out).empty());
     CHECK(commands_of<SendReliable>(out).empty());
-    CHECK_EQ(commands_of<Stop>(out).size(), 1u);
-    // Ended est final.
-    out = s.tick(7000, loaded_world(), control_from(kGuestB, encode(make_hello())));
+    CHECK(commands_of<Stop>(out).empty());  // maintien de 1 s
+    // Pendant le maintien, les entrées sont sans objet.
+    out = s.tick(6999, loaded_world(), control_from(kGuestB, encode(make_hello())));
     CHECK(out.commands.empty());
     CHECK(s.state() == State::Ended);
+    // Fin du maintien : Stop, Inactive, puis réarmement immédiat (l'invité est parti, même
+    // monde). Les entrées de ce tick viennent de l'ancien transport : ignorées.
+    out = s.tick(7000, loaded_world(), control_from(kGuestB, encode(make_hello())));
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Hosting);
+    CHECK(has_log(out, "réarmement immédiat"));
+    CHECK_EQ(commands_of<Start>(out).size(), 1u);
+    CHECK(commands_of<Send>(out).empty());
 }
 
 TEST("session hôte : un Hello retransmis par le pair maintient l'activité") {
@@ -333,10 +376,13 @@ TEST("session hôte : un Hello retransmis par le pair maintient l'activité") {
 TEST("session hôte : SessionEnd reçu → Ended avec la raison") {
     std::uint32_t conv = 0;
     Session s = hosting_with_a(conv);
-    const Output out = s.tick(2000, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+    Output out = s.tick(2000, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
     CHECK(s.state() == State::Ended);
     CHECK(has_log(out, "départ du joueur (1)"));
-    CHECK_EQ(commands_of<Stop>(out).size(), 1u);
+    CHECK_EQ(session_ends_sent(out), 0u);  // pas d'envoi : la cause vient du pair
+    out = s.tick(3000, loaded_world(), {});
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Hosting);  // l'hôte se réarme aussitôt
 }
 
 TEST("session hôte : SessionEnd de raison inconnue → code brut au log") {
@@ -378,7 +424,11 @@ TEST("session hôte : échec de démarrage → Ended, Stop") {
     const Output out = s.fail(0, "port 27960 occupé");
     CHECK(s.state() == State::Ended);
     CHECK(has_log(out, "port 27960 occupé"));
-    CHECK_EQ(commands_of<Stop>(out).size(), 1u);
+    CHECK_EQ(session_ends_sent(out), 0u);  // pas en session
+    const Output later = s.tick(1000, loaded_world(), {});
+    CHECK(linger_closed(later));
+    CHECK(s.state() == State::Inactive);  // pas de nouvel essai dans le même monde
+    CHECK(commands_of<Start>(s.tick(5000, loaded_world(), {})).empty());
 }
 
 // --- Invité --------------------------------------------------------------------------
@@ -460,7 +510,8 @@ TEST("session invité : Reject{r} → Ended, raison lisible, Stop") {
     const Output out = s.tick(100, loaded_world(), control_from(kHost, encode(proto::Reject{3})));
     CHECK(s.state() == State::Ended);
     CHECK(has_log(out, "empreinte du jeu différente (3)"));
-    CHECK_EQ(commands_of<Stop>(out).size(), 1u);
+    CHECK(linger_closed(s.tick(1100, loaded_world(), {})));
+    CHECK(s.state() == State::Inactive);
 }
 
 TEST("session invité : Reject de raison inconnue → code brut") {
@@ -481,8 +532,12 @@ TEST("session invité : 10 s sans réponse → Ended « hôte injoignable », St
     const Output out = s.tick(10000, loaded_world(), {});
     CHECK(s.state() == State::Ended);
     CHECK(has_log(out, "hôte injoignable"));
-    CHECK_EQ(commands_of<Stop>(out).size(), 1u);
     CHECK_EQ(hellos_sent(out), 0u);
+    CHECK(linger_closed(s.tick(11000, loaded_world(), {})));
+    CHECK(s.state() == State::Inactive);
+    // Même monde : pas de nouvel essai.
+    for (std::uint64_t t = 11000; t <= 30000; t += 500) CHECK(s.tick(t, loaded_world(), {}).commands.empty());
+    CHECK(s.state() == State::Inactive);
 }
 
 TEST("session invité : en session, Welcome ou Reject → ignorés ; heartbeat ; timeout") {
@@ -582,7 +637,7 @@ TEST("session invité : fail() pendant Connecting → Ended, Stop") {
     const Output out = s.fail(10, "port occupé");
     CHECK(s.state() == State::Ended);
     CHECK(has_log(out, "port occupé"));
-    CHECK_EQ(commands_of<Stop>(out).size(), 1u);
+    CHECK(linger_closed(s.tick(1010, loaded_world(), {})));
 }
 
 TEST("session hôte : message fiable illisible → ignoré, session intacte") {
@@ -628,4 +683,369 @@ TEST("session invité : réponse d'une autre adresse → signalée une fois en W
     out = s.tick(200, loaded_world(), control_from(kGuestB, encode(w)));
     for (const auto& l : out.logs) CHECK(l.level != Level::Warn);
     CHECK(s.state() == State::Connecting);
+}
+
+// --- Story 1.5 : fin de session propre -------------------------------------------------
+
+TEST("fin 1.5 : rechargement en session → SessionEnd{2}, maintien 1 s, Stop, Inactive, réarmement") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    Output out = s.tick(2000, loaded_world(kPlayer2), control_from(kGuestB, encode(make_hello())));
+    CHECK(s.state() == State::Ended);
+    CHECK(sent_session_end(out, 2));
+    CHECK(has_log(out, "InSession → Ended : fin de monde"));
+    CHECK(commands_of<Stop>(out).empty());
+    CHECK(commands_of<CloseReliable>(out).empty());
+    CHECK(commands_of<Send>(out).empty());  // entrées du tick de fin sans objet
+    // Le SessionEnd part avant toute fermeture.
+    out = s.tick(2999, loaded_world(kPlayer2), {});
+    CHECK(out.commands.empty());
+    out = s.tick(3000, loaded_world(kPlayer2), {});
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Hosting);  // nouveau monde : réarmement
+    CHECK(has_log(out, "Inactive → Hosting"));
+    // Nouvelle session, nouveau conv.
+    out = s.tick(3100, loaded_world(kPlayer2), control_from(kGuestA, encode(make_hello())));
+    proto::Welcome w;
+    CHECK(sent_welcome(out, w));
+    CHECK(w.conv != conv);
+    CHECK(s.state() == State::InSession);
+}
+
+TEST("fin 1.5 : retour au menu (joueur nul) → fin de monde, pas de réarmement hors monde") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    Output out = s.tick(2000, World{}, {});
+    CHECK(sent_session_end(out, 2));
+    CHECK(has_log(out, "fin de monde"));
+    out = s.tick(3000, World{}, {});
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Inactive);
+    CHECK(has_log(out, "nouvelle session au prochain monde chargé"));
+    for (std::uint64_t t = 3000; t < 8000; t += 100) CHECK(s.tick(t, World{}, {}).commands.empty());
+    // Le même pointeur revient (le jeu réutilise l'adresse) : c'est quand même un nouveau monde.
+    out = s.tick(8000, loaded_world(kPlayer), {});
+    CHECK(s.state() == State::Hosting);
+}
+
+TEST("fin 1.5 : partie arrêtée (running faux, joueur présent) → fin de monde") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    World w = loaded_world();
+    w.running = false;
+    const Output out = s.tick(2000, w, {});
+    CHECK(s.state() == State::Ended);
+    CHECK(sent_session_end(out, 2));
+}
+
+TEST("fin 1.5 : même joueur après un chargement rapide pendant le maintien → réarmement") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    World menu = loaded_world();
+    menu.running = false;
+    s.tick(2000, menu, {});
+    CHECK(s.state() == State::Ended);
+    s.tick(2500, loaded_world(), {});  // revenu pendant le maintien, même adresse
+    const Output out = s.tick(3000, loaded_world(), {});
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Hosting);
+}
+
+TEST("fin 1.5 : fin de monde hors session (Hosting, Connecting) → sans envoi, Inactive, réarmement") {
+    {
+        Session s(host_settings());
+        s.tick(0, loaded_world(), {});
+        CHECK(s.state() == State::Hosting);
+        Output out = s.tick(100, loaded_world(kPlayer2), {});
+        CHECK(s.state() == State::Ended);
+        CHECK(has_log(out, "Hosting → Ended : fin de monde"));
+        CHECK_EQ(session_ends_sent(out), 0u);
+        out = s.tick(1100, loaded_world(kPlayer2), {});
+        CHECK(linger_closed(out));
+        CHECK(s.state() == State::Hosting);
+    }
+    {
+        Session s(guest_settings());
+        s.tick(0, loaded_world(), {});
+        CHECK(s.state() == State::Connecting);
+        Output out = s.tick(100, World{}, {});
+        CHECK(s.state() == State::Ended);
+        CHECK(has_log(out, "Connecting → Ended : fin de monde"));
+        CHECK_EQ(session_ends_sent(out), 0u);
+        CHECK_EQ(hellos_sent(out), 0u);
+        out = s.tick(1100, World{}, {});
+        CHECK(linger_closed(out));
+        CHECK(s.state() == State::Inactive);
+        out = s.tick(1200, loaded_world(kPlayer2), {});
+        CHECK(s.state() == State::Connecting);
+        CHECK_EQ(hellos_sent(out), 1u);  // nouvel essai au nouveau monde
+    }
+}
+
+TEST("fin 1.5 : mort de l'hôte en session → SessionEnd{3}, Inactive, réarmement au monde suivant") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    World dead = loaded_world();
+    dead.dead = true;
+    Output out = s.tick(2000, dead, {});
+    CHECK(s.state() == State::Ended);
+    CHECK(sent_session_end(out, 3));
+    CHECK(has_log(out, "InSession → Ended : mort de l'hôte"));
+    out = s.tick(3000, dead, {});
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Inactive);
+    CHECK(s.tick(4000, dead, {}).commands.empty());
+    CHECK(s.state() == State::Inactive);
+    s.tick(5000, loaded_world(kPlayer2), {});  // le jeu recharge
+    CHECK(s.state() == State::Hosting);
+}
+
+TEST("fin 1.5 : mort de l'hôte sans invité (Hosting) → sans envoi, Inactive") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {});
+    World dead = loaded_world();
+    dead.dead = true;
+    Output out = s.tick(100, dead, {});
+    CHECK(s.state() == State::Ended);
+    CHECK(has_log(out, "mort de l'hôte"));
+    CHECK_EQ(session_ends_sent(out), 0u);
+    out = s.tick(1100, dead, {});
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Inactive);
+}
+
+TEST("fin 1.5 : mort du joueur côté invité → pas de fin (J2)") {
+    Session s(guest_settings());
+    s.tick(0, loaded_world(), {});
+    proto::Welcome w;
+    w.conv = 9;
+    s.tick(100, loaded_world(), control_from(kHost, encode(w)));
+    World dead = loaded_world();
+    dead.dead = true;
+    s.tick(200, dead, reliable(encode_r(proto::Heartbeat{})));
+    CHECK(s.state() == State::InSession);
+}
+
+TEST("fin 1.5 : SessionEnd reçu par l'invité → sans envoi, Inactive, attend le monde suivant") {
+    Session s(guest_settings());
+    s.tick(0, loaded_world(), {});
+    proto::Welcome w;
+    w.conv = 9;
+    s.tick(100, loaded_world(), control_from(kHost, encode(w)));
+    Output out = s.tick(500, loaded_world(), reliable(encode_r(proto::SessionEnd{2})));
+    CHECK(s.state() == State::Ended);
+    CHECK_EQ(session_ends_sent(out), 0u);
+    out = s.tick(1500, loaded_world(), {});
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Inactive);
+    CHECK(s.tick(3000, loaded_world(), {}).commands.empty());
+    s.tick(4000, loaded_world(kPlayer2), {});
+    CHECK(s.state() == State::Connecting);
+}
+
+TEST("fin 1.5 : timeout de l'invité → attend le monde suivant") {
+    Session s(guest_settings());
+    s.tick(0, loaded_world(), {});
+    proto::Welcome w;
+    w.conv = 9;
+    s.tick(100, loaded_world(), control_from(kHost, encode(w)));
+    s.tick(5100, loaded_world(), {});
+    CHECK(s.state() == State::Ended);
+    CHECK(linger_closed(s.tick(6100, loaded_world(), {})));
+    CHECK(s.state() == State::Inactive);
+    CHECK(s.tick(7000, loaded_world(), {}).commands.empty());
+}
+
+TEST("fin 1.5 : Reject reçu → pas de nouvel essai dans le même monde, nouvel essai au suivant") {
+    Session s(guest_settings());
+    s.tick(0, loaded_world(), {});
+    s.tick(100, loaded_world(), control_from(kHost, encode(proto::Reject{4})));
+    CHECK(s.state() == State::Ended);
+    CHECK(linger_closed(s.tick(1100, loaded_world(), {})));
+    for (std::uint64_t t = 1200; t < 20000; t += 500) CHECK(s.tick(t, loaded_world(), {}).commands.empty());
+    CHECK(s.state() == State::Inactive);
+    s.tick(20000, loaded_world(kPlayer2), {});
+    CHECK(s.state() == State::Connecting);
+}
+
+TEST("fin 1.5 : trois rechargements → trois conv distincts, trois couples InSession/Ended") {
+    Session s(host_settings());
+    std::vector<std::uint32_t> convs;
+    std::size_t in_session = 0, ended = 0;
+    std::uint64_t t = 0;
+    const std::uintptr_t players[] = {0x1000, 0x2000, 0x3000, 0x4000};
+    for (int i = 0; i < 3; ++i) {
+        const World here = loaded_world(players[i]);
+        s.tick(t, here, {});
+        CHECK(s.state() == State::Hosting);
+        Output out = s.tick(t + 10, here, control_from(kGuestA, encode(make_hello())));
+        proto::Welcome w;
+        if (sent_welcome(out, w)) convs.push_back(w.conv);
+        if (has_log(out, "→ InSession")) ++in_session;
+        out = s.tick(t + 500, loaded_world(players[i + 1]), {});  // rechargement
+        CHECK(sent_session_end(out, 2));
+        if (has_log(out, "InSession → Ended : fin de monde")) ++ended;
+        CHECK(linger_closed(s.tick(t + 1500, World{}, {})));  // écran de chargement
+        t += 2000;
+    }
+    CHECK_EQ(convs.size(), 3u);
+    CHECK_EQ(in_session, 3u);
+    CHECK_EQ(ended, 3u);
+    if (convs.size() == 3) {
+        CHECK(convs[0] != convs[1]);
+        CHECK(convs[1] != convs[2]);
+        CHECK(convs[0] != convs[2]);
+    }
+}
+
+TEST("fin 1.5 : fail() en session → SessionEnd{4}, maintien puis Stop") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    const Output out = s.fail(2000, "erreur");
+    CHECK(sent_session_end(out, 4));
+    CHECK(s.state() == State::Ended);
+    CHECK(linger_closed(s.tick(3000, loaded_world(), {})));
+    CHECK(s.state() == State::Inactive);
+}
+
+// --- Story 1.5 : revue ----------------------------------------------------------------
+
+TEST("fin 1.5 : hôte au héros mort → pas d'armement (ni au départ ni après le départ de l'invité)") {
+    World dead = loaded_world();
+    dead.dead = true;
+    {
+        Session s(host_settings());
+        CHECK(s.tick(0, dead, {}).commands.empty());
+        CHECK(s.state() == State::Inactive);
+        s.tick(100, loaded_world(), {});  // le héros revit
+        CHECK(s.state() == State::Hosting);
+    }
+    {
+        std::uint32_t conv = 0;
+        Session s = hosting_with_a(conv);
+        s.tick(2000, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));  // réarmement immédiat prévu
+        CHECK(s.state() == State::Ended);
+        // Le héros meurt pendant le maintien : la fin du maintien ne réarme pas.
+        const Output out = s.tick(3000, dead, {});
+        CHECK(linger_closed(out));
+        CHECK(s.state() == State::Inactive);
+        CHECK(commands_of<Start>(out).empty());
+        CHECK(has_log(out, "nouvelle session au prochain monde chargé"));
+    }
+}
+
+TEST("fin 1.5 : après la mort de l'hôte, même adresse et running constant → réarmement quand le héros revit") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    World dead = loaded_world();
+    dead.dead = true;
+    s.tick(2000, dead, {});
+    CHECK(s.state() == State::Ended);
+    s.tick(3000, dead, {});
+    CHECK(s.state() == State::Inactive);
+    s.tick(4000, dead, {});
+    CHECK(s.state() == State::Inactive);
+    s.tick(5000, loaded_world(), {});  // rechargement : même adresse, running jamais retombé
+    CHECK(s.state() == State::Hosting);
+}
+
+TEST("fin 1.5 : niveaux de log de Ended (Info en routine, Warn sinon)") {
+    auto ended_level = [](const Output& out, Level& level) {
+        for (const auto& l : out.logs) {
+            if (l.text.find("→ Ended") != std::string::npos) {
+                level = l.level;
+                return true;
+            }
+        }
+        return false;
+    };
+    Level level = Level::Debug;
+    {
+        std::uint32_t conv = 0;
+        Session s = hosting_with_a(conv);
+        CHECK(ended_level(s.tick(2000, loaded_world(kPlayer2), {}), level));
+        CHECK(level == Level::Info);  // fin de monde
+    }
+    {
+        std::uint32_t conv = 0;
+        Session s = hosting_with_a(conv);
+        World dead = loaded_world();
+        dead.dead = true;
+        CHECK(ended_level(s.tick(2000, dead, {}), level));
+        CHECK(level == Level::Info);  // mort de l'hôte
+    }
+    for (std::uint8_t r : {std::uint8_t{1}, std::uint8_t{2}}) {
+        std::uint32_t conv = 0;
+        Session s = hosting_with_a(conv);
+        CHECK(ended_level(s.tick(2000, loaded_world(), reliable(encode_r(proto::SessionEnd{r}))), level));
+        CHECK(level == Level::Info);
+    }
+    {
+        std::uint32_t conv = 0;
+        Session s = hosting_with_a(conv);
+        CHECK(ended_level(s.tick(2000, loaded_world(), reliable(encode_r(proto::SessionEnd{3}))), level));
+        CHECK(level == Level::Warn);
+    }
+    {
+        std::uint32_t conv = 0;
+        Session s = hosting_with_a(conv);
+        CHECK(ended_level(s.tick(6000, loaded_world(), {}), level));
+        CHECK(level == Level::Warn);  // timeout
+    }
+    {
+        Session s(guest_settings());
+        s.tick(0, loaded_world(), {});
+        CHECK(ended_level(s.tick(100, loaded_world(), control_from(kHost, encode(proto::Reject{4}))), level));
+        CHECK(level == Level::Warn);
+    }
+    {
+        Session s(guest_settings());
+        s.tick(0, loaded_world(), {});
+        CHECK(ended_level(s.tick(10000, loaded_world(), {}), level));
+        CHECK(level == Level::Warn);  // injoignable
+    }
+    {
+        Session s(host_settings());
+        s.tick(0, loaded_world(), {});
+        CHECK(ended_level(s.fail(10, "erreur"), level));
+        CHECK(level == Level::Warn);
+    }
+}
+
+TEST("fin 1.5 : fail() de l'invité en session → SessionEnd{4}") {
+    Session s(guest_settings());
+    s.tick(0, loaded_world(), {});
+    proto::Welcome w;
+    w.conv = 9;
+    s.tick(100, loaded_world(), control_from(kHost, encode(w)));
+    CHECK(s.state() == State::InSession);
+    const Output out = s.fail(200, "erreur");
+    CHECK(sent_session_end(out, 4));
+    CHECK(s.state() == State::Ended);
+}
+
+TEST("fin 1.5 : SessionEnd du pair et fin de monde dans le même tick → la fin de monde l'emporte") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    const Output out = s.tick(2000, loaded_world(kPlayer2), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK(s.state() == State::Ended);
+    CHECK(has_log(out, "InSession → Ended : fin de monde"));
+    CHECK(!has_log(out, "SessionEnd reçu"));
+    CHECK(sent_session_end(out, 2));
+}
+
+TEST("fin 1.5 : hôte à réarmement immédiat dont le monde se décharge pendant le maintien → attend un monde") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    s.tick(2000, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+    s.tick(2500, World{}, {});  // retour au menu pendant le maintien
+    Output out = s.tick(3000, World{}, {});
+    CHECK(linger_closed(out));
+    CHECK(s.state() == State::Inactive);
+    CHECK(commands_of<Start>(out).empty());
+    CHECK(has_log(out, "nouvelle session au prochain monde chargé"));
+    CHECK(!has_log(out, "réarmement immédiat"));
+    for (std::uint64_t t = 3100; t < 6000; t += 100) CHECK(s.tick(t, World{}, {}).commands.empty());
+    s.tick(6000, loaded_world(kPlayer2), {});
+    CHECK(s.state() == State::Hosting);
 }

@@ -1,11 +1,11 @@
-// Pilote Windows de la session (story 1.4) : relie core/session au transport et au jeu.
-// Une chose par frame, depuis le hook eCApplication::OnProcess (thread principal) : lire le
-// monde (GetPlayer, pose), vider poll(), session.tick(), exécuter les commandes, écrire les
-// logs [sync].
+// Pilote Windows de la session (stories 1.4 et 1.5) : relie core/session au transport et au
+// jeu. Une chose par frame, depuis le hook eCApplication::OnProcess (thread principal) : lire
+// le monde (GetPlayer, IsGameRunning, IsDead, pose), vider poll(), session.tick(), exécuter les
+// commandes, écrire les logs [sync]. En debug, une ligne « [sync] signaux » par changement.
 //
 // Le Transport est alloué une fois et volontairement jamais détruit : aucun join ne se fait
-// au déchargement de la DLL (sous le verrou du chargeur). L'arrêt explicite (Ended) fait
-// stop() depuis le thread principal.
+// au déchargement de la DLL (sous le verrou du chargeur). L'arrêt explicite (fin du maintien
+// après Ended) fait stop() depuis le thread principal ; le réarmement le redémarre.
 #pragma once
 
 #include <array>

@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <new>
 #include <string>
@@ -28,6 +29,8 @@ cs::Session* g_session = nullptr;
 net::Transport* g_transport = nullptr;
 bool g_broken = false;            // exception : plus rien jusqu'au redémarrage
 bool g_player_error_logged = false;
+bool g_running_error_logged = false;
+bool g_dead_error_logged = false;
 LARGE_INTEGER g_qpc_frequency{};
 std::vector<cs::Input> g_inputs;  // réutilisé d'une frame à l'autre
 
@@ -47,6 +50,23 @@ void write(const cs::LogLine& line) {
     }
 }
 
+// Dernier état des signaux journalisé (diagnostic debug, une ligne par changement).
+struct Signals {
+    std::uintptr_t player = 0;
+    bool running = false;
+    bool dead = false;
+    bool operator==(const Signals& o) const { return player == o.player && running == o.running && dead == o.dead; }
+};
+Signals g_signals;
+bool g_signals_logged = false;
+
+std::string hex_ptr(std::uintptr_t v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "0x%016llx", static_cast<unsigned long long>(v));
+    return buf;
+}
+
+// Signaux du monde (story 1.5), lus à chaque frame : joueur, partie en cours, mort du joueur.
 cs::World read_world(cs::State state) {
     cs::World w;
     game::Entity player;
@@ -55,11 +75,35 @@ cs::World read_world(cs::State state) {
             g_player_error_logged = true;
             log::error("[sync] Entity::GetPlayer a échoué (SEH) : monde considéré comme non chargé");
         }
-        return w;
+        player.ptr = nullptr;
     }
-    w.loaded = player.ptr != nullptr;
+    w.player = reinterpret_cast<std::uintptr_t>(player.ptr);  // entier opaque pour core/
+    if (!game::game_running(w.running)) {
+        if (!g_running_error_logged) {
+            g_running_error_logged = true;
+            log::error("[sync] gCSession::IsGameRunning a échoué (SEH) : partie considérée comme arrêtée");
+        }
+        w.running = false;
+    }
+    // IsDead seulement dans un monde chargé (pas pendant sa destruction : entité à moitié détruite).
+    if (w.loaded() && !game::is_dead(player, w.dead)) {
+        if (!g_dead_error_logged) {
+            g_dead_error_logged = true;
+            log::error("[sync] Entity::IsDead a échoué (SEH) : joueur considéré comme vivant");
+        }
+        w.dead = false;
+    }
+
+    const Signals now{w.player, w.running, w.dead};
+    if (!g_signals_logged || !(now == g_signals)) {
+        g_signals_logged = true;
+        g_signals = now;
+        log::debug("[sync] signaux : player=" + hex_ptr(now.player) + " running=" + (now.running ? "1" : "0") +
+                   " dead=" + (now.dead ? "1" : "0") + " (état " + cs::state_name(state) + ")");
+    }
+
     // La pose ne sert qu'au Welcome de l'hôte : lue seulement avant ou pendant Hosting.
-    if (w.loaded && (state == cs::State::Inactive || state == cs::State::Hosting)) {
+    if (w.loaded() && (state == cs::State::Inactive || state == cs::State::Hosting)) {
         game::Matrix m{};
         if (game::get_pose(player, m)) {
             w.pose_ok = true;
@@ -113,8 +157,6 @@ void execute(cs::Output out) {
 
 void frame() {
     const cs::State state = g_session->state();
-    if (state == cs::State::Ended) return;  // final jusqu'au redémarrage (story 1.5 : réarmement)
-
     const cs::World world = read_world(state);
     g_inputs.clear();
     if (g_transport != nullptr) {

@@ -49,7 +49,7 @@ constexpr int kMotionTypeCount = 8;          // PlayMotion ignore type > 7
 using OnProcessFn = void (*)(void* application);
 using PlayMotionFn = void (*)(void* animation_ps, int type, void* desc, bool flag);
 
-// Résout en bloc les symboles des entités (Script.dll, Engine.dll). Script.dll est
+// Résout en bloc les symboles des entités (Script.dll, Engine.dll, Game.dll). Script.dll est
 // chargée si besoin. Retourne false et renseigne `missing` au premier échec.
 bool resolve_entities(const char*& missing);
 
@@ -73,6 +73,12 @@ bool play_motion(void* animation_ps, int type, void* desc, bool flag);
 bool set_motion(void* animation_ps, int type, void* resource);
 // Nom de la ressource de motion (eCResource2::GetFileTitleA), 255 caractères au plus.
 bool get_resource_name(const void* resource, std::string& out);
+
+// Entity::IsDead (Script.dll) : le PS 0x24 de l'entité, à l'offset +0xC0, vaut 12.
+bool is_dead(const Entity& e, bool& out);
+// gCSession::GetInstance() (pointeur global, nul possible) puis gCSession::IsGameRunning
+// (octet à +0x110), Game.dll. Instance nulle : out = false.
+bool game_running(bool& out);
 
 // Entity::IsProcessingRangeEntered : l'entité est-elle dans la zone que le moteur met à jour ?
 bool is_processing_range_entered(const Entity& e, bool& out);

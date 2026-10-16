@@ -20,6 +20,10 @@ using GetTemplateFn = Template* (*)(const Entity* self, Template* sret);
 using SpawnFn = Entity* (*)(Entity* sret, Template* by_value, const Matrix* pose, bool temporary);
 using TemplateDtorFn = void (*)(Template* self);
 using IsProcessingRangeEnteredFn = bool (*)(const Entity* self);
+using IsDeadFn = bool (*)(const Entity* self);
+// Game.dll
+using SessionGetInstanceFn = void* (*)();             // gCSession& (pointeur global, nul possible)
+using SessionIsGameRunningFn = bool (*)(const void* session);  // octet à +0x110
 // bTObjArray<Entity> : { Entity* data; u32 count; … } (Entity::GetNPCs, Script.dll x64).
 struct EntityArray {
     Entity* data;
@@ -43,6 +47,9 @@ constexpr const char* kGetTemplate = "?GetTemplate@Entity@@QEBA?AVTemplate@@XZ";
 constexpr const char* kSpawn = "?Spawn@Entity@@SA?AV1@VTemplate@@AEBVbCMatrix@@_N@Z";
 constexpr const char* kTemplateDtor = "??1Template@@QEAA@XZ";
 constexpr const char* kIsProcessingRangeEntered = "?IsProcessingRangeEntered@Entity@@QEBA_NXZ";
+constexpr const char* kIsDead = "?IsDead@Entity@@QEBA_NXZ";
+constexpr const char* kSessionGetInstance = "?GetInstance@gCSession@@SAAEAV1@XZ";
+constexpr const char* kSessionIsGameRunning = "?IsGameRunning@gCSession@@QEBA_NXZ";
 constexpr const char* kGetNPCs = "?GetNPCs@Entity@@SA?AV?$bTObjArray@VEntity@@@@XZ";
 constexpr const char* kGetPropertySet =
     "?GetPropertySet@eCEntity@@QEBAPEBVeCEntityPropertySet@@W4eEPropertySetType@@@Z";
@@ -66,6 +73,9 @@ struct EntityAbi {
     SpawnFn spawn = nullptr;
     TemplateDtorFn template_dtor = nullptr;
     IsProcessingRangeEnteredFn is_processing_range_entered = nullptr;
+    IsDeadFn is_dead = nullptr;
+    SessionGetInstanceFn session_get_instance = nullptr;
+    SessionIsGameRunningFn session_is_game_running = nullptr;
     GetNPCsFn get_npcs = nullptr;
     GetPropertySetFn get_property_set = nullptr;
     void* on_process = nullptr;
@@ -93,6 +103,11 @@ bool resolve_entities(const char*& missing) {
         missing = "Engine.dll";
         return false;
     }
+    HMODULE game = GetModuleHandleW(L"Game.dll");
+    if (game == nullptr) {
+        missing = "Game.dll";
+        return false;
+    }
     HMODULE shared_base = GetModuleHandleW(L"SharedBase.dll");
     if (shared_base == nullptr) {
         missing = "SharedBase.dll";
@@ -117,6 +132,9 @@ bool resolve_entities(const char*& missing) {
                     lookup(script, kTemplateDtor, a.template_dtor, missing) &&
                     lookup(script, kIsProcessingRangeEntered, a.is_processing_range_entered, missing) &&
                     lookup(script, kGetNPCs, a.get_npcs, missing) &&
+                    lookup(script, kIsDead, a.is_dead, missing) &&
+                    lookup(game, kSessionGetInstance, a.session_get_instance, missing) &&
+                    lookup(game, kSessionIsGameRunning, a.session_is_game_running, missing) &&
                     lookup(engine, kGetPropertySet, a.get_property_set, missing) &&
                     lookup(engine, kOnProcess, on_process, missing) &&
                     lookup(engine, kPlayMotion, a.play_motion, missing) &&
@@ -242,6 +260,31 @@ bool is_processing_range_entered(const Entity& e, bool& out) {
         out = g_abi.is_processing_range_entered(&e);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool is_dead(const Entity& e, bool& out) {
+    out = false;
+    if (!g_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_abi.is_dead(&e);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
+        return false;
+    }
+}
+
+bool game_running(bool& out) {
+    out = false;
+    if (!g_resolved) return false;
+    __try {
+        const void* session = g_abi.session_get_instance();
+        out = session != nullptr && g_abi.session_is_game_running(session);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
         return false;
     }
 }
