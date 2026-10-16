@@ -2,7 +2,7 @@
 title: 'Story 1.4 — Héberger et rejoindre une session'
 type: 'feature'
 created: '2026-10-17'
-status: 'in-review'
+status: 'done'
 baseline_commit: '3f2809a9eaa132d8207fafaa94a7de06fa2c245d'
 route: 'dispatch'
 review_loop_iteration: 0
@@ -97,6 +97,14 @@ context:
 - Given le build Windows, when on construit la DLL, then elle compile sans avertissement et importe KERNEL32, USER32 et WS2_32.
 - Given Risen en hôte (`probe = 0`) et `fake-guest --host 127.0.0.1 --duration 10s`, when on charge une partie, then le log du jeu montre `Hosting`, puis `InSession`, puis la fin de session de l'invité. Vérification manuelle par l'utilisateur.
 - Given Risen en invité vers une IPv4 où personne n'écoute, when on charge une partie, then le log montre `Connecting`, puis « hôte injoignable » environ 10 s plus tard, et le jeu reste jouable. Vérification manuelle. Le reste du côté invité n'est validé qu'à deux machines, et le log de la story le dit.
+
+## Implementation Notes
+
+**Vérifications en jeu (2026-10-17, Risen Steam x64 sous Proton) :**
+- **Hôte + faux invité** (`--duration 10s`) : `Inactive → Hosting` au chargement, Hello de 127.0.0.1, `Hosting → InSession` (conv=0x883318ea, pose (-7639.8, 500.4, -17923.3), lacet 2.847), `SessionEnd{1}` reçu 10 s plus tard, `InSession → Ended`, transport arrêté. Conforme.
+- **Invité sans hôte** (`host_ip = 127.0.0.1`) : `Inactive → Connecting` au chargement, « hôte injoignable » exactement 10 s plus tard, transport arrêté, jeu jouable. Conforme.
+- **Côté invité face à un vrai hôte** (Welcome, Reject, InSession) : **non validé**. Il ne peut l'être qu'à deux machines.
+- **Pause d'`OnProcess` pendant un chargement :** non observée pendant ces tests (report dans `deferred-work.md`).
 
 ## Spec Change Log
 
