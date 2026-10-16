@@ -66,3 +66,9 @@ Hook `OnProcess` (thread, fps, état de session, pose du joueur, une fois par se
   - (c) le rejeu brut ne suffit pas.
 
   La sonde v3 mesure (a) et (b), et F8 rejoue la même animation sur le PNJ le plus proche pour tester (c).
+
+## Sonde v3 en jeu (2026-10-16)
+- **La copie est vivante** : elle est dans la zone de traitement (`IsProcessingRangeEntered` = oui), le moteur lui lance environ 1 `PlayMotion`/s (attente, quarts de tour), et elle tombe au sol (physique active).
+- **Le rejeu fonctionne** : F7 a joué une animation visible sur la copie. Le mauvais geste venait du choix du clip : le filtre « Attack » a retenu `AttackStumbleRight` / `AttackRecover1`, des fins de coup. Le moteur remet ensuite la copie en attente au bout d’environ 1 s.
+- **Conséquence pour l’avatar (AD-8)** : rejouer **chaque** `PlayMotion` du joueur (nom → ressource → `SetMotion` + `PlayMotion`) et **bloquer** dans le hook ceux que le moteur lance de lui-même sur l’avatar. La position se pose avec `Entity::SetPose` (Script.dll, simple `SetToWorldMatrix`). La sonde v4 teste exactement ce schéma en local (mode miroir, F7).
+- F8 déclenche la sauvegarde automatique de Risen : la touche passe à F4.

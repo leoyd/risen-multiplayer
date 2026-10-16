@@ -14,6 +14,7 @@ namespace {
 // Script.dll
 using GetPlayerFn = Entity* (*)(Entity* sret);
 using GetPoseFn = Matrix* (*)(const Entity* self, Matrix* sret);
+using SetPoseFn = void (*)(const Entity* self, const Matrix* pose);
 using GetTemplateFn = Template* (*)(const Entity* self, Template* sret);
 using SpawnFn = Entity* (*)(Entity* sret, Template* by_value, const Matrix* pose, bool temporary);
 using TemplateDtorFn = void (*)(Template* self);
@@ -35,6 +36,7 @@ using GetPropertySetFn = void* (*)(const void* entity, int type);
 
 constexpr const char* kGetPlayer = "?GetPlayer@Entity@@SA?AV1@XZ";
 constexpr const char* kGetPose = "?GetPose@Entity@@QEBA?AVbCMatrix@@XZ";
+constexpr const char* kSetPose = "?SetPose@Entity@@QEAAXAEBVbCMatrix@@@Z";
 constexpr const char* kGetTemplate = "?GetTemplate@Entity@@QEBA?AVTemplate@@XZ";
 constexpr const char* kSpawn = "?Spawn@Entity@@SA?AV1@VTemplate@@AEBVbCMatrix@@_N@Z";
 constexpr const char* kTemplateDtor = "??1Template@@QEAA@XZ";
@@ -56,6 +58,7 @@ constexpr std::size_t kMotionResourceStride = 0x10;
 struct EntityAbi {
     GetPlayerFn get_player = nullptr;
     GetPoseFn get_pose = nullptr;
+    SetPoseFn set_pose = nullptr;
     GetTemplateFn get_template = nullptr;
     SpawnFn spawn = nullptr;
     TemplateDtorFn template_dtor = nullptr;
@@ -104,6 +107,7 @@ bool resolve_entities(const char*& missing) {
     void (*on_process)(void*) = nullptr;
     const bool ok = lookup(script, kGetPlayer, a.get_player, missing) &&
                     lookup(script, kGetPose, a.get_pose, missing) &&
+                    lookup(script, kSetPose, a.set_pose, missing) &&
                     lookup(script, kGetTemplate, a.get_template, missing) &&
                     lookup(script, kSpawn, a.spawn, missing) &&
                     lookup(script, kTemplateDtor, a.template_dtor, missing) &&
@@ -143,6 +147,16 @@ bool get_pose(const Entity& e, Matrix& out) {
     if (!g_resolved || e.ptr == nullptr) return false;
     __try {
         g_abi.get_pose(&e, &out);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool set_pose(const Entity& e, const Matrix& pose) {
+    if (!g_resolved || e.ptr == nullptr) return false;
+    __try {
+        g_abi.set_pose(&e, &pose);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;

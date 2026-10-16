@@ -95,14 +95,14 @@ Mode de rétro-ingénierie, **désactivé par défaut**. Avec `probe = 1` dans
   est compté) ;
 - **F6** (fenêtre du jeu active) : fait apparaître une copie temporaire du joueur environ
   2 m devant lui, et indique si le joueur a changé après l'apparition ;
-- **F7** : la copie rejoue la dernière attaque capturée (à défaut la dernière animation hors
-  locomotion, puis la dernière tout court) : la ressource du joueur est rangée dans la copie
-  (`SetMotion`), puis `PlayMotion`. Tant qu'une copie existe, une ligne `copie` par seconde
-  indique si le moteur la met à jour et l'anime ;
-- **F8** : même rejeu sur le PNJ le plus proche (15 m au plus).
+- **F7** : active ou coupe le **miroir**. La copie rejoue chaque animation du joueur
+  (`SetMotion` + `PlayMotion`) et suit ses déplacements en gardant son décalage
+  (`Entity::SetPose`). Les animations que le moteur lance de lui-même sur la copie sont
+  bloquées. Tant qu'une copie existe, une ligne `copie` par seconde donne son état ;
+- **F4** : rejoue le dernier coup capturé sur le PNJ le plus proche (15 m au plus).
 
-Protocole de test : charger une partie, marcher, courir, sauter, frapper, puis F6 et
-F7 face à un espace dégagé ; jouer environ 2 minutes, quitter, et fournir
+Protocole de test : charger une partie, F6 face à un espace dégagé, F7, puis marcher,
+courir, sauter, frapper en regardant la copie ; jouer environ 2 minutes, quitter, et fournir
 `Script_Multiplayer.log`. Avec `probe = 0` ou sans la clé, le log contient seulement
 « sonde désactivée » en plus de J0, et aucun hook n'est posé.
 

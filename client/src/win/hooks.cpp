@@ -22,8 +22,9 @@ void detour_on_process(void* application) {
 }
 
 void detour_play_motion(void* animation_ps, int type, void* desc, bool flag) {
-    sync::probe::on_play_motion(animation_ps, type, desc, flag);
-    g_original_play_motion(animation_ps, type, desc, flag);
+    if (sync::probe::on_play_motion(animation_ps, type, desc, flag)) {
+        g_original_play_motion(animation_ps, type, desc, flag);
+    }
 }
 
 bool create(void* target, void* detour, void** original, const char* name) {

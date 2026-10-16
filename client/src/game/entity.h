@@ -59,6 +59,7 @@ void* play_motion_address();
 
 bool get_player(Entity& out);  // out.ptr == nullptr : pas de joueur (menu, chargement)
 bool get_pose(const Entity& e, Matrix& out);
+bool set_pose(const Entity& e, const Matrix& pose);  // Entity::SetPose (SetToWorldMatrix)
 bool get_template(const Entity& e, Template& out);
 void destroy_template(Template& t);
 // `tmpl` est consommé (détruit par le jeu) que l'appel réussisse ou non.
