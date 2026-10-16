@@ -15,6 +15,7 @@ namespace {
 using GetPlayerFn = Entity* (*)(Entity* sret);
 using GetPoseFn = Matrix* (*)(const Entity* self, Matrix* sret);
 using SetPoseFn = void (*)(const Entity* self, const Matrix* pose);
+using MoveToFn = void (*)(const Entity* self, const Matrix* pose);
 using GetTemplateFn = Template* (*)(const Entity* self, Template* sret);
 using SpawnFn = Entity* (*)(Entity* sret, Template* by_value, const Matrix* pose, bool temporary);
 using TemplateDtorFn = void (*)(Template* self);
@@ -37,6 +38,7 @@ using GetPropertySetFn = void* (*)(const void* entity, int type);
 constexpr const char* kGetPlayer = "?GetPlayer@Entity@@SA?AV1@XZ";
 constexpr const char* kGetPose = "?GetPose@Entity@@QEBA?AVbCMatrix@@XZ";
 constexpr const char* kSetPose = "?SetPose@Entity@@QEAAXAEBVbCMatrix@@@Z";
+constexpr const char* kMoveTo = "?MoveTo@Entity@@QEAAXAEBVbCMatrix@@@Z";
 constexpr const char* kGetTemplate = "?GetTemplate@Entity@@QEBA?AVTemplate@@XZ";
 constexpr const char* kSpawn = "?Spawn@Entity@@SA?AV1@VTemplate@@AEBVbCMatrix@@_N@Z";
 constexpr const char* kTemplateDtor = "??1Template@@QEAA@XZ";
@@ -59,6 +61,7 @@ struct EntityAbi {
     GetPlayerFn get_player = nullptr;
     GetPoseFn get_pose = nullptr;
     SetPoseFn set_pose = nullptr;
+    MoveToFn move_to = nullptr;
     GetTemplateFn get_template = nullptr;
     SpawnFn spawn = nullptr;
     TemplateDtorFn template_dtor = nullptr;
@@ -108,6 +111,7 @@ bool resolve_entities(const char*& missing) {
     const bool ok = lookup(script, kGetPlayer, a.get_player, missing) &&
                     lookup(script, kGetPose, a.get_pose, missing) &&
                     lookup(script, kSetPose, a.set_pose, missing) &&
+                    lookup(script, kMoveTo, a.move_to, missing) &&
                     lookup(script, kGetTemplate, a.get_template, missing) &&
                     lookup(script, kSpawn, a.spawn, missing) &&
                     lookup(script, kTemplateDtor, a.template_dtor, missing) &&
@@ -157,6 +161,16 @@ bool set_pose(const Entity& e, const Matrix& pose) {
     if (!g_resolved || e.ptr == nullptr) return false;
     __try {
         g_abi.set_pose(&e, &pose);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool move_to(const Entity& e, const Matrix& pose) {
+    if (!g_resolved || e.ptr == nullptr) return false;
+    __try {
+        g_abi.move_to(&e, &pose);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;

@@ -395,7 +395,7 @@ void mirror_pose(const game::Entity& player) {
     game::Matrix p;
     if (!game::get_pose(player, p)) return;
     for (int i = 0; i < 3; ++i) p.m[12 + i] += g_mirror_offset[i];
-    game::set_pose(g_copy, p);
+    game::move_to(g_copy, p);  // v4 : SetPose laissait contrôleur et équipement au sol
 }
 
 // F4 : même rejeu sur le PNJ le plus proche (≤ 15 m), pour distinguer « la copie est

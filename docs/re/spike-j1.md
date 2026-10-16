@@ -72,3 +72,14 @@ Hook `OnProcess` (thread, fps, état de session, pose du joueur, une fois par se
 - **Le rejeu fonctionne** : F7 a joué une animation visible sur la copie. Le mauvais geste venait du choix du clip : le filtre « Attack » a retenu `AttackStumbleRight` / `AttackRecover1`, des fins de coup. Le moteur remet ensuite la copie en attente au bout d’environ 1 s.
 - **Conséquence pour l’avatar (AD-8)** : rejouer **chaque** `PlayMotion` du joueur (nom → ressource → `SetMotion` + `PlayMotion`) et **bloquer** dans le hook ceux que le moteur lance de lui-même sur l’avatar. La position se pose avec `Entity::SetPose` (Script.dll, simple `SetToWorldMatrix`). La sonde v4 teste exactement ce schéma en local (mode miroir, F7).
 - F8 déclenche la sauvegarde automatique de Risen : la touche passe à F4.
+
+## Sonde v4 en jeu : mode miroir (2026-10-16)
+- **Validé : la copie reproduit en direct les animations et les déplacements du joueur, de façon fluide.** Le schéma de l’avatar J1 (AD-8 a, synchro par nom) fonctionne en local :
+  - rejeu de chaque `PlayMotion` du joueur : `SetMotion` puis `PlayMotion` ;
+  - blocage dans le hook des `PlayMotion` que le moteur lance de lui-même sur l’avatar ;
+  - pose imposée à chaque frame.
+- **Défauts observés et pistes :**
+  - **Saut** : le personnage décolle puis retombe aussitôt, et l’équipement porté dans le dos ne suit pas. `SetPose` ne fait que `SetToWorldMatrix` : le contrôleur de personnage et la physique restent au sol. `Entity::MoveTo(bCMatrix)` fait en plus le recalage des property sets 0xd et 5 ; la sonde v5 l’utilise.
+  - **Légères saccades** : la pose est imposée sans interpolation. Ce sera le rôle de l’interpolation d’AD-7.
+  - **Arme absente de la main** en combat : l’animation d’attaque est jouée, mais l’arme reste rangée. Sortir ou ranger l’arme est un état de combat ou d’inventaire (`PSCombatSystem`, `gECombatMode`), pas une animation. À synchroniser à part (J2).
+  - **Traverse les objets et les PNJ** : attendu avec une pose imposée. Pour un avatar distant, c’est plutôt souhaitable (ses collisions sont résolues chez son propriétaire). En revanche, les PNJ doivent pouvoir toucher l’avatar en J2 (AD-9), à vérifier à ce moment-là.
