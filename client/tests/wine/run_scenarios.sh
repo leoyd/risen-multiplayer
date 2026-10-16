@@ -55,14 +55,16 @@ d=$(setup nominal $'role = guest\nhost_ip = 192.168.1.10\ncouleur = bleu')
 run nominal "$d"
 expect_log "nominal : mod actif" "$d" "mod actif"
 expect_log "champ inconnu : avertissement" "$d" "couleur"
+expect_log "nominal : log_level=info par défaut" "$d" "config OK (.*log_level=info)"
 
 expect_log "nominal : sonde désactivée par défaut" "$d" "sonde désactivée"
 expect_no_log "nominal : aucun hook" "$d" "\[hooks\]"
 
 # Spike J1 : sonde explicitement désactivée, puis activée (hooks posés sur les vraies
 # DLL du jeu ; le banc n'appelle jamais OnProcess, donc aucun tick).
-d=$(setup sonde_off $'role = host\nprobe = 0')
+d=$(setup sonde_off $'role = host\nprobe = 0\nlog_level = DEBUG')
 run "sonde off" "$d"
+expect_log "log_level = DEBUG lu" "$d" "config OK (.*log_level=debug)"
 expect_log "probe = 0 : sonde désactivée" "$d" "sonde désactivée"
 expect_no_log "probe = 0 : aucun hook" "$d" "\[hooks\]"
 

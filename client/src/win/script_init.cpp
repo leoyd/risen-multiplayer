@@ -228,8 +228,10 @@ bool load_config(const std::wstring& dir) {
         return false;
     }
     g_config = r.config;
+    mp::log::set_debug(g_config.log_level == mp::LogLevel::Debug);
     mp::log::info(std::string("config OK (rôle=") + mp::role_name(g_config.role) + ", port=" +
-                  std::to_string(g_config.port) + ", pseudo=" + g_config.nickname + ")");
+                  std::to_string(g_config.port) + ", pseudo=" + g_config.nickname +
+                  ", log_level=" + mp::log_level_name(g_config.log_level) + ")");
     return true;
 }
 

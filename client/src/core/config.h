@@ -13,6 +13,10 @@ enum class Role { Host, Guest };
 
 const char* role_name(Role role);  // "hôte" / "invité" (UTF-8)
 
+enum class LogLevel { Info, Debug };
+
+const char* log_level_name(LogLevel level);  // "info" / "debug"
+
 inline constexpr std::uint16_t kDefaultPort = 27960;
 inline constexpr std::size_t kMaxNicknameLength = 32;  // en octets (UTF-8)
 
@@ -23,6 +27,7 @@ struct Config {
     std::string nickname = "Joueur";
     std::string guest_equipment;  // texte libre, interprété en J1
     bool probe = false;           // mode sonde du spike J1 (hooks + journaux de rétro-ingénierie)
+    LogLevel log_level = LogLevel::Info;  // debug : lignes supplémentaires (par frame comprises)
 };
 
 struct ConfigResult {
@@ -40,7 +45,8 @@ struct ConfigResult {
 // uniquement (pas de commentaire en fin de ligne), sections `[...]` ignorées,
 // BOM UTF-8 et fins de ligne CRLF tolérés, clés insensibles à la casse.
 // Champs : role (host|guest, obligatoire), host_ip (validé en invité seulement),
-// port (vide = défaut), nickname, guest_equipment, probe (0|1, vide = défaut 0).
+// port (vide = défaut), nickname, guest_equipment, probe (0|1, vide = défaut 0),
+// log_level (debug|info, insensible à la casse, vide = défaut info).
 ConfigResult parse_config(std::string_view text);
 
 }  // namespace mp

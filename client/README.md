@@ -70,10 +70,13 @@ Log attendu (cas nominal) — chaque ligne est préfixée par `[AAAA-MM-JJ HH:MM
 [2026-10-15 22:42:24.559] INFO  empreinte Game.dll : TimeDateStamp=0x63c9aff6 SizeOfImage=0x1417000
 [2026-10-15 22:42:24.559] INFO  empreinte Engine.dll : TimeDateStamp=0x63ca945d SizeOfImage=0xd3a000
 [2026-10-15 22:42:24.559] INFO  version du jeu : Steam x64 (janvier 2023)
-[2026-10-15 22:42:24.559] INFO  config OK (rôle=hôte, port=27960, pseudo=Joueur)
+[2026-10-15 22:42:24.559] INFO  config OK (rôle=hôte, port=27960, pseudo=Joueur, log_level=info)
 [2026-10-15 22:42:24.559] INFO  script « MP_Probe » exposé au chargeur
 [2026-10-15 22:42:24.559] INFO  mod actif
 ```
+
+La clé `log_level` (`debug` ou `info`, défaut `info`) est lue et rappelée dans la ligne
+« config OK ». Aucune ligne `DEBUG` n'est encore écrite : les stories suivantes en ajouteront.
 
 Version non reconnue (mise à jour Steam), config absente ou invalide : le log en donne
 la raison, le mod reste inactif et le jeu fonctionne en solo. Sur une version non
@@ -110,11 +113,15 @@ courir, sauter, frapper en regardant la copie ; jouer environ 2 minutes, quitter
 
 ```
 cmake/clang-cl-xwin.cmake   toolchain croisée Windows x64
-src/core/                   logique pure (config, version), testée sous Linux
+src/core/                   logique pure (config, version, codec du protocole), testée sous Linux
 src/common/                 log
 src/game/                   adaptateur ABI du jeu (GetProcAddress) — seul code qui appelle le jeu
 src/sync/                   sonde du spike J1 (tick par frame, capture des animations)
 src/win/                    ScriptInit, hooks MinHook
 third_party/minhook/        MinHook, figé sur un commit (voir VERSION.txt)
-tests/                      tests unitaires (mini-framework maison, sans dépendance) + wine/
+tests/                      tests unitaires (dont vecteurs de ../protocol/vectors/) (mini-framework maison, sans dépendance) + wine/
 ```
+
+Le contrat binaire hôte ⇄ invité est décrit dans [`../protocol/PROTOCOL.md`](../protocol/PROTOCOL.md) ;
+son codec est `src/core/protocol.{h,cpp}` (`mp::protocol`), vérifié contre les vecteurs
+`../protocol/vectors/*.bin` (`protocol/vectors/regen.sh --check`).

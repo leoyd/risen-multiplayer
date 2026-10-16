@@ -10,9 +10,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Logique pure (config, version) : aucune dépendance Windows, compilée partout.
+# Logique pure (config, version, protocole) : aucune dépendance Windows, compilée partout.
 add_library(mp_core STATIC
     src/core/config.cpp
+    src/core/protocol.cpp
     src/core/version.cpp)
 target_include_directories(mp_core PUBLIC src)
 
@@ -64,8 +65,12 @@ else()
     add_executable(client_tests
         tests/test_main.cpp
         tests/test_config.cpp
+        tests/test_protocol.cpp
         tests/test_version.cpp)
     target_link_libraries(client_tests PRIVATE mp_core)
+    # Vecteurs binaires de référence partagés C++/Go (protocol/vectors/).
+    target_compile_definitions(client_tests PRIVATE
+        MP_VECTORS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/vectors")
     target_include_directories(client_tests PRIVATE tests)
     target_compile_options(client_tests PRIVATE -Wall -Wextra)
     target_compile_options(mp_core PRIVATE -Wall -Wextra)
@@ -78,6 +83,13 @@ else()
     endif()
 
     add_test(NAME client_tests COMMAND client_tests)
+
+    # Cohérence des hexdumps de protocol/PROTOCOL.md et des vecteurs .bin.
+    find_program(XXD_EXECUTABLE xxd)
+    if(XXD_EXECUTABLE)
+        add_test(NAME protocol_vectors
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/vectors/regen.sh --check)
+    endif()
 
     # Scénarios d'intégration sous Wine : DLL Windows + vraies DLL du jeu + wine.
     # Enregistrés seulement si les trois sont disponibles.

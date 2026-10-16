@@ -13,6 +13,7 @@ namespace {
 
 HANDLE g_file = INVALID_HANDLE_VALUE;
 SRWLOCK g_lock = SRWLOCK_INIT;
+volatile LONG g_debug = 0;  // lu depuis n'importe quel thread
 
 void write_line(const char* level, const std::string& message) {
     if (g_file == INVALID_HANDLE_VALUE) return;
@@ -53,6 +54,12 @@ void open(const std::wstring& dll_dir, const wchar_t* file_name) {
     }
 }
 
+void set_debug(bool enabled) { InterlockedExchange(&g_debug, enabled ? 1 : 0); }
+bool debug_enabled() { return InterlockedCompareExchange(&g_debug, 0, 0) != 0; }
+
+void debug(const std::string& message) {
+    if (debug_enabled()) write_line("DEBUG", message);
+}
 void info(const std::string& message) { write_line("INFO", message); }
 void warn(const std::string& message) { write_line("WARN", message); }
 void error(const std::string& message) { write_line("ERROR", message); }

@@ -176,3 +176,36 @@ TEST("config : probe invalide -> erreur nommant le champ") {
         CHECK_EQ(r.error_value, std::string(v));
     }
 }
+
+TEST("config : log_level absent -> info par défaut") {
+    const auto r = parse_config("role=host\n");
+    CHECK(r.ok);
+    CHECK(r.config.log_level == mp::LogLevel::Info);
+    CHECK_EQ(std::string(mp::log_level_name(r.config.log_level)), std::string("info"));
+}
+
+TEST("config : log_level = debug, INFO, Debug, vide") {
+    const auto debug = parse_config("role=host\nlog_level = debug\n");
+    CHECK(debug.ok);
+    CHECK(debug.config.log_level == mp::LogLevel::Debug);
+    CHECK_EQ(std::string(mp::log_level_name(debug.config.log_level)), std::string("debug"));
+    const auto info = parse_config("role=host\nLOG_LEVEL = INFO\n");
+    CHECK(info.ok);
+    CHECK(info.config.log_level == mp::LogLevel::Info);
+    const auto mixed = parse_config("role=host\nlog_level = Debug\n");
+    CHECK(mixed.ok);
+    CHECK(mixed.config.log_level == mp::LogLevel::Debug);
+    const auto empty = parse_config("role=host\nlog_level =\n");
+    CHECK(empty.ok);
+    CHECK(empty.config.log_level == mp::LogLevel::Info);
+    CHECK(empty.warnings.empty());
+}
+
+TEST("config : log_level invalide -> erreur nommant le champ") {
+    for (const char* v : {"trace", "warn", "1", "debug info"}) {
+        const auto r = parse_config(std::string("role=host\nlog_level=") + v + "\n");
+        CHECK(!r.ok);
+        CHECK_EQ(r.error_field, std::string("log_level"));
+        CHECK_EQ(r.error_value, std::string(v));
+    }
+}

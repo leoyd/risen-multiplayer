@@ -1,0 +1,34 @@
+# Vecteurs de référence du protocole v1
+
+Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) et Go
+(faux invité, story 1.3). Ils sont la référence **indépendante de l'encodeur** : chaque
+`.bin` est produit par `xxd -r` à partir d'un hexdump écrit à la main dans
+[`../PROTOCOL.md`](../PROTOCOL.md) (section 7), jamais par le codec testé.
+
+## Contenu
+
+| Fichier | Message | Attendu |
+|---|---|---|
+| `hello.bin` | `Hello` v1, `"0.1.0"`, empreintes Steam x64 2023, `"Leo"`, `"It_Sword_01"` | décodé, réencodé à l'octet près |
+| `welcome.bin` | `Welcome` `conv=0x12345678`, `(100.0, -50.5, 2000.0)`, lacet `1.5` | décodé, réencodé à l'octet près |
+| `reject.bin` | `Reject` raison 2 | décodé, réencodé à l'octet près |
+| `heartbeat.bin` | `Heartbeat` (fiable, sans canal) | décodé, réencodé à l'octet près |
+| `session_end.bin` | `SessionEnd` raison 1 (fiable, sans canal) | décodé, réencodé à l'octet près |
+| `hello_v2.bin` | `Hello` `version_protocole=2`, suite illisible | `peek_hello_version` → 2, décodage `UnsupportedVersion` |
+| `hello_truncated.bin` | 22 premiers octets de `hello.bin` | `Truncated` |
+| `hello_long_nickname.bin` | `hello.bin` avec un pseudo de 33 octets | `BadLength` |
+| `unknown_type.bin` | contrôle, `MsgType` 99 | `UnknownType` |
+
+Les valeurs détaillées champ par champ sont dans `PROTOCOL.md`.
+
+## Régénération et vérification
+
+```bash
+protocol/vectors/regen.sh            # réécrit les .bin depuis les hexdumps de PROTOCOL.md (xxd -r)
+protocol/vectors/regen.sh --check    # vérifie que `xxd <f>.bin` redonne exactement chaque hexdump
+```
+
+Pour modifier ou ajouter un vecteur : écrire l'hexdump à la main dans `PROTOCOL.md`, au format
+exact de `xxd` (offset, groupes de 2 octets, colonne ASCII), précédé de
+`<!-- vector: <nom>.bin -->`, puis lancer `regen.sh` et `regen.sh --check`. Les tests C++ lisent
+ce dossier via la définition `MP_VECTORS_DIR`.
