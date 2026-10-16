@@ -44,8 +44,8 @@ graph TD
 ### AD-1 — L’hôte héberge, sans serveur séparé [ADOPTED]
 
 - **Binds:** FR-4, FR-5, FR-8
-- **Prevents:** un relais tiers, un deuxième langage, un protocole dupliqué en Go et en C++.
-- **Rule:** La DLL de l’hôte ouvre le socket UDP et accepte **exactement un** invité. L’invité se connecte directement à `host_ip:port`. Pas de binaire `server/` ni de Go pour le MVP. Une seconde demande de connexion est refusée par un message `Reject`.
+- **Prevents:** un relais tiers, un deuxième langage dans le produit, un protocole qui diverge entre le mod et l’outil de test.
+- **Rule:** La DLL de l’hôte ouvre le socket UDP et accepte **exactement un** invité. L’invité se connecte directement à `host_ip:port`. Pas de binaire `server/` ni de Go pour le MVP. Une seconde demande de connexion est refusée par un message `Reject`. Seule exception : l’outil de test `tools/fake-guest/` (Go, jamais livré), qui joue un invité scripté ; il ne doit pas diverger du contrat : les vecteurs binaires de `protocol/vectors/` sont vérifiés par les tests C++ et Go, et son KCP est le même `ikcp.c` compilé via cgo.
 
 ### AD-2 — Le jeu n’est touché que depuis le thread principal
 
