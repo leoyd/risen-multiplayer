@@ -130,6 +130,21 @@ else()
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/vectors/regen.sh --check)
     endif()
 
+    # Faux invité de session (tools/fake-guest/, Go + cgo) : codec Go contre les vecteurs,
+    # KCP vendorisé via cgo, matrice de session contre un hôte simulé.
+    find_program(GO_EXECUTABLE go)
+    if(GO_EXECUTABLE)
+        add_test(NAME fake_guest
+                 COMMAND ${GO_EXECUTABLE} test -count=1 ./...
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../tools/fake-guest)
+        # -count=1 : le cache de go test ne suit pas ikcp.c, inclus hors du paquet.
+        set_tests_properties(fake_guest PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "CGO_ENABLED=1;CC=${CMAKE_C_COMPILER}")
+    else()
+        message(STATUS "Test fake_guest non enregistré (go absent)")
+    endif()
+
     # Scénarios d'intégration sous Wine : DLL Windows + vraies DLL du jeu + wine.
     # Enregistrés seulement si les trois sont disponibles.
     set(MP_WIN_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build" CACHE PATH

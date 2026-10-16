@@ -7,6 +7,9 @@ risen_ori/
 *.test
 *.out
 
+# Outils (tools/)
+/tools/fake-guest/fake-guest
+
 # C++ / CMake
 /client/build/
 /client/build-*/

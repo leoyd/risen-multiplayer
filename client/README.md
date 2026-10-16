@@ -64,6 +64,15 @@ statique : ses seules dépendances sont `KERNEL32.dll`, `USER32.dll` (touches de
 dès que la session utilisera le transport (story 1.4), `WS2_32.dll`. Le transport est déjà lié
 à la DLL mais pas encore appelé : l'éditeur de liens l'écarte, et WS2_32 n'apparaît pas encore.
 
+### Faux invité (`fake_guest`)
+
+`tools/fake-guest/` est un invité de session en Go (outil de test, jamais livré) qui sert à
+tester l'hôte sans second Risen. Il compile le même `third_party/kcp/ikcp.c` via cgo et vérifie
+son codec contre `protocol/vectors/`. Le test CTest `fake_guest` lance `go test ./...` dans ce
+dossier ; il n'est enregistré que si `go` est trouvé (cgo demande aussi `gcc`). Usage, fautes
+(`--drop`, `--quit`, `--kill`, `--dup-hello`, `--bad-version`) et codes de sortie :
+[`../tools/fake-guest/README.md`](../tools/fake-guest/README.md).
+
 ## Installation
 
 1. Copier `client/build/Script_Multiplayer.dll` dans `<Steam>/steamapps/common/Risen/bin/scripts/`.
@@ -134,6 +143,7 @@ third_party/kcp/            KCP 2.1.1, figé sur un commit (voir VERSION.txt), c
 tests/                      tests unitaires (dont vecteurs de ../protocol/vectors/) (mini-framework maison, sans dépendance) + wine/
 ```
 
-Le contrat binaire hôte ⇄ invité est décrit dans [`../protocol/PROTOCOL.md`](../protocol/PROTOCOL.md) ;
+Le contrat binaire hôte ⇄ invité est décrit dans [`../protocol/PROTOCOL.md`](../protocol/PROTOCOL.md)
+(règles de session au §8) ;
 son codec est `src/core/protocol.{h,cpp}` (`mp::protocol`), vérifié contre les vecteurs
 `../protocol/vectors/*.bin` (`protocol/vectors/regen.sh --check`).

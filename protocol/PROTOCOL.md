@@ -292,3 +292,43 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 ```text
 00000000: 0263                                     .c
 ```
+
+## 8. Règles de session
+
+Règles **normatives** de la v1 (le format des octets ne change pas). Elles s'appliquent à la
+DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
+délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
+d'appels.
+
+### Invité
+
+- Envoie `Hello` **toutes les 500 ms** jusqu'à recevoir `Welcome` ou `Reject`.
+- **Abandon après 10 s** sans `Welcome` ni `Reject` : fin « hôte injoignable ».
+- Sur `Reject`, la raison est journalisée (code brut si inconnu) et l'invité arrête : pas de
+  nouvel essai automatique.
+
+### Hôte
+
+- Vérifie chaque `Hello` dans l'ordre du §6 : version du protocole lue par
+  `peek_hello_version` (`Reject{1}`), `Hello` décodable (`Reject{5}`), version du mod
+  (`Reject{2}`), empreinte du jeu (`Reject{3}`), place libre (`Reject{4}`).
+- Comparaisons **exactes** : `version_mod` octet par octet (sans normalisation), et les 4
+  empreintes (`TimeDateStamp` et `SizeOfImage` de Game, Engine, Script, SharedBase).
+- Tire un `conv` **aléatoire non nul** pour chaque nouvelle session.
+- Un `Hello` venu de la **même `ip:port`** que l'invité accepté reçoit le **même `Welcome`**
+  (même `conv`) tant qu'aucun segment KCP portant ce `conv` n'est arrivé de cette adresse ;
+  ensuite, ces `Hello` sont ignorés.
+- Un `Hello` venu d'**une autre adresse** pendant une session reçoit `Reject{4}` (session
+  pleine), sans effet sur la session en cours.
+
+### Les deux pairs
+
+- Le KCP (canal 0) n'est créé qu'**après `Welcome`** : par l'hôte quand il l'envoie, par
+  l'invité quand il le reçoit. Avant, tout datagramme de canal 0 est ignoré.
+- `Heartbeat` à **1 Hz** sur le canal fiable, dans les deux sens, dès l'entrée en session.
+- **5 s sans aucun datagramme** du pair (tous canaux confondus) → fin « timeout », sans rien
+  envoyer.
+- Fin volontaire = envoi de `SessionEnd{raison}` sur le canal fiable, puis fermeture du KCP.
+  Le KCP peut être gardé brièvement pour laisser partir le segment (et son acquittement), mais
+  la session est terminée dès l'envoi. Un `SessionEnd` reçu termine la session avec la raison
+  qu'il porte.
