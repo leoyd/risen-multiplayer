@@ -148,3 +148,31 @@ TEST("config : host_ip valides en invité") {
         CHECK(r.ok);
     }
 }
+
+TEST("config : probe absent -> 0 par défaut") {
+    const auto r = parse_config("role=host\n");
+    CHECK(r.ok);
+    CHECK(!r.config.probe);
+}
+
+TEST("config : probe = 0, 1, vide") {
+    const auto zero = parse_config("role=host\nprobe = 0\n");
+    CHECK(zero.ok);
+    CHECK(!zero.config.probe);
+    const auto one = parse_config("role=host\nPROBE = 1\n");
+    CHECK(one.ok);
+    CHECK(one.config.probe);
+    const auto empty = parse_config("role=host\nprobe =\n");
+    CHECK(empty.ok);
+    CHECK(!empty.config.probe);
+    CHECK(empty.warnings.empty());
+}
+
+TEST("config : probe invalide -> erreur nommant le champ") {
+    for (const char* v : {"2", "oui", "true", "01", "-1"}) {
+        const auto r = parse_config(std::string("role=host\nprobe=") + v + "\n");
+        CHECK(!r.ok);
+        CHECK_EQ(r.error_field, std::string("probe"));
+        CHECK_EQ(r.error_value, std::string(v));
+    }
+}

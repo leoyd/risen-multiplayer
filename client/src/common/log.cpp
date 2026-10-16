@@ -1,4 +1,4 @@
-#include "log.h"
+#include "common/log.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

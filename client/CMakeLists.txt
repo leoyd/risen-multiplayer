@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(RisenMultiplayerClient VERSION 0.1.0 LANGUAGES CXX)
+project(RisenMultiplayerClient VERSION 0.1.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Type de build" FORCE)
@@ -21,11 +21,25 @@ if(WIN32)
     # CRT statique : aucune dépendance aux redistribuables MSVC.
     set_property(TARGET mp_core PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
+    # MinHook (third_party/minhook, commit figé : voir VERSION.txt), cible x64 uniquement.
+    set(MINHOOK_SOURCES
+        third_party/minhook/src/buffer.c
+        third_party/minhook/src/hook.c
+        third_party/minhook/src/trampoline.c
+        third_party/minhook/src/hde/hde64.c)
+    set_source_files_properties(${MINHOOK_SOURCES} PROPERTIES COMPILE_OPTIONS "/W0")
+
     add_library(Script_Multiplayer SHARED
         src/win/script_init.cpp
-        src/win/log.cpp
-        src/win/game_abi.cpp)
-    target_link_libraries(Script_Multiplayer PRIVATE mp_core kernel32)
+        src/win/hooks.cpp
+        src/common/log.cpp
+        src/game/abi.cpp
+        src/game/entity.cpp
+        src/sync/probe.cpp
+        ${MINHOOK_SOURCES})
+    target_include_directories(Script_Multiplayer PRIVATE third_party/minhook/include)
+    # USER32 : GetAsyncKeyState / GetForegroundWindow (touches F9/F10 de la sonde).
+    target_link_libraries(Script_Multiplayer PRIVATE mp_core kernel32 user32)
     target_compile_definitions(Script_Multiplayer PRIVATE
         MP_MOD_VERSION="${PROJECT_VERSION}"
         WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
@@ -40,7 +54,8 @@ if(WIN32)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|MSVC")
         target_compile_options(mp_harness PRIVATE /EHsc /utf-8)
         # /EHsc : exceptions C++ ; __try/__except (SEH) est géré nativement par clang-cl.
-        target_compile_options(Script_Multiplayer PRIVATE /EHsc /W4 /utf-8)
+        target_compile_options(Script_Multiplayer PRIVATE /utf-8
+            $<$<COMPILE_LANGUAGE:CXX>:/EHsc /W4>)
         target_compile_options(mp_core PRIVATE /EHsc /W4 /utf-8)
     endif()
 else()

@@ -40,10 +40,49 @@ expect_log() {
     fi
 }
 
+expect_no_log() {
+    local name=$1 dir=$2 pattern=$3
+    if [[ ! -f $dir/Script_Multiplayer.log ]]; then
+        echo "[ÉCHEC] $name : pas de log"; failures=$((failures + 1))
+    elif grep -q -- "$pattern" "$dir/Script_Multiplayer.log"; then
+        echo "[ÉCHEC] $name : « $pattern » présent dans le log"; failures=$((failures + 1))
+    else
+        echo "[ OK ] $name"
+    fi
+}
+
 d=$(setup nominal $'role = guest\nhost_ip = 192.168.1.10\ncouleur = bleu')
 run nominal "$d"
 expect_log "nominal : mod actif" "$d" "mod actif"
 expect_log "champ inconnu : avertissement" "$d" "couleur"
+
+expect_log "nominal : sonde désactivée par défaut" "$d" "sonde désactivée"
+expect_no_log "nominal : aucun hook" "$d" "\[hooks\]"
+
+# Spike J1 : sonde explicitement désactivée, puis activée (hooks posés sur les vraies
+# DLL du jeu ; le banc n'appelle jamais OnProcess, donc aucun tick).
+d=$(setup sonde_off $'role = host\nprobe = 0')
+run "sonde off" "$d"
+expect_log "probe = 0 : sonde désactivée" "$d" "sonde désactivée"
+expect_no_log "probe = 0 : aucun hook" "$d" "\[hooks\]"
+
+d=$(setup sonde_on $'role = host\nprobe = 1')
+run "sonde on" "$d"
+expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, PlayMotion)"
+expect_log "probe = 1 : mod actif" "$d" "mod actif"
+
+# Hook impossible : jeu sans Script.dll (Game.dll n'en dépend pas). Attendu : erreur
+# explicite, sonde inactive, mod toujours actif et descripteur intact.
+no_script_bin=$work/no_script_bin
+mkdir -p "$no_script_bin"
+for f in "$risen_bin"/*; do
+    [[ $(basename "$f") == Script.dll ]] || ln -s "$f" "$no_script_bin/"
+done
+d=$(setup sonde_sans_script $'role = host\nprobe = 1')
+run "sonde sans Script.dll" "$d" "$no_script_bin"
+expect_log "hook impossible : erreur explicite" "$d" "sonde inactive : symbole introuvable : Script.dll"
+expect_no_log "hook impossible : aucun hook" "$d" "hooks installés"
+expect_log "hook impossible : mod actif" "$d" "mod actif"
 
 d=$(setup absente)
 run absente "$d"

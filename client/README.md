@@ -52,7 +52,7 @@ Préfixe Wine utilisé : `client/build/wineprefix` (créé au premier lancement)
 `MP_WINEPREFIX` s'il est défini.
 
 Le chemin du toolchain est relatif au dossier source `client/`. La DLL est liée au CRT
-statique : sa seule dépendance est `KERNEL32.dll`.
+statique : ses seules dépendances sont `KERNEL32.dll` et `USER32.dll` (touches de la sonde).
 
 ## Installation
 
@@ -82,11 +82,35 @@ de Risen l'ignore alors silencieusement (pas de boîte de dialogue). Après une 
 jeu, il faut revérifier la rétro-ingénierie puis ajouter la nouvelle empreinte à la
 liste blanche (`src/core/version.cpp`).
 
+## Sonde du spike J1 (`probe = 1`)
+
+Mode de rétro-ingénierie, **désactivé par défaut**. Avec `probe = 1` dans
+`multiplayer.ini`, le mod hooke `eCApplication::OnProcess` et `eCAnimation_PS::PlayMotion`
+(Engine.dll) et journalise, avec le préfixe `[probe]` :
+
+- une ligne `tick` par seconde : thread (identique au premier appel ?), images/s,
+  joueur présent ou non, position et matrice brute du joueur ;
+- une ligne `PlayMotion` par animation lancée sur le joueur : type, ressource de motion,
+  adresse et 0x60 octets du descripteur en hexadécimal (20 lignes/s au plus, le surplus
+  est compté) ;
+- **F9** (fenêtre du jeu active) : fait apparaître une copie temporaire du joueur environ
+  2 m devant lui, et indique si le joueur a changé après l'apparition ;
+- **F10** : la copie rejoue la dernière animation capturée.
+
+Protocole de test : charger une partie, marcher, courir, sauter, frapper, puis F9 et
+F10 face à un espace dégagé ; jouer environ 2 minutes, quitter, et fournir
+`Script_Multiplayer.log`. Avec `probe = 0` ou sans la clé, le log contient seulement
+« sonde désactivée » en plus de J0, et aucun hook n'est posé.
+
 ## Organisation
 
 ```
 cmake/clang-cl-xwin.cmake   toolchain croisée Windows x64
 src/core/                   logique pure (config, version), testée sous Linux
-src/win/                    code Windows : ScriptInit, log, ABI du jeu (GetProcAddress)
-tests/                      tests unitaires (mini-framework maison, sans dépendance)
+src/common/                 log
+src/game/                   adaptateur ABI du jeu (GetProcAddress) — seul code qui appelle le jeu
+src/sync/                   sonde du spike J1 (tick par frame, capture des animations)
+src/win/                    ScriptInit, hooks MinHook
+third_party/minhook/        MinHook, figé sur un commit (voir VERSION.txt)
+tests/                      tests unitaires (mini-framework maison, sans dépendance) + wine/
 ```

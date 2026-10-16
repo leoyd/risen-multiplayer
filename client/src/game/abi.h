@@ -7,7 +7,7 @@
 
 #include <cstdint>
 
-namespace mp::abi {
+namespace mp::game {
 
 // bCString (SharedBase.dll) : un seul pointeur vers des données gérées par le jeu.
 // Ne jamais copier/assigner ces objets côté mod : passer par les fonctions du jeu.
@@ -30,4 +30,4 @@ struct GameAbi {
 // Retourne false et renseigne `missing` (nom du premier symbole introuvable) en cas d'échec.
 bool resolve(GameAbi& out, const char*& missing);
 
-}  // namespace mp::abi
+}  // namespace mp::game

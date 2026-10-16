@@ -142,6 +142,14 @@ ConfigResult parse_config(std::string_view text) {
             r.config.nickname = std::string(value);
         } else if (key == "guest_equipment") {
             r.config.guest_equipment = std::string(value);
+        } else if (key == "probe") {
+            if (value.empty() || value == "0") {
+                r.config.probe = false;  // `probe =` : valeur par défaut
+            } else if (value == "1") {
+                r.config.probe = true;
+            } else {
+                return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
+            }
         } else {
             r.warnings.push_back("champ inconnu « " + key + " » ignoré");
         }

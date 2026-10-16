@@ -22,6 +22,7 @@ struct Config {
     std::uint16_t port = kDefaultPort;
     std::string nickname = "Joueur";
     std::string guest_equipment;  // texte libre, interprété en J1
+    bool probe = false;           // mode sonde du spike J1 (hooks + journaux de rétro-ingénierie)
 };
 
 struct ConfigResult {
@@ -39,7 +40,7 @@ struct ConfigResult {
 // uniquement (pas de commentaire en fin de ligne), sections `[...]` ignorées,
 // BOM UTF-8 et fins de ligne CRLF tolérés, clés insensibles à la casse.
 // Champs : role (host|guest, obligatoire), host_ip (validé en invité seulement),
-// port (vide = défaut), nickname, guest_equipment.
+// port (vide = défaut), nickname, guest_equipment, probe (0|1, vide = défaut 0).
 ConfigResult parse_config(std::string_view text);
 
 }  // namespace mp

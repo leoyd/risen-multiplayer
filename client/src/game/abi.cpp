@@ -1,11 +1,11 @@
-#include "game_abi.h"
+#include "game/abi.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 
-namespace mp::abi {
+namespace mp::game {
 
 namespace {
 
@@ -38,4 +38,4 @@ bool resolve(GameAbi& out, const char*& missing) {
     return true;
 }
 
-}  // namespace mp::abi
+}  // namespace mp::game
