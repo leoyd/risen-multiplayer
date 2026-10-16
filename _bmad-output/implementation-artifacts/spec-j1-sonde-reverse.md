@@ -90,6 +90,7 @@ Faits établis par désassemblage (Steam x64) :
 - Journalisation des animations faite depuis le tick (anneau de 64 captures sous SRWLOCK) : le hook ne fait que copier. Surplus au-delà de 20 lignes/s compté et signalé.
 - F9/F10 : actifs seulement si la fenêtre au premier plan appartient au processus du jeu (évite les déclenchements depuis une autre application).
 - SEH sous clang-cl : `__try` ne protège que les appels ; la copie mémoire passe par une fonction `noinline`.
+- Touches : **F6/F7** au lieu de F9/F10 (demande de l’utilisateur le 2026-10-16 : F9/F10 servent déjà dans Risen, ex. chargement rapide). Partout ailleurs dans cette spec, lire F9 = F6 et F10 = F7.
 - `Script.dll` : `GetModuleHandle`, sinon `LoadLibrary` (cas du banc Wine, qui ne la charge pas).
 - Banc Wine : 3 scénarios ajoutés (probe absent/0, probe = 1 avec hooks réellement posés sur les DLL du jeu, jeu sans `Script.dll` → « sonde inactive : symbole introuvable »). Les lignes Tick / Animation / F9 / F10 de la matrice ne se vérifient qu’en jeu (2ᵉ critère d’acceptation, vérification manuelle).
 

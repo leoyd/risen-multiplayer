@@ -34,7 +34,7 @@ Activer `probe = 1` (voir `client/README.md`), puis fournir `Script_Multiplayer.
 - **Monde chargé** : passage de `joueur=non` à `joueur=oui` au chargement d’une partie (et retour au menu).
 - **Pose** : la matrice brute du `tick` permet de vérifier où sont la translation (`m[12..14]` ?) et l’axe avant, et les unités (cm ?).
 - **Q1** : lignes `PlayMotion` (type, ressource, 0x60 octets du descripteur) en marchant, courant, sautant, frappant.
-- **Q2** : résultats de F9 (copie, pose, « joueur inchangé » ou non) et de F10 (la copie rejoue-t-elle l’animation ?).
+- **Q2** : résultats de F6 (copie, pose, « joueur inchangé » ou non) et de F7 (la copie rejoue-t-elle l’animation ?).
 
 ## Prochaine étape : DLL sonde en jeu
 Hook `OnProcess` (thread, fps, état de session, pose du joueur, une fois par seconde) + hook `PlayMotion` (dump du type et des premiers octets du descripteur pour le joueur) + touche de debug qui fait apparaître une copie du joueur et lui fait rejouer la dernière animation capturée.

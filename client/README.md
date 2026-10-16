@@ -93,12 +93,12 @@ Mode de rétro-ingénierie, **désactivé par défaut**. Avec `probe = 1` dans
 - une ligne `PlayMotion` par animation lancée sur le joueur : type, ressource de motion,
   adresse et 0x60 octets du descripteur en hexadécimal (20 lignes/s au plus, le surplus
   est compté) ;
-- **F9** (fenêtre du jeu active) : fait apparaître une copie temporaire du joueur environ
+- **F6** (fenêtre du jeu active) : fait apparaître une copie temporaire du joueur environ
   2 m devant lui, et indique si le joueur a changé après l'apparition ;
-- **F10** : la copie rejoue la dernière animation capturée.
+- **F7** : la copie rejoue la dernière animation capturée.
 
-Protocole de test : charger une partie, marcher, courir, sauter, frapper, puis F9 et
-F10 face à un espace dégagé ; jouer environ 2 minutes, quitter, et fournir
+Protocole de test : charger une partie, marcher, courir, sauter, frapper, puis F6 et
+F7 face à un espace dégagé ; jouer environ 2 minutes, quitter, et fournir
 `Script_Multiplayer.log`. Avec `probe = 0` ou sans la clé, le log contient seulement
 « sonde désactivée » en plus de J0, et aucun hook n'est posé.
 

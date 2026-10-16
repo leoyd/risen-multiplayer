@@ -2,7 +2,7 @@
 // - Tick par seconde : thread, images/s, joueur valide, pose brute du joueur.
 // - Capture des PlayMotion du joueur (type, ressource, 0x60 octets du descripteur),
 //   journalisées depuis le tick, 20 lignes/s au plus.
-// - F9 : copie du joueur ~2 m devant lui. F10 : la copie rejoue la dernière animation.
+// - F6 : copie du joueur ~2 m devant lui. F7 : la copie rejoue la dernière animation.
 #pragma once
 
 namespace mp::sync::probe {

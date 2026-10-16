@@ -40,7 +40,7 @@ Capture g_ring[kCaptureRing];
 std::size_t g_ring_head = 0;  // prochaine écriture
 std::size_t g_ring_count = 0;
 unsigned g_ring_dropped = 0;  // captures perdues (anneau plein)
-Capture g_last{};             // dernière capture, pour F10
+Capture g_last{};             // dernière capture, pour F7
 bool g_have_last = false;
 std::atomic<void*> g_player_anim_ps{nullptr};
 
@@ -52,8 +52,8 @@ unsigned g_frames = 0;
 int g_anim_lines = 0;
 unsigned g_anim_skipped = 0;   // non journalisées (limite de débit)
 unsigned g_ring_overflow = 0;  // perdues : anneau plein (> 64 PlayMotion en une frame)
-bool g_f9_down = false;
-bool g_f10_down = false;
+bool g_f6_down = false;
+bool g_f7_down = false;
 game::Entity g_copy;          // oubliée dès que le joueur change (chargement, menu)
 void* g_last_player = nullptr;
 
@@ -178,22 +178,22 @@ void log_tick(ULONGLONG now) {
 
 void spawn_copy() {
     if (g_copy.ptr != nullptr) {
-        log::info("[probe] F9 : une copie existe déjà (" + hex_ptr(g_copy.ptr) + "), une seule par partie chargée");
+        log::info("[probe] F6 : une copie existe déjà (" + hex_ptr(g_copy.ptr) + "), une seule par partie chargée");
         return;
     }
     game::Entity player;
     if (!game::get_player(player) || player.ptr == nullptr) {
-        log::info("[probe] F9 : pas de joueur");
+        log::info("[probe] F6 : pas de joueur");
         return;
     }
     game::Matrix pose;
     if (!game::get_pose(player, pose)) {
-        log::info("[probe] F9 : pose du joueur illisible");
+        log::info("[probe] F6 : pose du joueur illisible");
         return;
     }
     game::Template tmpl;
     if (!game::get_template(player, tmpl) || tmpl.proxy == nullptr) {
-        log::info("[probe] F9 : GetTemplate a échoué");
+        log::info("[probe] F6 : GetTemplate a échoué");
         if (tmpl.proxy != nullptr) game::destroy_template(tmpl);
         return;
     }
@@ -202,26 +202,26 @@ void spawn_copy() {
 
     game::Entity copy;
     const bool ok = game::spawn(tmpl, target, /*temporary=*/true, copy);  // tmpl consommé
-    log::info("[probe] F9 : Spawn " + std::string(ok ? "appelé" : "a levé une exception (SEH)") +
+    log::info("[probe] F6 : Spawn " + std::string(ok ? "appelé" : "a levé une exception (SEH)") +
               ", copie=" + hex_ptr(copy.ptr) + ", pose demandée=[" + format_matrix(target) + "]");
     if (!ok || copy.ptr == nullptr) return;
     g_copy = copy;
 
     game::Matrix copy_pose;
-    log::info("[probe] F9 : pose de la copie=" +
+    log::info("[probe] F6 : pose de la copie=" +
               (game::get_pose(copy, copy_pose) ? "[" + format_matrix(copy_pose) + "]" : std::string("illisible")));
     game::Entity after;
     if (!game::get_player(after)) {
-        log::info("[probe] F9 : GetPlayer après Spawn a levé une exception (SEH)");
+        log::info("[probe] F6 : GetPlayer après Spawn a levé une exception (SEH)");
         return;
     }
-    log::info("[probe] F9 : joueur après Spawn=" + hex_ptr(after.ptr) +
+    log::info("[probe] F6 : joueur après Spawn=" + hex_ptr(after.ptr) +
               (after.ptr == player.ptr ? " (inchangé)" : " (CHANGÉ : la copie a peut-être pris le contrôle)"));
 }
 
 void replay_on_copy() {
     if (g_copy.ptr == nullptr) {
-        log::info("[probe] F10 : pas de copie (F9 d'abord)");
+        log::info("[probe] F7 : pas de copie (F6 d'abord)");
         return;
     }
     Capture last;
@@ -231,12 +231,12 @@ void replay_on_copy() {
     last = g_last;
     ReleaseSRWLockShared(&g_lock);
     if (!have) {
-        log::info("[probe] F10 : aucune animation capturée");
+        log::info("[probe] F7 : aucune animation capturée");
         return;
     }
     void* anim_ps = nullptr;
     if (!game::get_animation_ps(g_copy, anim_ps) || anim_ps == nullptr) {
-        log::info("[probe] F10 : pas d'eCAnimation_PS sur la copie");
+        log::info("[probe] F7 : pas d'eCAnimation_PS sur la copie");
         return;
     }
     // Le descripteur rejoué est notre copie de 0x60 octets (ou nul si l'original l'était).
@@ -249,7 +249,7 @@ void replay_on_copy() {
     void* resource = nullptr;
     game::read_motion_resource(anim_ps, last.type, resource);
     const bool ok = game::play_motion(anim_ps, last.type, desc_arg, last.flag);
-    log::info("[probe] F10 : PlayMotion(type=" + std::to_string(last.type) + ") sur la copie " +
+    log::info("[probe] F7 : PlayMotion(type=" + std::to_string(last.type) + ") sur la copie " +
               (ok ? "appelé" : "a levé une exception (SEH)") + ", anim_ps=" + hex_ptr(anim_ps) +
               ", ressource de la copie=" + hex_ptr(resource) + " (joueur : " + hex_ptr(last.resource) + ")");
 }
@@ -280,12 +280,12 @@ void frame() {
     flush_captures();
 
     if (game_has_focus()) {
-        if (pressed(VK_F9, g_f9_down)) spawn_copy();
-        if (pressed(VK_F10, g_f10_down)) replay_on_copy();
+        if (pressed(VK_F6, g_f6_down)) spawn_copy();
+        if (pressed(VK_F7, g_f7_down)) replay_on_copy();
     } else {
         // Hors focus : suivre l'état réel, pour qu'une touche tenue au retour ne déclenche rien.
-        pressed(VK_F9, g_f9_down);
-        pressed(VK_F10, g_f10_down);
+        pressed(VK_F6, g_f6_down);
+        pressed(VK_F7, g_f7_down);
     }
 
     if (now - g_window_start >= kTickPeriodMs) {
