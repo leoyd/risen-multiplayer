@@ -3,6 +3,7 @@
 #include "common/log.h"
 #include "game/entity.h"
 #include "sync/probe.h"
+#include "sync/session.h"
 
 #include <MinHook.h>
 
@@ -19,6 +20,11 @@ bool g_initialized = false;
 void detour_on_process(void* application) {
     g_original_on_process(application);
     sync::probe::on_frame();
+}
+
+void detour_on_process_session(void* application) {
+    g_original_on_process(application);
+    sync::session::on_frame();  // noexcept
 }
 
 void detour_play_motion(void* animation_ps, int type, void* desc, bool flag) {
@@ -67,6 +73,34 @@ bool install_probe() {
         return false;
     }
     log::info("[hooks] hooks installés (OnProcess, PlayMotion)");
+    return true;
+}
+
+bool install_session() {
+    const char* missing = nullptr;
+    if (!game::resolve_entities(missing)) {
+        log::error(std::string("[hooks] session inactive : symbole introuvable : ") + missing);
+        return false;
+    }
+    MH_STATUS s = MH_Initialize();
+    if (s != MH_OK) {
+        log::error(std::string("[hooks] session inactive : MH_Initialize : ") + MH_StatusToString(s));
+        return false;
+    }
+    g_initialized = true;
+    if (!create(game::on_process_address(), reinterpret_cast<void*>(&detour_on_process_session),
+                reinterpret_cast<void**>(&g_original_on_process), "OnProcess")) {
+        remove();
+        log::error("[hooks] session inactive");
+        return false;
+    }
+    s = MH_EnableHook(MH_ALL_HOOKS);
+    if (s != MH_OK) {
+        log::error(std::string("[hooks] session inactive : MH_EnableHook : ") + MH_StatusToString(s));
+        remove();
+        return false;
+    }
+    log::info("[hooks] hooks installés (OnProcess)");
     return true;
 }
 

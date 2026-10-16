@@ -12,8 +12,9 @@
 //   +0x10 pointeur de fonction. Un nom déjà enregistré est ignoré.
 //
 // En J0, la seule entrée est le script `MP_Probe`, que personne n'appelle. Avec
-// `probe = 1` (spike J1), ScriptInit installe en plus les hooks de la sonde
-// (win/hooks, sync/probe) ; sinon le mod ne s'accroche à rien. Si la version du jeu
+// `probe = 1` (spike J1), ScriptInit installe les hooks de la sonde (win/hooks,
+// sync/probe) ; sinon (story 1.4) il installe le seul hook OnProcess de la session
+// (sync/session). Sonde et session sont exclusives. Si la version du jeu
 // n'est pas reconnue ou si l'ABI est introuvable, les tables restent vides (rejet
 // silencieux) et aucun code du jeu n'est appelé. Toute la logique s'exécute dans ScriptInit (hors loader lock).
 
@@ -21,6 +22,7 @@
 #include "core/version.h"
 #include "game/abi.h"
 #include "common/log.h"
+#include "sync/session.h"
 #include "win/hooks.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -28,6 +30,7 @@
 #endif
 #include <windows.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -235,6 +238,25 @@ bool load_config(const std::wstring& dir) {
     return true;
 }
 
+// Session (story 1.4, probe = 0) : hook OnProcess seul, puis empreintes des 4 modules
+// (Script.dll est chargée par la résolution des entités). Un échec laisse le jeu en solo.
+void start_session() {
+    if (!mp::win::hooks::install_session()) {
+        mp::log::error("[sync] session impossible : le jeu reste en solo");
+        return;
+    }
+    static const wchar_t* const kModules[] = {L"Game.dll", L"Engine.dll", L"Script.dll", L"SharedBase.dll"};
+    std::array<mp::ModuleFingerprint, 4> fingerprint{};
+    for (std::size_t i = 0; i < fingerprint.size(); ++i) {
+        if (!fingerprint_of(kModules[i], fingerprint[i])) {
+            mp::log::error("[sync] session impossible : empreinte illisible : " + to_utf8(kModules[i]));
+            mp::win::hooks::remove();
+            return;
+        }
+    }
+    mp::sync::session::configure(g_config, fingerprint, MP_MOD_VERSION);
+}
+
 void initialize() {
     const std::wstring dir = dll_directory();
     mp::log::open(dir, L"Script_Multiplayer.log");
@@ -257,6 +279,7 @@ void initialize() {
         mp::win::hooks::install_probe();
     } else {
         mp::log::info("sonde désactivée");
+        start_session();
     }
 }
 

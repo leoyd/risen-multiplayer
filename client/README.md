@@ -5,8 +5,10 @@ officiel `Script_Game.dll`. Aucun injecteur, aucune option de lancement : le cha
 de scripts du jeu (`gCScriptAdmin::LoadScriptDLL`) charge toutes les `*.dll` de ce
 dossier et appelle leur export `ScriptInit`.
 
-État J0 : le mod écrit un log, vérifie la version du jeu et lit sa config. Il
-n'expose qu'un script inoffensif (`MP_Probe`) et ne s'accroche à rien.
+État story 1.4 : le mod écrit un log, vérifie la version du jeu et lit sa config. Il
+n'expose qu'un script inoffensif (`MP_Probe`) et hooke `eCApplication::OnProcess` pour la
+session : au chargement d'une partie, l'hôte se met à écouter et l'invité se connecte
+(voir « Tester une session »).
 
 ## Prérequis (Fedora)
 
@@ -60,9 +62,12 @@ enregistré que si `wine` et `client/build/net_tests.exe` existent au moment de 
 configuration (même ordre que ci‑dessus ; les DLL du jeu ne sont pas nécessaires).
 
 Le chemin du toolchain est relatif au dossier source `client/`. La DLL est liée au CRT
-statique : ses seules dépendances sont `KERNEL32.dll`, `USER32.dll` (touches de la sonde) et,
-dès que la session utilisera le transport (story 1.4), `WS2_32.dll`. Le transport est déjà lié
-à la DLL mais pas encore appelé : l'éditeur de liens l'écarte, et WS2_32 n'apparaît pas encore.
+statique : ses seules dépendances sont `KERNEL32.dll`, `USER32.dll` (touches de la sonde) et
+`WS2_32.dll` (transport de la session) :
+
+```bash
+llvm-objdump -p client/build/Script_Multiplayer.dll | grep 'DLL Name'   # KERNEL32, USER32, WS2_32
+```
 
 ### Faux invité (`fake_guest`)
 
@@ -72,6 +77,24 @@ son codec contre `protocol/vectors/`. Le test CTest `fake_guest` lance `go test 
 dossier ; il n'est enregistré que si `go` est trouvé (cgo demande aussi `gcc`). Usage, fautes
 (`--drop`, `--quit`, `--kill`, `--dup-hello`, `--bad-version`) et codes de sortie :
 [`../tools/fake-guest/README.md`](../tools/fake-guest/README.md).
+
+### Hôte de session face au faux invité (`session_fake_guest`)
+
+`session_host` (build Linux) est un hôte sans le jeu : la **même** machine à états que la DLL
+(`src/core/session`) avec le vrai transport (`src/net`) et un monde simulé toujours chargé.
+`tests/session_fake_guest.sh` le lance face au faux invité (compilé à la volée par `go build`)
+et vérifie les codes de sortie et le log de l'hôte : nominal, `--dup-hello`, `--bad-version`,
+deux invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte). Le
+test CTest `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure
+environ 30 s. Lancement à la main :
+
+```bash
+client/tests/session_fake_guest.sh client/build-tests/session_host tools/fake-guest
+```
+
+Avec les deux builds faits dans l'ordre ci‑dessus, `ctest --test-dir client/build-tests` lance
+6 tests : `client_tests`, `protocol_vectors`, `fake_guest`, `session_fake_guest`,
+`wine_scenarios`, `wine_net`.
 
 ## Installation
 
@@ -95,7 +118,8 @@ Log attendu (cas nominal) — chaque ligne est préfixée par `[AAAA-MM-JJ HH:MM
 ```
 
 La clé `log_level` (`debug` ou `info`, défaut `info`) est lue et rappelée dans la ligne
-« config OK ». Aucune ligne `DEBUG` n'est encore écrite : les stories suivantes en ajouteront.
+« config OK ». En `debug`, la session écrit en plus les empreintes locales, les `Hello` envoyés,
+les heartbeats reçus et les datagrammes ignorés ; rien n'est écrit à chaque frame en `info`.
 
 Version non reconnue (mise à jour Steam), config absente ou invalide : le log en donne
 la raison, le mod reste inactif et le jeu fonctionne en solo. Sur une version non
@@ -103,6 +127,52 @@ reconnue, le mod n'appelle aucun code du jeu et rend des tables vides : le charg
 de Risen l'ignore alors silencieusement (pas de boîte de dialogue). Après une mise à jour du
 jeu, il faut revérifier la rétro-ingénierie puis ajouter la nouvelle empreinte à la
 liste blanche (`src/core/version.cpp`).
+
+## Tester une session (`probe = 0`, story 1.4)
+
+Sans sonde, le mod hooke seulement `eCApplication::OnProcess`. Au premier appel où
+`Entity::GetPlayer()` est non nul (partie chargée), la session démarre, avec le préfixe
+`[sync]` au log pour chaque transition, chaque `Hello` reçu et chaque `Reject` :
+
+- **hôte** (`role = host`) : `Inactive → Hosting`, écoute sur `port` ; un invité compatible
+  passe la session en `InSession` (le `Welcome` porte la position et le lacet du joueur hôte) ;
+- **invité** (`role = guest`, `host_ip` = **IPv4 littérale**) : `Inactive → Connecting`,
+  `Hello` toutes les 500 ms, abandon après 10 s (« hôte injoignable ») ;
+- en session : heartbeat à 1 Hz, `Ended` après 5 s sans nouvelles du pair (« timeout ») ou
+  sur `SessionEnd` reçu.
+
+Réseau : l'hôte écoute sur le port UDP `port` (27960 par défaut), à ouvrir dans le pare-feu et
+à rediriger (UDP) sur la box si l'invité vient d'Internet. L'invité se connecte à ce port depuis
+un port local éphémère : rien à ouvrir de son côté.
+
+`Ended` rend le solo et reste final **jusqu'au redémarrage du jeu** (le réarmement au monde
+suivant vient en story 1.5). Un échec (port occupé, ABI, nom d'hôte au lieu d'une IPv4) est
+journalisé et le jeu reste en solo.
+
+### Risen hôte + faux invité (une machine)
+
+1. `multiplayer.ini` : `role = host`, `probe = 0`. Lancer Risen et charger une partie : le log
+   montre `[sync] Inactive → Hosting : monde chargé, en attente d'un invité sur le port 27960`.
+2. Sur la même machine : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 10s`
+   (`--duration 10s` : le faux invité tient la session 10 s après le `Welcome`, puis envoie
+   `SessionEnd{1}` et sort).
+3. Attendu dans `Script_Multiplayer.log` : `Hello reçu de 127.0.0.1:…`, puis
+   `Hosting → InSession : invité … accepté, conv=0x…, pose envoyée (…)`, puis environ 10 s plus
+   tard `InSession → Ended : fin de session par le pair : départ du joueur (1)`. Le faux invité
+   sort avec le code 0. Variantes : `--bad-version` (log : `Reject envoyé … (1)`, l'hôte reste
+   en attente), `--kill` (log : `timeout` 5 s après la fin).
+
+### Risen invité, hôte injoignable (une machine)
+
+1. `multiplayer.ini` : `role = guest`, `host_ip` = une IPv4 où personne n'écoute (ex.
+   `127.0.0.1` avec un port libre), `probe = 0`.
+2. Charger une partie : `[sync] Inactive → Connecting : monde chargé, connexion à …`, puis
+   environ 10 s plus tard `Connecting → Ended : hôte injoignable (aucune réponse en 10 s)`. Le jeu
+   reste jouable.
+
+Le reste du côté invité (Welcome reçu, session, Reject reçu) ne se vérifie qu'avec **deux
+machines** : deux Risen ne tournent pas sur la même machine. Il est couvert sous Linux par les
+tests de `core/session` (`tests/test_session.cpp`).
 
 ## Sonde du spike J1 (`probe = 1`)
 
@@ -125,18 +195,18 @@ Mode de rétro-ingénierie, **désactivé par défaut**. Avec `probe = 1` dans
 
 Protocole de test : charger une partie, F6 face à un espace dégagé, F7, puis marcher,
 courir, sauter, frapper en regardant la copie ; jouer environ 2 minutes, quitter, et fournir
-`Script_Multiplayer.log`. Avec `probe = 0` ou sans la clé, le log contient seulement
-« sonde désactivée » en plus de J0, et aucun hook n'est posé.
+`Script_Multiplayer.log`. Avec `probe = 0` ou sans la clé, la sonde est désactivée et seule la
+session est installée (hook `OnProcess` seul). Sonde et session sont exclusives.
 
 ## Organisation
 
 ```
 cmake/clang-cl-xwin.cmake   toolchain croisée Windows x64
-src/core/                   logique pure (config, version, codec du protocole), testée sous Linux
+src/core/                   logique pure (config, version, codec du protocole, machine à états de session), testée sous Linux
 src/common/                 log
 src/net/                    transport UDP + KCP : socket, canaux, thread réseau (testé sous Linux et Wine)
 src/game/                   adaptateur ABI du jeu (GetProcAddress) — seul code qui appelle le jeu
-src/sync/                   sonde du spike J1 (tick par frame, capture des animations)
+src/sync/                   pilote de session (tick par frame) ; sonde du spike J1
 src/win/                    ScriptInit, hooks MinHook
 third_party/minhook/        MinHook, figé sur un commit (voir VERSION.txt)
 third_party/kcp/            KCP 2.1.1, figé sur un commit (voir VERSION.txt), compilé dans mp_net

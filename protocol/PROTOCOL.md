@@ -306,6 +306,10 @@ d'appels.
 - **Abandon après 10 s** sans `Welcome` ni `Reject` : fin « hôte injoignable ».
 - Sur `Reject`, la raison est journalisée (code brut si inconnu) et l'invité arrête : pas de
   nouvel essai automatique.
+- Un `Welcome` portant `conv = 0` est ignoré : l'invité continue d'envoyer `Hello`.
+- Un `Welcome` ou un `Reject` reçu **en session** est ignoré (il compte seulement comme
+  activité de l'hôte).
+- Seuls les datagrammes venus de l'adresse de l'hôte sont pris en compte.
 
 ### Hôte
 
@@ -316,10 +320,17 @@ d'appels.
   empreintes (`TimeDateStamp` et `SizeOfImage` de Game, Engine, Script, SharedBase).
 - Tire un `conv` **aléatoire non nul** pour chaque nouvelle session.
 - Un `Hello` venu de la **même `ip:port`** que l'invité accepté reçoit le **même `Welcome`**
-  (même `conv`) tant qu'aucun segment KCP portant ce `conv` n'est arrivé de cette adresse ;
-  ensuite, ces `Hello` sont ignorés.
+  (même `conv`) jusqu'au premier message fiable reçu de cette adresse ; ensuite, ces `Hello`
+  sont ignorés.
 - Un `Hello` venu d'**une autre adresse** pendant une session reçoit `Reject{4}` (session
   pleine), sans effet sur la session en cours.
+  Les vérifications 1 à 4 du §6 s'appliquent d'abord : un `Hello` v2 venu d'une autre
+  adresse reçoit `Reject{1}`, pas `Reject{4}`.
+- Un `Hello` venu du **pair accepté** qui échoue à une vérification (version, décodage, mod,
+  empreinte) est **ignoré** : ni `Reject`, ni `Welcome`, ni effet sur la session.
+- `Welcome` et `Reject` reçus par l'hôte sont ignorés.
+- Le `conv` est tiré à neuf (aléatoire, non nul) à chaque session, y compris après un timeout
+  ou une fin de session.
 
 ### Les deux pairs
 
@@ -328,6 +339,9 @@ d'appels.
 - `Heartbeat` à **1 Hz** sur le canal fiable, dans les deux sens, dès l'entrée en session.
 - **5 s sans aucun datagramme** du pair (tous canaux confondus) → fin « timeout », sans rien
   envoyer.
+  Une implémentation peut ne compter que les **messages** reçus du pair (contrôle, ou fiables
+  rendus par KCP) plutôt que chaque datagramme : les heartbeats à 1 Hz suffisent à maintenir
+  l'activité. C'est le cas de la DLL.
 - Fin volontaire = envoi de `SessionEnd{raison}` sur le canal fiable, puis fermeture du KCP.
   Le KCP peut être gardé brièvement pour laisser partir le segment (et son acquittement), mais
   la session est terminée dès l'envoi. Un `SessionEnd` reçu termine la session avec la raison

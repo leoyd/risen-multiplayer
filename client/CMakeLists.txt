@@ -14,6 +14,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(mp_core STATIC
     src/core/config.cpp
     src/core/protocol.cpp
+    src/core/session.cpp
     src/core/version.cpp)
 target_include_directories(mp_core PUBLIC src)
 
@@ -62,10 +63,11 @@ if(WIN32)
         src/game/abi.cpp
         src/game/entity.cpp
         src/sync/probe.cpp
+        src/sync/session.cpp
         ${MINHOOK_SOURCES})
     target_include_directories(Script_Multiplayer PRIVATE third_party/minhook/include)
     # USER32 : GetAsyncKeyState / GetForegroundWindow (touches F9/F10 de la sonde).
-    # mp_net (WS2_32) est lié dès la story 1.2, même s'il n'est appelé qu'en 1.4.
+    # WS2_32 : transport de la session (mp_net), appelé depuis la story 1.4.
     target_link_libraries(Script_Multiplayer PRIVATE mp_core mp_net kernel32 user32)
     target_compile_definitions(Script_Multiplayer PRIVATE
         MP_MOD_VERSION="${PROJECT_VERSION}"
@@ -104,6 +106,7 @@ else()
         tests/test_config.cpp
         tests/test_net.cpp
         tests/test_protocol.cpp
+        tests/test_session.cpp
         tests/test_version.cpp)
     target_link_libraries(client_tests PRIVATE mp_core mp_net)
     # Vecteurs binaires de référence partagés C++/Go (protocol/vectors/).
@@ -123,6 +126,12 @@ else()
 
     add_test(NAME client_tests COMMAND client_tests)
 
+    # Hôte de session sous Linux, sans le jeu : piloté par tests/session_fake_guest.sh.
+    add_executable(session_host tests/session_host_main.cpp)
+    target_link_libraries(session_host PRIVATE mp_core mp_net)
+    target_compile_definitions(session_host PRIVATE MP_MOD_VERSION="${PROJECT_VERSION}")
+    target_compile_options(session_host PRIVATE -Wall -Wextra)
+
     # Cohérence des hexdumps de protocol/PROTOCOL.md et des vecteurs .bin.
     find_program(XXD_EXECUTABLE xxd)
     if(XXD_EXECUTABLE)
@@ -141,8 +150,16 @@ else()
         set_tests_properties(fake_guest PROPERTIES
             TIMEOUT 300
             ENVIRONMENT "CGO_ENABLED=1;CC=${CMAKE_C_COMPILER}")
+        # Hôte de session Linux (core/session + transport, monde simulé) face au faux invité :
+        # nominal, --dup-hello, --bad-version, deux invités, --drop 20, --kill (story 1.4).
+        add_test(NAME session_fake_guest
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/session_fake_guest.sh
+                         $<TARGET_FILE:session_host> ${CMAKE_CURRENT_SOURCE_DIR}/../tools/fake-guest)
+        set_tests_properties(session_fake_guest PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "CGO_ENABLED=1;CC=${CMAKE_C_COMPILER}")
     else()
-        message(STATUS "Test fake_guest non enregistré (go absent)")
+        message(STATUS "Tests fake_guest et session_fake_guest non enregistrés (go absent)")
     endif()
 
     # Scénarios d'intégration sous Wine : DLL Windows + vraies DLL du jeu + wine.

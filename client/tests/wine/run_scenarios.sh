@@ -58,20 +58,30 @@ expect_log "champ inconnu : avertissement" "$d" "couleur"
 expect_log "nominal : log_level=info par défaut" "$d" "config OK (.*log_level=info)"
 
 expect_log "nominal : sonde désactivée par défaut" "$d" "sonde désactivée"
-expect_no_log "nominal : aucun hook" "$d" "\[hooks\]"
+# Story 1.4 : sans sonde, la session pose le seul hook OnProcess. Le banc n'appelle jamais
+# OnProcess : aucun tick, aucune transition.
+expect_log "nominal : hook de session installé" "$d" "hooks installés (OnProcess)"
+expect_no_log "nominal : pas de PlayMotion" "$d" "PlayMotion"
+expect_log "nominal : session prête" "$d" "\[sync\] session prête (rôle invité)"
+expect_no_log "nominal : log_level=info, aucune ligne DEBUG" "$d" "DEBUG"
 
-# Spike J1 : sonde explicitement désactivée, puis activée (hooks posés sur les vraies
+# Spike J1 : sonde explicitement désactivée (hook de session seul), puis activée (hooks posés sur les vraies
 # DLL du jeu ; le banc n'appelle jamais OnProcess, donc aucun tick).
 d=$(setup sonde_off $'role = host\nprobe = 0\nlog_level = DEBUG')
 run "sonde off" "$d"
 expect_log "log_level = DEBUG lu" "$d" "config OK (.*log_level=debug)"
 expect_log "probe = 0 : sonde désactivée" "$d" "sonde désactivée"
-expect_no_log "probe = 0 : aucun hook" "$d" "\[hooks\]"
+expect_log "probe = 0 : hooks installés (OnProcess)" "$d" "hooks installés (OnProcess)"
+expect_no_log "probe = 0 : pas de hook PlayMotion" "$d" "PlayMotion"
+expect_log "probe = 0 : session prête" "$d" "\[sync\] session prête (rôle hôte)"
+expect_log "log_level = DEBUG : lignes DEBUG écrites" "$d" "DEBUG .*\[sync\] empreinte locale SharedBase.dll"
 
 d=$(setup sonde_on $'role = host\nprobe = 1')
 run "sonde on" "$d"
 expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, PlayMotion)"
 expect_log "probe = 1 : mod actif" "$d" "mod actif"
+expect_no_log "probe = 1 : pas de hook de session" "$d" "hooks installés (OnProcess)"
+expect_no_log "probe = 1 : aucune session" "$d" "\[sync\]"
 
 # Hook impossible : jeu sans Script.dll (Game.dll n'en dépend pas). Attendu : erreur
 # explicite, sonde inactive, mod toujours actif et descripteur intact.
@@ -85,6 +95,16 @@ run "sonde sans Script.dll" "$d" "$no_script_bin"
 expect_log "hook impossible : erreur explicite" "$d" "sonde inactive : symbole introuvable : Script.dll"
 expect_no_log "hook impossible : aucun hook" "$d" "hooks installés"
 expect_log "hook impossible : mod actif" "$d" "mod actif"
+
+# Même jeu sans Script.dll, sans sonde : la session ne peut pas poser son hook. Attendu :
+# erreur explicite, jeu en solo, mod toujours actif.
+d=$(setup session_sans_script $'role = host\nprobe = 0')
+run "session sans Script.dll" "$d" "$no_script_bin"
+expect_log "session impossible : symbole nommé" "$d" "session inactive : symbole introuvable : Script.dll"
+expect_log "session impossible : retour au solo" "$d" "session impossible"
+expect_no_log "session impossible : aucun hook" "$d" "hooks installés"
+expect_no_log "session impossible : pas de session prête" "$d" "session prête"
+expect_log "session impossible : mod actif" "$d" "mod actif"
 
 d=$(setup absente)
 run absente "$d"
