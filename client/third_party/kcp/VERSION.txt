@@ -1,0 +1,10 @@
+KCP — https://github.com/skywind3000/kcp
+Tag      : 2.1.1
+Commit   : fbd716b257628036375b94061a38a188ea4ed0c8
+Date     : 2026-05-16 01:52:21 +0800 (« Merge branch 'v2' »)
+Licence  : MIT — voir LICENSE
+Contenu  : ikcp.c, ikcp.h et LICENSE copiés sans modification. ikcp.c est compilé dans la
+           bibliothèque mp_net (client/CMakeLists.txt), avec /W0 sous clang-cl (-w sous Linux),
+           sans le CMakeLists de KCP. Réglages : ikcp_nodelay(1, 10, 2, 1), ikcp_setmtu(1199)
+           (src/net/transport.cpp). Réutilisé par tools/fake-guest/ (story 1.3, cgo).
+Mise à jour : recopier ikcp.c, ikcp.h et LICENSE depuis un nouveau tag, puis mettre ce fichier à jour.

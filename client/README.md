@@ -51,8 +51,18 @@ cmake --build client/build-tests && ctest --test-dir client/build-tests   # 3. l
 Préfixe Wine utilisé : `client/build/wineprefix` (créé au premier lancement), ou
 `MP_WINEPREFIX` s'il est défini.
 
+### Transport sous Wine (`wine_net`)
+
+`net_tests.exe` (build Windows) contient les mêmes tests du transport `src/net/` que
+`client_tests` : boucle locale UDP, KCP avec et sans pertes simulées, canaux ignorés, port
+occupé, arrêts répétés, file pleine. Le test CTest `wine_net` le lance sous Wine ; il n'est
+enregistré que si `wine` et `client/build/net_tests.exe` existent au moment de la
+configuration (même ordre que ci‑dessus ; les DLL du jeu ne sont pas nécessaires).
+
 Le chemin du toolchain est relatif au dossier source `client/`. La DLL est liée au CRT
-statique : ses seules dépendances sont `KERNEL32.dll` et `USER32.dll` (touches de la sonde).
+statique : ses seules dépendances sont `KERNEL32.dll`, `USER32.dll` (touches de la sonde) et,
+dès que la session utilisera le transport (story 1.4), `WS2_32.dll`. Le transport est déjà lié
+à la DLL mais pas encore appelé : l'éditeur de liens l'écarte, et WS2_32 n'apparaît pas encore.
 
 ## Installation
 
@@ -115,10 +125,12 @@ courir, sauter, frapper en regardant la copie ; jouer environ 2 minutes, quitter
 cmake/clang-cl-xwin.cmake   toolchain croisée Windows x64
 src/core/                   logique pure (config, version, codec du protocole), testée sous Linux
 src/common/                 log
+src/net/                    transport UDP + KCP : socket, canaux, thread réseau (testé sous Linux et Wine)
 src/game/                   adaptateur ABI du jeu (GetProcAddress) — seul code qui appelle le jeu
 src/sync/                   sonde du spike J1 (tick par frame, capture des animations)
 src/win/                    ScriptInit, hooks MinHook
 third_party/minhook/        MinHook, figé sur un commit (voir VERSION.txt)
+third_party/kcp/            KCP 2.1.1, figé sur un commit (voir VERSION.txt), compilé dans mp_net
 tests/                      tests unitaires (dont vecteurs de ../protocol/vectors/) (mini-framework maison, sans dépendance) + wine/
 ```
 
