@@ -17,6 +17,14 @@ using GetPoseFn = Matrix* (*)(const Entity* self, Matrix* sret);
 using GetTemplateFn = Template* (*)(const Entity* self, Template* sret);
 using SpawnFn = Entity* (*)(Entity* sret, Template* by_value, const Matrix* pose, bool temporary);
 using TemplateDtorFn = void (*)(Template* self);
+using IsProcessingRangeEnteredFn = bool (*)(const Entity* self);
+// bTObjArray<Entity> : { Entity* data; u32 count; … } (Entity::GetNPCs, Script.dll x64).
+struct EntityArray {
+    Entity* data;
+    std::uint32_t count;
+    std::uint32_t capacity;
+};
+using GetNPCsFn = EntityArray* (*)(EntityArray* sret);
 // Engine.dll
 using SetMotionFn = void (*)(void* animation_ps, int type, void* resource);
 using GetFileTitleFn = void* (*)(const void* resource, void* bcstring_sret);
@@ -30,6 +38,8 @@ constexpr const char* kGetPose = "?GetPose@Entity@@QEBA?AVbCMatrix@@XZ";
 constexpr const char* kGetTemplate = "?GetTemplate@Entity@@QEBA?AVTemplate@@XZ";
 constexpr const char* kSpawn = "?Spawn@Entity@@SA?AV1@VTemplate@@AEBVbCMatrix@@_N@Z";
 constexpr const char* kTemplateDtor = "??1Template@@QEAA@XZ";
+constexpr const char* kIsProcessingRangeEntered = "?IsProcessingRangeEntered@Entity@@QEBA_NXZ";
+constexpr const char* kGetNPCs = "?GetNPCs@Entity@@SA?AV?$bTObjArray@VEntity@@@@XZ";
 constexpr const char* kGetPropertySet =
     "?GetPropertySet@eCEntity@@QEBAPEBVeCEntityPropertySet@@W4eEPropertySetType@@@Z";
 constexpr const char* kSetMotion =
@@ -49,6 +59,8 @@ struct EntityAbi {
     GetTemplateFn get_template = nullptr;
     SpawnFn spawn = nullptr;
     TemplateDtorFn template_dtor = nullptr;
+    IsProcessingRangeEnteredFn is_processing_range_entered = nullptr;
+    GetNPCsFn get_npcs = nullptr;
     GetPropertySetFn get_property_set = nullptr;
     void* on_process = nullptr;
     PlayMotionFn play_motion = nullptr;
@@ -95,6 +107,8 @@ bool resolve_entities(const char*& missing) {
                     lookup(script, kGetTemplate, a.get_template, missing) &&
                     lookup(script, kSpawn, a.spawn, missing) &&
                     lookup(script, kTemplateDtor, a.template_dtor, missing) &&
+                    lookup(script, kIsProcessingRangeEntered, a.is_processing_range_entered, missing) &&
+                    lookup(script, kGetNPCs, a.get_npcs, missing) &&
                     lookup(engine, kGetPropertySet, a.get_property_set, missing) &&
                     lookup(engine, kOnProcess, on_process, missing) &&
                     lookup(engine, kPlayMotion, a.play_motion, missing) &&
@@ -191,6 +205,47 @@ bool play_motion(void* animation_ps, int type, void* desc, bool flag) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+bool is_processing_range_entered(const Entity& e, bool& out) {
+    out = false;
+    if (!g_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_abi.is_processing_range_entered(&e);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+namespace {
+
+constexpr std::uint32_t kMaxNpcs = 4096;
+
+bool call_get_npcs(EntityArray& arr) {
+    __try {
+        g_abi.get_npcs(&arr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+}  // namespace
+
+bool get_npcs(std::vector<Entity>& out) {
+    out.clear();
+    if (!g_resolved) return false;
+    EntityArray arr{nullptr, 0, 0};
+    if (!call_get_npcs(arr)) return false;
+    if (arr.data == nullptr || arr.count == 0) return true;
+    const std::uint32_t n = arr.count < kMaxNpcs ? arr.count : kMaxNpcs;
+    out.resize(n);
+    if (!copy_bytes(arr.data, out.data(), n * sizeof(Entity))) {
+        out.clear();
+        return false;
+    }
+    return true;  // arr.data fuit volontairement (voir entity.h)
 }
 
 bool set_motion(void* animation_ps, int type, void* resource) {

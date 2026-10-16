@@ -55,3 +55,14 @@ Hook `OnProcess` (thread, fps, état de session, pose du joueur, une fois par se
   - récepteur : `eCResource2::GetMotion(bCString)` → ressource → `eCAnimation_PS::SetMotion(type, res)` → `PlayMotion(type, desc, flag)`.
   - Alternative haut niveau : `Entity::StartPlayAni(bCString, int, bool, float, bool, eEMotionType)` (Script.dll).
   - À vérifier : `eCMotionResource2` hérite-t-il de `eCResource2` sans décalage de pointeur ?
+
+## Sonde v2 en jeu (2026-10-16)
+- **Noms d’animation : confirmé.** `eCResource2::GetFileTitleA()` sur la ressource de l’emplacement donne des noms stables et lisibles, par exemple `Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400`, `Hero_Stand_None_1H_S1_Attack_00_N_Fwd_00_%_00_P0_0`, `Hero_Stand_None_None_P0_Jump_Run_N_Fwd_00_%_00_P0_0`. La synchro par nom (AD-8 a) est viable côté émetteur.
+- **Types de motion :** 0 et 1 (locomotion en paires avant/côté, avec poids) ; les attaques sont de **type 0** ; le type 4 est la parade au bouclier (`Hero_Stand_Shield_1H_P0_Hold_Begin_O_…`).
+- **Axe avant : confirmé.** La copie apparaît devant le héros, de dos (même orientation que lui) : la ligne 2 (`m[8..10]`) est l’axe avant.
+- **La copie reste figée,** même après `SetMotion` (emplacement 4 vide → ressource du joueur) puis `PlayMotion`. Hypothèses :
+  - (a) la copie n’est pas dans la zone de traitement du moteur (`Entity::IsProcessingRangeEntered`) ;
+  - (b) le héros copié n’a pas de logique d’animation (aucun `PlayMotion` du moteur sur son PS) ;
+  - (c) le rejeu brut ne suffit pas.
+
+  La sonde v3 mesure (a) et (b), et F8 rejoue la même animation sur le PNJ le plus proche pour tester (c).

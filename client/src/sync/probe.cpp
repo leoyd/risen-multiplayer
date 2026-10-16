@@ -11,9 +11,11 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace mp::sync::probe {
 
@@ -24,6 +26,7 @@ constexpr std::size_t kCaptureRing = 64;
 constexpr int kMaxAnimLinesPerSecond = 20;
 constexpr float kSpawnDistance = 200.0f;  // 2 m, si les unités sont des centimètres
 constexpr ULONGLONG kTickPeriodMs = 1000;
+constexpr float kMaxNpcDistance = 1500.0f;  // F8 : PNJ à 15 m au plus
 
 struct Capture {
     int type;
@@ -43,9 +46,10 @@ std::size_t g_ring_count = 0;
 unsigned g_ring_dropped = 0;  // captures perdues (anneau plein)
 Capture g_last{};             // dernière capture
 bool g_have_last = false;
-Capture g_last_action{};      // dernière capture de type >= 2 (attaque…), rejouée en priorité par F7
-bool g_have_last_action = false;
 std::atomic<void*> g_player_anim_ps{nullptr};
+// Diagnostic de la copie : PlayMotion lancés par le moteur sur son PS (hors rejeu F7).
+std::atomic<void*> g_copy_anim_ps{nullptr};
+std::atomic<unsigned> g_copy_engine_motions{0};
 
 // --- État du thread principal uniquement ------------------------------------------
 DWORD g_first_thread = 0;
@@ -57,8 +61,15 @@ unsigned g_anim_skipped = 0;   // non journalisées (limite de débit)
 unsigned g_ring_overflow = 0;  // perdues : anneau plein (> 64 PlayMotion en une frame)
 bool g_f6_down = false;
 bool g_f7_down = false;
+bool g_f8_down = false;
+bool g_replaying = false;     // vrai pendant notre propre PlayMotion (même thread que le hook)
 game::Entity g_copy;          // oubliée dès que le joueur change (chargement, menu)
 void* g_last_player = nullptr;
+// Classées par nom depuis le tick : rejouées en priorité par F7/F8.
+Capture g_last_attack{};      // nom contenant « Attack »
+bool g_have_last_attack = false;
+Capture g_last_other{};       // ni « _Move_ » ni « _Ambient_ »
+bool g_have_last_other = false;
 
 std::string hex_ptr(const void* p) {
     char buf[24];
@@ -151,6 +162,16 @@ void flush_captures() {
 
     g_ring_overflow += dropped;
     for (std::size_t i = 0; i < n; ++i) {
+        const std::string& name = motion_name(batch[i].resource);
+        if (name.find("Attack") != std::string::npos) {
+            g_last_attack = batch[i];
+            g_have_last_attack = true;
+        } else if (name.find("_Move_") == std::string::npos && name.find("_Ambient_") == std::string::npos) {
+            g_last_other = batch[i];
+            g_have_last_other = true;
+        }
+    }
+    for (std::size_t i = 0; i < n; ++i) {
         if (g_anim_lines >= kMaxAnimLinesPerSecond) {
             ++g_anim_skipped;
             continue;
@@ -186,6 +207,20 @@ void log_tick(ULONGLONG now) {
         line += " anim_ps=" + hex_ptr(g_player_anim_ps.load());
     }
     log::info(line);
+    if (g_copy.ptr != nullptr) {
+        // Diagnostic « copie figée » : le moteur la met-il à jour et l'anime-t-il ?
+        bool in_range = false;
+        const bool range_ok = game::is_processing_range_entered(g_copy, in_range);
+        void* copy_ps = g_copy_anim_ps.load();
+        void* slot0 = nullptr;
+        game::read_motion_resource(copy_ps, 0, slot0);
+        game::Matrix copy_pose;
+        const bool pose_ok = game::get_pose(g_copy, copy_pose);
+        log::info("[probe] copie " + hex_ptr(g_copy.ptr) + " : zone de traitement=" +
+                  (range_ok ? (in_range ? "oui" : "NON") : "illisible") + ", PlayMotion du moteur=" +
+                  std::to_string(g_copy_engine_motions.exchange(0)) + "/s, emplacement 0 « " + motion_name(slot0) +
+                  " », pos=" + (pose_ok ? format_position(copy_pose) : std::string("illisible")));
+    }
     if (g_anim_skipped != 0) {
         log::info("[probe] " + std::to_string(g_anim_skipped) + " PlayMotion non journalisés (limite de débit)");
     }
@@ -228,6 +263,10 @@ void spawn_copy() {
               ", copie=" + hex_ptr(copy.ptr) + ", pose demandée=[" + format_matrix(target) + "]");
     if (!ok || copy.ptr == nullptr) return;
     g_copy = copy;
+    void* copy_ps = nullptr;
+    game::get_animation_ps(copy, copy_ps);
+    g_copy_anim_ps.store(copy_ps);
+    g_copy_engine_motions.store(0);
 
     game::Matrix copy_pose;
     log::info("[probe] F6 : pose de la copie=" +
@@ -241,30 +280,32 @@ void spawn_copy() {
               (after.ptr == player.ptr ? " (inchangé)" : " (CHANGÉ : la copie a peut-être pris le contrôle)"));
 }
 
-void replay_on_copy() {
-    if (g_copy.ptr == nullptr) {
-        log::info("[probe] F7 : pas de copie (F6 d'abord)");
-        return;
-    }
+// Rejoue sur `target` la dernière attaque capturée, sinon la dernière animation hors
+// locomotion, sinon la dernière tout court : SetMotion (ressource du joueur) puis PlayMotion.
+void replay_on(const game::Entity& target, const char* key, const std::string& label) {
     Capture last;
-    bool have = false;
-    bool action = false;
-    AcquireSRWLockShared(&g_lock);
-    if (g_have_last_action) {
-        last = g_last_action;
-        have = action = true;
-    } else if (g_have_last) {
-        last = g_last;
-        have = true;
+    const char* kind = nullptr;
+    if (g_have_last_attack) {
+        last = g_last_attack;
+        kind = "dernière attaque";
+    } else if (g_have_last_other) {
+        last = g_last_other;
+        kind = "dernière action";
+    } else {
+        AcquireSRWLockShared(&g_lock);
+        if (g_have_last) {
+            last = g_last;
+            kind = "dernière animation";
+        }
+        ReleaseSRWLockShared(&g_lock);
     }
-    ReleaseSRWLockShared(&g_lock);
-    if (!have) {
-        log::info("[probe] F7 : aucune animation capturée");
+    if (kind == nullptr) {
+        log::info(std::string("[probe] ") + key + " : aucune animation capturée");
         return;
     }
     void* anim_ps = nullptr;
-    if (!game::get_animation_ps(g_copy, anim_ps) || anim_ps == nullptr) {
-        log::info("[probe] F7 : pas d'eCAnimation_PS sur la copie");
+    if (!game::get_animation_ps(target, anim_ps) || anim_ps == nullptr) {
+        log::info(std::string("[probe] ") + key + " : pas d'eCAnimation_PS sur " + label);
         return;
     }
     // Le descripteur rejoué est notre copie de 0x60 octets (ou nul si l'original l'était).
@@ -281,12 +322,58 @@ void replay_on_copy() {
     const bool set_ok = game::set_motion(anim_ps, last.type, last.resource);
     void* after = nullptr;
     game::read_motion_resource(anim_ps, last.type, after);
+    g_replaying = true;
     const bool ok = set_ok && game::play_motion(anim_ps, last.type, desc_arg, last.flag);
-    log::info("[probe] F7 : " + std::string(action ? "dernière action" : "dernière animation") + " « " +
-              motion_name(last.resource) + " » (type=" + std::to_string(last.type) + ") rejouée sur la copie : SetMotion " +
+    g_replaying = false;
+    log::info(std::string("[probe] ") + key + " : " + kind + " « " + motion_name(last.resource) +
+              " » (type=" + std::to_string(last.type) + ") rejouée sur " + label + " : SetMotion " +
               (set_ok ? "OK" : "SEH") + ", PlayMotion " + (ok ? "appelé" : (set_ok ? "SEH" : "non appelé")) +
               ", emplacement " + hex_ptr(before) + " « " + motion_name(before) + " » -> " + hex_ptr(after) +
               (after == last.resource ? " (ressource du joueur)" : " (INATTENDU)"));
+}
+
+void replay_on_copy() {
+    if (g_copy.ptr == nullptr) {
+        log::info("[probe] F7 : pas de copie (F6 d'abord)");
+        return;
+    }
+    replay_on(g_copy, "F7", "la copie");
+}
+
+// F8 : même rejeu sur le PNJ le plus proche (≤ 15 m), pour distinguer « la copie est
+// inerte » de « le rejeu ne marche pas ».
+void replay_on_nearest_npc() {
+    game::Entity player;
+    game::Matrix pose;
+    if (!game::get_player(player) || player.ptr == nullptr || !game::get_pose(player, pose)) {
+        log::info("[probe] F8 : pas de joueur");
+        return;
+    }
+    std::vector<game::Entity> npcs;
+    if (!game::get_npcs(npcs)) {
+        log::info("[probe] F8 : GetNPCs a échoué (SEH)");
+        return;
+    }
+    game::Entity best;
+    float best_d2 = kMaxNpcDistance * kMaxNpcDistance;
+    for (const auto& npc : npcs) {
+        if (npc.ptr == nullptr || npc.ptr == player.ptr || npc.ptr == g_copy.ptr) continue;
+        game::Matrix p;
+        if (!game::get_pose(npc, p)) continue;
+        const float dx = p.m[12] - pose.m[12], dy = p.m[13] - pose.m[13], dz = p.m[14] - pose.m[14];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best = npc;
+        }
+    }
+    if (best.ptr == nullptr) {
+        log::info("[probe] F8 : aucun PNJ à moins de 15 m (" + std::to_string(npcs.size()) + " PNJ au total)");
+        return;
+    }
+    char dist[32];
+    std::snprintf(dist, sizeof dist, "%.0f cm", static_cast<double>(std::sqrt(best_d2)));
+    replay_on(best, "F8", "le PNJ " + hex_ptr(best.ptr) + " (à " + dist + ")");
 }
 
 void frame() {
@@ -309,10 +396,12 @@ void frame() {
         // être détruite avec le monde. Ne jamais réutiliser un pointeur peut-être libéré.
         if (g_copy.ptr != nullptr) log::info("[probe] joueur changé : copie " + hex_ptr(g_copy.ptr) + " oubliée");
         g_copy = game::Entity{};
+        g_copy_anim_ps.store(nullptr);
         g_last_player = player.ptr;
         g_names.clear();  // ressources peut-être libérées avec le monde
+        g_have_last_attack = g_have_last_other = false;
         AcquireSRWLockExclusive(&g_lock);
-        g_have_last = g_have_last_action = false;
+        g_have_last = false;
         ReleaseSRWLockExclusive(&g_lock);
     }
 
@@ -321,10 +410,12 @@ void frame() {
     if (game_has_focus()) {
         if (pressed(VK_F6, g_f6_down)) spawn_copy();
         if (pressed(VK_F7, g_f7_down)) replay_on_copy();
+        if (pressed(VK_F8, g_f8_down)) replay_on_nearest_npc();
     } else {
         // Hors focus : suivre l'état réel, pour qu'une touche tenue au retour ne déclenche rien.
         pressed(VK_F6, g_f6_down);
         pressed(VK_F7, g_f7_down);
+        pressed(VK_F8, g_f8_down);
     }
 
     if (now - g_window_start >= kTickPeriodMs) {
@@ -345,7 +436,12 @@ void on_frame() noexcept {
 }
 
 void on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept {
-    if (animation_ps == nullptr || animation_ps != g_player_anim_ps.load()) return;
+    if (animation_ps == nullptr) return;
+    if (animation_ps == g_copy_anim_ps.load()) {
+        if (!g_replaying) g_copy_engine_motions.fetch_add(1);
+        return;
+    }
+    if (animation_ps != g_player_anim_ps.load()) return;
     Capture c{};
     c.type = type;
     c.flag = flag;
@@ -364,10 +460,6 @@ void on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcep
     }
     g_last = c;
     g_have_last = true;
-    if (type >= 2) {
-        g_last_action = c;
-        g_have_last_action = true;
-    }
     ReleaseSRWLockExclusive(&g_lock);
 }
 

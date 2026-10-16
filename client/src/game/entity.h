@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace mp::game {
 
@@ -68,6 +69,13 @@ bool play_motion(void* animation_ps, int type, void* desc, bool flag);
 bool set_motion(void* animation_ps, int type, void* resource);
 // Nom de la ressource de motion (eCResource2::GetFileTitleA), 255 caractères au plus.
 bool get_resource_name(const void* resource, std::string& out);
+
+// Entity::IsProcessingRangeEntered : l'entité est-elle dans la zone que le moteur met à jour ?
+bool is_processing_range_entered(const Entity& e, bool& out);
+// Entity::GetNPCs (copie de Entity::ms_arrNPCs). Le tampon du tableau renvoyé est
+// alloué par le jeu et son destructeur n'est pas exporté : il fuit (quelques Ko par
+// appel). Réservé à la sonde, sur action de l'utilisateur.
+bool get_npcs(std::vector<Entity>& out);
 
 // Lectures mémoire protégées, utilisables depuis le hook PlayMotion.
 bool copy_bytes(const void* src, void* dst, std::size_t n);

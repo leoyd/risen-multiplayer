@@ -95,9 +95,11 @@ Mode de rétro-ingénierie, **désactivé par défaut**. Avec `probe = 1` dans
   est compté) ;
 - **F6** (fenêtre du jeu active) : fait apparaître une copie temporaire du joueur environ
   2 m devant lui, et indique si le joueur a changé après l'apparition ;
-- **F7** : la copie rejoue la dernière action capturée (type ≥ 2, par exemple une attaque),
-  ou à défaut la dernière animation : la ressource du joueur est rangée dans la copie
-  (`SetMotion`), puis `PlayMotion`.
+- **F7** : la copie rejoue la dernière attaque capturée (à défaut la dernière animation hors
+  locomotion, puis la dernière tout court) : la ressource du joueur est rangée dans la copie
+  (`SetMotion`), puis `PlayMotion`. Tant qu'une copie existe, une ligne `copie` par seconde
+  indique si le moteur la met à jour et l'anime ;
+- **F8** : même rejeu sur le PNJ le plus proche (15 m au plus).
 
 Protocole de test : charger une partie, marcher, courir, sauter, frapper, puis F6 et
 F7 face à un espace dégagé ; jouer environ 2 minutes, quitter, et fournir
