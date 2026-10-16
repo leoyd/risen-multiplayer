@@ -17,6 +17,11 @@ using GetPoseFn = Matrix* (*)(const Entity* self, Matrix* sret);
 using GetTemplateFn = Template* (*)(const Entity* self, Template* sret);
 using SpawnFn = Entity* (*)(Entity* sret, Template* by_value, const Matrix* pose, bool temporary);
 using TemplateDtorFn = void (*)(Template* self);
+// Engine.dll
+using SetMotionFn = void (*)(void* animation_ps, int type, void* resource);
+using GetFileTitleFn = void* (*)(const void* resource, void* bcstring_sret);
+// SharedBase.dll
+using BCStringDtorFn = void (*)(void* self);
 // Engine.dll — variante const non virtuelle : elle fait elle-même le dispatch virtuel.
 using GetPropertySetFn = void* (*)(const void* entity, int type);
 
@@ -27,6 +32,10 @@ constexpr const char* kSpawn = "?Spawn@Entity@@SA?AV1@VTemplate@@AEBVbCMatrix@@_
 constexpr const char* kTemplateDtor = "??1Template@@QEAA@XZ";
 constexpr const char* kGetPropertySet =
     "?GetPropertySet@eCEntity@@QEBAPEBVeCEntityPropertySet@@W4eEPropertySetType@@@Z";
+constexpr const char* kSetMotion =
+    "?SetMotion@eCAnimation_PS@@QEAAXW4eEMotionType@eAnimShared@@PEAVeCMotionResource2@@@Z";
+constexpr const char* kGetFileTitle = "?GetFileTitleA@eCResource2@@QEBA?AVbCString@@XZ";
+constexpr const char* kBCStringDtor = "??1bCString@@QEAA@XZ";
 constexpr const char* kOnProcess = "?OnProcess@eCApplication@@UEAAXXZ";
 constexpr const char* kPlayMotion =
     "?PlayMotion@eCAnimation_PS@@QEAAXW4eEMotionType@eAnimShared@@PEAUeSMotionPlayBackDesc@3@_N@Z";
@@ -43,6 +52,9 @@ struct EntityAbi {
     GetPropertySetFn get_property_set = nullptr;
     void* on_process = nullptr;
     PlayMotionFn play_motion = nullptr;
+    SetMotionFn set_motion = nullptr;
+    GetFileTitleFn get_file_title = nullptr;
+    BCStringDtorFn bcstring_dtor = nullptr;
 };
 
 EntityAbi g_abi;
@@ -63,6 +75,11 @@ bool resolve_entities(const char*& missing) {
         missing = "Engine.dll";
         return false;
     }
+    HMODULE shared_base = GetModuleHandleW(L"SharedBase.dll");
+    if (shared_base == nullptr) {
+        missing = "SharedBase.dll";
+        return false;
+    }
     // Script.dll est normalement déjà chargée (Script_Game.dll en dépend) ; sinon on la
     // charge depuis le dossier du jeu (hors loader lock : appelé depuis ScriptInit).
     HMODULE script = GetModuleHandleW(L"Script.dll");
@@ -80,7 +97,10 @@ bool resolve_entities(const char*& missing) {
                     lookup(script, kTemplateDtor, a.template_dtor, missing) &&
                     lookup(engine, kGetPropertySet, a.get_property_set, missing) &&
                     lookup(engine, kOnProcess, on_process, missing) &&
-                    lookup(engine, kPlayMotion, a.play_motion, missing);
+                    lookup(engine, kPlayMotion, a.play_motion, missing) &&
+                    lookup(engine, kSetMotion, a.set_motion, missing) &&
+                    lookup(engine, kGetFileTitle, a.get_file_title, missing) &&
+                    lookup(shared_base, kBCStringDtor, a.bcstring_dtor, missing);
     if (!ok) return false;
     a.on_process = reinterpret_cast<void*>(on_process);
     g_abi = a;
@@ -173,6 +193,16 @@ bool play_motion(void* animation_ps, int type, void* desc, bool flag) {
     }
 }
 
+bool set_motion(void* animation_ps, int type, void* resource) {
+    if (!g_resolved || animation_ps == nullptr || type < 0 || type >= kMotionTypeCount) return false;
+    __try {
+        g_abi.set_motion(animation_ps, type, resource);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // clang-cl sans /EHa ne protège sous __try que les appels : une lecture fautive inlinée
 // dans le bloc ne serait pas interceptée. La copie se fait donc dans un appel opaque.
 __declspec(noinline) static void raw_copy(void* dst, const void* src, std::size_t n) {
@@ -195,6 +225,55 @@ bool read_motion_resource(const void* animation_ps, int type, void*& out) {
     const auto* slot = static_cast<const std::uint8_t*>(animation_ps) + kMotionResourceOffset +
                        static_cast<std::size_t>(type) * kMotionResourceStride;
     return copy_bytes(slot, &out, sizeof out);
+}
+
+}  // namespace mp::game
+
+namespace mp::game {
+
+namespace {
+
+constexpr std::size_t kMaxNameLength = 255;
+
+// bCString : un seul pointeur vers un texte terminé par zéro (ou nul).
+__declspec(noinline) std::size_t raw_copy_cstr(const char* src, char* dst, std::size_t cap) {
+    std::size_t n = 0;
+    if (src != nullptr) {
+        while (n < cap && src[n] != '\0') {
+            dst[n] = src[n];
+            ++n;
+        }
+    }
+    return n;
+}
+
+bool title_into(const void* resource, char* buf, std::size_t cap, std::size_t& len) {
+    void* text = nullptr;  // bCString retourné par valeur (sret), détruit ici
+    bool ok = false;
+    __try {
+        g_abi.get_file_title(resource, &text);
+        len = raw_copy_cstr(static_cast<const char*>(text), buf, cap);
+        ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    __try {
+        if (text != nullptr) g_abi.bcstring_dtor(&text);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return ok;
+}
+
+}  // namespace
+
+bool get_resource_name(const void* resource, std::string& out) {
+    out.clear();
+    if (!g_resolved || resource == nullptr) return false;
+    char buf[kMaxNameLength];
+    std::size_t len = 0;
+    if (!title_into(resource, buf, sizeof buf, len)) return false;
+    out.assign(buf, len);
+    return true;
 }
 
 }  // namespace mp::game

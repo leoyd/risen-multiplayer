@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 
 namespace mp::sync::probe {
 
@@ -40,8 +41,10 @@ Capture g_ring[kCaptureRing];
 std::size_t g_ring_head = 0;  // prochaine écriture
 std::size_t g_ring_count = 0;
 unsigned g_ring_dropped = 0;  // captures perdues (anneau plein)
-Capture g_last{};             // dernière capture, pour F7
+Capture g_last{};             // dernière capture
 bool g_have_last = false;
+Capture g_last_action{};      // dernière capture de type >= 2 (attaque…), rejouée en priorité par F7
+bool g_have_last_action = false;
 std::atomic<void*> g_player_anim_ps{nullptr};
 
 // --- État du thread principal uniquement ------------------------------------------
@@ -93,9 +96,28 @@ std::string hex_dump(const std::uint8_t* b, std::size_t n) {
     return s;
 }
 
+// Noms des ressources de motion, par pointeur (les ressources sont partagées et
+// stables). Thread principal uniquement : GetFileTitleA est un appel au jeu.
+std::unordered_map<const void*, std::string> g_names;
+
+const std::string& motion_name(const void* resource) {
+    auto it = g_names.find(resource);
+    if (it != g_names.end()) return it->second;
+    std::string name;
+    if (resource == nullptr) {
+        name = "(aucune)";
+    } else if (!game::get_resource_name(resource, name)) {
+        name = "(nom illisible)";
+    } else if (name.empty()) {
+        name = "(nom vide)";
+    }
+    return g_names.emplace(resource, std::move(name)).first->second;
+}
+
 std::string describe(const Capture& c) {
-    std::string line = "[probe] PlayMotion type=" + std::to_string(c.type) + " flag=" + (c.flag ? "1" : "0") +
-                       " ressource=" + hex_ptr(c.resource) + " desc=" + hex_ptr(c.desc);
+    std::string line = "[probe] PlayMotion type=" + std::to_string(c.type) + " nom=« " + motion_name(c.resource) +
+                       " » flag=" + (c.flag ? "1" : "0") + " ressource=" + hex_ptr(c.resource) +
+                       " desc=" + hex_ptr(c.desc);
     if (c.desc_null) return line + " (descripteur nul)";
     if (!c.desc_readable) return line + " (descripteur illisible)";
     return line + " : " + hex_dump(c.bytes, kDescDumpSize);
@@ -226,9 +248,15 @@ void replay_on_copy() {
     }
     Capture last;
     bool have = false;
+    bool action = false;
     AcquireSRWLockShared(&g_lock);
-    have = g_have_last;
-    last = g_last;
+    if (g_have_last_action) {
+        last = g_last_action;
+        have = action = true;
+    } else if (g_have_last) {
+        last = g_last;
+        have = true;
+    }
     ReleaseSRWLockShared(&g_lock);
     if (!have) {
         log::info("[probe] F7 : aucune animation capturée");
@@ -246,12 +274,19 @@ void replay_on_copy() {
         std::memcpy(desc, last.bytes, kDescDumpSize);
         desc_arg = desc;
     }
-    void* resource = nullptr;
-    game::read_motion_resource(anim_ps, last.type, resource);
-    const bool ok = game::play_motion(anim_ps, last.type, desc_arg, last.flag);
-    log::info("[probe] F7 : PlayMotion(type=" + std::to_string(last.type) + ") sur la copie " +
-              (ok ? "appelé" : "a levé une exception (SEH)") + ", anim_ps=" + hex_ptr(anim_ps) +
-              ", ressource de la copie=" + hex_ptr(resource) + " (joueur : " + hex_ptr(last.resource) + ")");
+    // PlayMotion joue la ressource rangée dans l'emplacement : on y range d'abord celle
+    // du joueur (SetMotion gère le compteur de références).
+    void* before = nullptr;
+    game::read_motion_resource(anim_ps, last.type, before);
+    const bool set_ok = game::set_motion(anim_ps, last.type, last.resource);
+    void* after = nullptr;
+    game::read_motion_resource(anim_ps, last.type, after);
+    const bool ok = set_ok && game::play_motion(anim_ps, last.type, desc_arg, last.flag);
+    log::info("[probe] F7 : " + std::string(action ? "dernière action" : "dernière animation") + " « " +
+              motion_name(last.resource) + " » (type=" + std::to_string(last.type) + ") rejouée sur la copie : SetMotion " +
+              (set_ok ? "OK" : "SEH") + ", PlayMotion " + (ok ? "appelé" : (set_ok ? "SEH" : "non appelé")) +
+              ", emplacement " + hex_ptr(before) + " « " + motion_name(before) + " » -> " + hex_ptr(after) +
+              (after == last.resource ? " (ressource du joueur)" : " (INATTENDU)"));
 }
 
 void frame() {
@@ -275,6 +310,10 @@ void frame() {
         if (g_copy.ptr != nullptr) log::info("[probe] joueur changé : copie " + hex_ptr(g_copy.ptr) + " oubliée");
         g_copy = game::Entity{};
         g_last_player = player.ptr;
+        g_names.clear();  // ressources peut-être libérées avec le monde
+        AcquireSRWLockExclusive(&g_lock);
+        g_have_last = g_have_last_action = false;
+        ReleaseSRWLockExclusive(&g_lock);
     }
 
     flush_captures();
@@ -325,6 +364,10 @@ void on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcep
     }
     g_last = c;
     g_have_last = true;
+    if (type >= 2) {
+        g_last_action = c;
+        g_have_last_action = true;
+    }
     ReleaseSRWLockExclusive(&g_lock);
 }
 

@@ -9,6 +9,11 @@
 // - `eCAnimation_PS::PlayMotion(this, type 0..7, eSMotionPlayBackDesc*, bool)` lit la
 //   ressource de motion dans le PS lui-même, à `this + 0x120 + type * 0x10`.
 //
+// - Le choix de l'animation se fait avant PlayMotion, par
+//   `eCAnimation_PS::SetMotion(type, eCMotionResource2*)`, qui range la ressource dans
+//   cet emplacement (compteur de références à `res + 0x24`, comme eCResource2 : même
+//   pointeur, sans décalage). `eCResource2::GetFileTitleA()` donne son nom.
+//
 // Toutes les fonctions sont protégées par SEH et retournent false en cas d'échec.
 // À n'appeler que depuis le thread principal (hook OnProcess, AD-2), sauf
 // `copy_bytes` et `read_motion_resource`, qui ne font que lire la mémoire.
@@ -16,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace mp::game {
 
@@ -58,6 +64,10 @@ void destroy_template(Template& t);
 bool spawn(Template& tmpl, const Matrix& pose, bool temporary, Entity& out);
 bool get_animation_ps(const Entity& e, void*& out);
 bool play_motion(void* animation_ps, int type, void* desc, bool flag);
+// Range `resource` (eCMotionResource2*) dans l'emplacement `type` du PS.
+bool set_motion(void* animation_ps, int type, void* resource);
+// Nom de la ressource de motion (eCResource2::GetFileTitleA), 255 caractères au plus.
+bool get_resource_name(const void* resource, std::string& out);
 
 // Lectures mémoire protégées, utilisables depuis le hook PlayMotion.
 bool copy_bytes(const void* src, void* dst, std::size_t n);
