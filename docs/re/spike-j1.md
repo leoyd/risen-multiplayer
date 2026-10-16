@@ -38,3 +38,20 @@ Activer `probe = 1` (voir `client/README.md`), puis fournir `Script_Multiplayer.
 
 ## Prochaine étape : DLL sonde en jeu
 Hook `OnProcess` (thread, fps, état de session, pose du joueur, une fois par seconde) + hook `PlayMotion` (dump du type et des premiers octets du descripteur pour le joueur) + touche de debug qui fait apparaître une copie du joueur et lui fait rejouer la dernière animation capturée.
+
+## Résultats de la sonde en jeu (2026-10-16, Proton)
+- **Q4 — boucle par frame : confirmé.** `OnProcess` est appelé sur un seul thread (le même du début à la fin). En partie : 160–250 appels/s, cohérent avec l’affichage. Au menu ou en pause : 2 000–2 800/s (boucle non bridée). `OnProcess` est donc un tick par itération de la boucle principale. Le pas de temps devra venir d’une horloge, pas d’un compte d’appels.
+- **Monde chargé : confirmé.** `Entity::GetPlayer` rend nul au menu principal, puis un pointeur stable après le chargement. Le retour au menu n’a pas encore été testé.
+- **Pose : confirmé.** `bCMatrix` est en lignes ; la translation est en `m[12..14]` ; Y est vertical (ligne 1 = 0 1 0) ; l’unité est le centimètre (course ≈ 3–4 m/s, saut ≈ +100 en Y). L’axe avant en ligne 2 (`m[8..10]`) reste à confirmer visuellement (position de la copie par rapport au héros).
+- **Q2 — copie du joueur : partiel.** `Entity::Spawn(template du joueur, pose, true)` crée bien une entité visible, à la pose demandée, et le joueur ne change pas. La copie reste immobile.
+- **Q1 — animation courante : le descripteur ne suffit pas.**
+  - `PlayMotion(type)` joue la ressource déjà rangée dans l’emplacement `type` du PS (`this + 0x120 + type*0x10`).
+  - Ce choix de ressource se fait avant l’appel, via `eCAnimation_PS::SetMotion(eEMotionType, eCMotionResource2*)`.
+  - Le F7 du premier essai a rejoué `type 0` sur la copie avec **sa propre** ressource (`0x7817d70`, identique à celle du joueur : l’animation d’attente qui revient toutes les ≈ 2,6 s). D’où aucun effet visible.
+  - Les pointeurs de ressource sont partagés et stables (cache) : un même mouvement donne toujours le même pointeur.
+  - Types observés : 0 et 1 (locomotion, en paires, descripteur sur la pile) ; 4 (attaque, descripteur dans l’entité) ; 5 (une seule fois).
+- **Piste de synchro par nom (AD-8 a), désormais concrète :**
+  - émetteur : ressource de l’emplacement → `eCResource2::GetFileTitleA()` (ou `GetFileName`) → nom, interné une fois par pointeur ;
+  - récepteur : `eCResource2::GetMotion(bCString)` → ressource → `eCAnimation_PS::SetMotion(type, res)` → `PlayMotion(type, desc, flag)`.
+  - Alternative haut niveau : `Entity::StartPlayAni(bCString, int, bool, float, bool, eEMotionType)` (Script.dll).
+  - À vérifier : `eCMotionResource2` hérite-t-il de `eCResource2` sans décalage de pointeur ?
