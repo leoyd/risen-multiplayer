@@ -83,6 +83,8 @@ bool valid_nickname(std::string_view s) {
 
 const char* role_name(Role role) { return role == Role::Host ? "hôte" : "invité"; }
 
+const char* log_level_name(LogLevel level) { return level == LogLevel::Debug ? "debug" : "info"; }
+
 ConfigResult parse_config(std::string_view text) {
     ConfigResult r;
     if (text.size() >= 3 && text.substr(0, 3) == "\xEF\xBB\xBF") text.remove_prefix(3);
@@ -142,6 +144,23 @@ ConfigResult parse_config(std::string_view text) {
             r.config.nickname = std::string(value);
         } else if (key == "guest_equipment") {
             r.config.guest_equipment = std::string(value);
+        } else if (key == "probe") {
+            if (value.empty() || value == "0") {
+                r.config.probe = false;  // `probe =` : valeur par défaut
+            } else if (value == "1") {
+                r.config.probe = true;
+            } else {
+                return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
+            }
+        } else if (key == "log_level") {
+            const std::string v = to_lower(value);
+            if (v.empty() || v == "info") {
+                r.config.log_level = LogLevel::Info;  // `log_level =` : valeur par défaut
+            } else if (v == "debug") {
+                r.config.log_level = LogLevel::Debug;
+            } else {
+                return fail(std::move(r), key, value, "valeurs possibles : debug, info");
+            }
         } else {
             r.warnings.push_back("champ inconnu « " + key + " » ignoré");
         }

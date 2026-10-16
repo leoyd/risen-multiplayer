@@ -48,7 +48,10 @@ client/src/win/     ScriptInit, hooks MinHook ; client/src/common/ : log
 protocol/           PROTOCOL.md — contrat binaire hôte⇄invité
 ```
 
-- **Pas de serveur séparé** : la DLL de l'hôte héberge (1 invité max). Plus de Go ni de `server/` pour le MVP.
+- **Pas de serveur séparé** : la DLL de l'hôte héberge (1 invité max). Pas de `server/` ni de Go dans
+  le produit livré. Seule exception (AD-1 amendé) : `tools/fake-guest/`, faux invité en Go pour tester
+  l'hôte avec une seule instance de Risen, jamais livré ; il suit `protocol/PROTOCOL.md`, est vérifié
+  contre `protocol/vectors/*.bin` et compile le même `ikcp.c` via cgo.
 - Transport : un socket UDP, octet 0 = canal (0 KCP fiable, 1 snapshot non fiable 20 Hz, 2 contrôle
   Hello/Welcome/Reject). KCP `ikcp_nodelay(1,10,2,1)`, `ikcp_setmtu(1199)`, datagramme ≤ 1200 o.
 - Tout appel au jeu sur le thread principal, depuis le hook `eCApplication::OnProcess`.

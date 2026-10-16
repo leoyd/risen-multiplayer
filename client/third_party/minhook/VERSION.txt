@@ -1,0 +1,9 @@
+MinHook — https://github.com/TsudaKageyu/minhook
+Commit   : 8af6b4acae5a9388fd742b56fa79ece89d96f823
+Date     : 2026-09-08 02:59:18 +0300 (« Update and fix Hacker Disassembler Engine (2) »)
+Base     : 1.3.4 + correctifs de master (HDE corrigé le 2026-09-07/08, vérification VirtualQuery)
+Licence  : BSD 2 clauses (MinHook) + BSD (Hacker Disassembler Engine) — voir LICENSE.txt
+Contenu  : include/ et src/ copiés sans modification. Seuls src/{buffer,hook,trampoline}.c et
+           src/hde/hde64.c sont compilés (cible x64), directement dans Script_Multiplayer
+           (client/CMakeLists.txt), sans le CMakeLists de MinHook.
+Mise à jour : recopier include/ et src/ depuis un nouveau commit, puis mettre ce fichier à jour.

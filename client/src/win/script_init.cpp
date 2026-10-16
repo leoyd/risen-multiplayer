@@ -11,21 +11,26 @@
 // - Entrée (pas de 0x18) : +0x00 bCString nom, +0x08 bCString (copiée par operator=),
 //   +0x10 pointeur de fonction. Un nom déjà enregistré est ignoré.
 //
-// En J0, la seule entrée est le script `MP_Probe`, que personne n'appelle : le mod ne
-// s'accroche à rien. Si la version du jeu n'est pas reconnue ou si l'ABI est
-// introuvable, les tables restent vides (rejet silencieux) et aucun code du jeu
-// n'est appelé. Toute la logique s'exécute dans ScriptInit (hors loader lock).
+// En J0, la seule entrée est le script `MP_Probe`, que personne n'appelle. Avec
+// `probe = 1` (spike J1), ScriptInit installe les hooks de la sonde (win/hooks,
+// sync/probe) ; sinon (story 1.4) il installe le seul hook OnProcess de la session
+// (sync/session). Sonde et session sont exclusives. Si la version du jeu
+// n'est pas reconnue ou si l'ABI est introuvable, les tables restent vides (rejet
+// silencieux) et aucun code du jeu n'est appelé. Toute la logique s'exécute dans ScriptInit (hors loader lock).
 
 #include "core/config.h"
 #include "core/version.h"
-#include "win/game_abi.h"
-#include "win/log.h"
+#include "game/abi.h"
+#include "common/log.h"
+#include "sync/session.h"
+#include "win/hooks.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -54,8 +59,8 @@ static_assert(offsetof(ScriptDescriptor, ai_callbacks) == 0x20, "offset AICallba
 static_assert(offsetof(ScriptDescriptor, scripts) == 0x30, "offset Script");
 
 struct ScriptEntry {
-    mp::abi::bCString name;
-    mp::abi::bCString description;
+    mp::game::bCString name;
+    mp::game::bCString description;
     void* function;
 };
 static_assert(sizeof(ScriptEntry) == 0x18, "entrée de table : pas de 0x18");
@@ -79,7 +84,7 @@ extern "C" std::intptr_t MP_Probe(void*, void*, void*, void*) { return 0; }
 
 // Appel protégé du constructeur du jeu. Fonction séparée : pas d'objet C++ à
 // détruire dans un cadre __try.
-bool construct_bcstring(mp::abi::BCStringCtorFromCStr ctor, mp::abi::bCString* self, const char* text) {
+bool construct_bcstring(mp::game::BCStringCtorFromCStr ctor, mp::game::bCString* self, const char* text) {
     __try {
         ctor(self, text);
         return true;
@@ -89,7 +94,7 @@ bool construct_bcstring(mp::abi::BCStringCtorFromCStr ctor, mp::abi::bCString* s
     }
 }
 
-void destroy_bcstring(mp::abi::BCStringDtor dtor, mp::abi::bCString* self) {
+void destroy_bcstring(mp::game::BCStringDtor dtor, mp::game::bCString* self) {
     __try {
         dtor(self);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -127,9 +132,9 @@ std::string to_utf8(const std::wstring& w) {
 
 // Remplit le descripteur. Retourne false (tables vides) si l'ABI est introuvable.
 bool build_descriptor() {
-    mp::abi::GameAbi abi;
+    mp::game::GameAbi abi;
     const char* missing = nullptr;
-    if (!mp::abi::resolve(abi, missing)) {
+    if (!mp::game::resolve(abi, missing)) {
         mp::log::error(std::string("ABI du jeu : symbole introuvable : ") + missing);
         return false;
     }
@@ -226,9 +231,30 @@ bool load_config(const std::wstring& dir) {
         return false;
     }
     g_config = r.config;
+    mp::log::set_debug(g_config.log_level == mp::LogLevel::Debug);
     mp::log::info(std::string("config OK (rôle=") + mp::role_name(g_config.role) + ", port=" +
-                  std::to_string(g_config.port) + ", pseudo=" + g_config.nickname + ")");
+                  std::to_string(g_config.port) + ", pseudo=" + g_config.nickname +
+                  ", log_level=" + mp::log_level_name(g_config.log_level) + ")");
     return true;
+}
+
+// Session (story 1.4, probe = 0) : hook OnProcess seul, puis empreintes des 4 modules
+// (Script.dll est chargée par la résolution des entités). Un échec laisse le jeu en solo.
+void start_session() {
+    if (!mp::win::hooks::install_session()) {
+        mp::log::error("[sync] session impossible : le jeu reste en solo");
+        return;
+    }
+    static const wchar_t* const kModules[] = {L"Game.dll", L"Engine.dll", L"Script.dll", L"SharedBase.dll"};
+    std::array<mp::ModuleFingerprint, 4> fingerprint{};
+    for (std::size_t i = 0; i < fingerprint.size(); ++i) {
+        if (!fingerprint_of(kModules[i], fingerprint[i])) {
+            mp::log::error("[sync] session impossible : empreinte illisible : " + to_utf8(kModules[i]));
+            mp::win::hooks::remove();
+            return;
+        }
+    }
+    mp::sync::session::configure(g_config, fingerprint, MP_MOD_VERSION);
 }
 
 void initialize() {
@@ -242,6 +268,19 @@ void initialize() {
     const bool descriptor_ok = version_ok && build_descriptor();
     g_mod_active = version_ok && config_ok && descriptor_ok;
     mp::log::info(g_mod_active ? "mod actif" : "mod inactif : le jeu continue en solo");
+    if (!g_mod_active) {
+        if (config_ok && g_config.probe) mp::log::info("sonde ignorée : mod inactif");
+        return;
+    }
+    // Spike J1 : la sonde n'installe ses hooks que sur demande explicite (probe = 1).
+    // Un échec la laisse inactive sans toucher au mod ni au jeu.
+    if (g_config.probe) {
+        mp::log::info("sonde activée (probe = 1)");
+        mp::win::hooks::install_probe();
+    } else {
+        mp::log::info("sonde désactivée");
+        start_session();
+    }
 }
 
 }  // namespace
