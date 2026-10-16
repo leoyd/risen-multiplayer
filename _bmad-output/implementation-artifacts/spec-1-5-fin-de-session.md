@@ -2,7 +2,7 @@
 title: 'Story 1.5 — Fin de session propre'
 type: 'feature'
 created: '2026-10-17'
-status: 'in-review'
+status: 'done'
 baseline_commit: '7025003b23751868d477d71ae8d5a713210cb1ac'
 route: 'dispatch'
 review_loop_iteration: 0
@@ -88,6 +88,14 @@ context:
 - Given le build Windows, when on construit la DLL, then elle compile sans avertissement (imports inchangés).
 - Given Risen en hôte (`log_level = debug`) et le faux invité qui se reconnecte, when on recharge rapidement 3 fois puis revient au menu, then le log montre 3 sessions distinctes, chacune terminée par « fin de monde » avec `SessionEnd{2}` reçu par le faux invité, sans crash. Les lignes `[sync] signaux` sont recopiées dans `docs/re/fin-de-monde.md`. Vérification manuelle par l'utilisateur.
 - Given l'hôte en session avec le faux invité, when le héros de l'hôte meurt, then le faux invité reçoit `SessionEnd{3}`. Vérification manuelle.
+
+## Implementation Notes
+
+**Test en jeu (2026-10-17) :** 3 chargements rapides et la mort de l'hôte en session, avec le faux invité. Tous conformes (détail dans `docs/re/fin-de-monde.md`).
+- **Fin de monde au chargement rapide :** détectée par le **changement d'adresse du joueur**. `running` reste à 1.
+- **`OnProcess` muet pendant un chargement :** 3 à 3,5 s, sous le timeout de 5 s.
+- **Retour au menu en cours de session :** **pas encore observé en jeu** (couvert par les tests unitaires).
+- **Côté invité de la DLL :** à valider à deux machines.
 
 ## Spec Change Log
 

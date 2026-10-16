@@ -63,3 +63,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-5-fin-de-session.md`
   summary: Valider à deux machines le côté invité de la story 1.5 (SessionEnd{2}/{3} reçu de l'hôte, fin de monde de l'invité avec SessionEnd{2}, attente du monde suivant).
   evidence: Une seule instance de Risen par machine ; ce côté n'est couvert que par `tests/test_session.cpp`.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-fin-de-session.md`
+  summary: Observer en jeu le retour au menu principal en cours de session (attendu : `player` nul ou `running` faux, donc « fin de monde » et `SessionEnd{2}`).
+  evidence: Non fait pendant le test du 2026-10-17 ; couvert seulement par les tests de `core/session`.
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-5-fin-de-session.md`
+  summary: Marge faible entre la pause d'`OnProcess` pendant un chargement rapide (environ 3,5 s mesurées) et le timeout de 5 s ; à revoir si des timeouts apparaissent à la place de « fin de monde » (heartbeat depuis le thread réseau, ou timeout plus long).
+  evidence: `docs/re/fin-de-monde.md`, réponse 4 ; complète l'entrée de la story 1.4 sur la pause d'`OnProcess`.

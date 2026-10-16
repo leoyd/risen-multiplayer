@@ -40,20 +40,53 @@ pendant tout chargement, même rapide. Si ce n'est pas le cas, le signal de remp
 
 ## Résultats du test en jeu
 
-**À compléter** après le test manuel (procédure : `client/README.md`, « Fin de session en jeu »).
-Recopier ici, avec `log_level = debug`, les lignes `[sync] signaux` et les transitions qui les
-entourent, pour :
+Test du 2026-10-17 (Risen Steam x64 sous Proton, hôte, `log_level = debug`, faux invité en boucle
+sur 127.0.0.1) : 3 chargements rapides en session, puis mort du héros en session.
 
-- trois chargements rapides en session avec le faux invité, puis retour au menu ;
-- la mort du héros de l'hôte en session.
+**Réponses :**
 
-Questions à trancher :
+1. **Chargement rapide : `running` reste à 1** dans toutes les frames observées. `OnProcess`
+   ne tourne pas pendant le chargement, donc aucun état intermédiaire n'est vu. **`player`
+   change d'adresse à chaque fois** (`0x1c5c3c00` → `0x1ef1ec80` → `0x1ed12160` → `0x1c29eba0`) :
+   c'est ce signal qui détecte la fin de monde. Le second signal (`running`) ne sert donc pas
+   pour le chargement rapide. L'adresse pourrait un jour être réutilisée ; `eCEntity::GetID`
+   reste le recours documenté (voir `deferred-work.md`).
+2. **Menu principal au lancement : `player = 0`, `running = 0`** (première ligne `signaux`).
+   Le **retour au menu en cours de session n'a pas encore été observé en jeu**. Il est couvert
+   par les tests de `core/session`.
+3. **Mort : `dead` passe à 1 avec le même `player`**, avant tout rechargement.
+   `SessionEnd{3}` part aussitôt. Le monde suivant (après l'écran de mort, environ 15 s) a une
+   nouvelle adresse de joueur, `0x1d431510`, et la session se réarme.
+4. **`OnProcess` s'arrête pendant un chargement rapide pendant environ 3 à 3,5 s** (plus aucun
+   heartbeat de l'hôte n'arrive pendant ce temps, côté faux invité). La fin de monde n'est
+   détectée qu'après le chargement, à la première frame du nouveau monde : le `SessionEnd{2}`
+   part alors, **avant** le timeout de 5 s du pair. La marge est faible : un chargement plus
+   long (machine lente, zone chargée) déclencherait un timeout chez le pair au lieu de
+   « fin de monde ».
 
-1. `running` retombe-t-il pendant un chargement rapide ? `player` change-t-il d'adresse ?
-2. `player` est-il nul au menu principal, et `running` faux ?
-3. `dead` passe-t-il à 1 à la mort du héros, avant le rechargement automatique ?
-4. `OnProcess` s'arrête-t-il pendant l'écran de chargement (et combien de temps) ?
+**Résultat :** 3 sessions distinctes (`conv` 0x3a705e03, 0xf8ad93ae, 0xc614ed3b, puis 0xbc72e496
+et 0xb627f01b), chacune terminée par « fin de monde (2) » ou « mort de l'hôte (3) », reçue par
+le faux invité. Réarmement immédiat après une fin de monde. Après la mort, réarmement au monde
+suivant. Aucun crash.
 
 ```text
-(lignes du log à coller ici)
+[01:35:19.573] DEBUG [sync] signaux : player=0x0000000000000000 running=0 dead=0 (état Inactive)
+[01:35:29.697] DEBUG [sync] signaux : player=0x000000001c5c3c00 running=1 dead=0 (état Inactive)
+[01:35:29.697] INFO  [sync] Inactive → Hosting : monde chargé, en attente d'un invité sur le port 27960
+[01:35:41.965] INFO  [sync] Hosting → InSession : … conv=0x3a705e03 …
+[01:36:02.012] DEBUG [sync] Heartbeat reçu (21)          ← dernier avant le chargement rapide
+[01:36:05.105] DEBUG [sync] signaux : player=0x000000001ef1ec80 running=1 dead=0 (état InSession)
+[01:36:05.105] INFO  [sync] SessionEnd envoyé : fin de monde (2)
+[01:36:05.105] INFO  [sync] InSession → Ended : fin de monde ; retour au solo
+[01:36:06.104] INFO  [sync] Ended → Inactive : transport arrêté ; réarmement immédiat
+[01:36:06.104] INFO  [sync] Inactive → Hosting : monde chargé, en attente d'un invité sur le port 27960
+[01:36:22.624] DEBUG [sync] signaux : player=0x000000001ed12160 running=1 dead=0 (état InSession)
+[01:36:22.624] INFO  [sync] SessionEnd envoyé : fin de monde (2)
+[01:36:40.231] DEBUG [sync] signaux : player=0x000000001c29eba0 running=1 dead=0 (état InSession)
+[01:36:40.231] INFO  [sync] SessionEnd envoyé : fin de monde (2)
+[01:38:22.469] DEBUG [sync] signaux : player=0x000000001c29eba0 running=1 dead=1 (état InSession)
+[01:38:22.469] INFO  [sync] SessionEnd envoyé : mort de l'hôte (3)
+[01:38:23.473] INFO  [sync] Ended → Inactive : transport arrêté ; nouvelle session au prochain monde chargé
+[01:38:38.767] DEBUG [sync] signaux : player=0x000000001d431510 running=1 dead=0 (état Inactive)
+[01:38:38.767] INFO  [sync] Inactive → Hosting : monde chargé, en attente d'un invité sur le port 27960
 ```
