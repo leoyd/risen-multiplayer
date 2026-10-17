@@ -48,6 +48,8 @@ constexpr int kMotionTypeCount = 8;          // PlayMotion ignore type > 7
 
 using OnProcessFn = void (*)(void* application);
 using PlayMotionFn = void (*)(void* animation_ps, int type, void* desc, bool flag);
+// eCAnimation_PS::SetRagDollEnabled(bool actif, bool, bCVector*) ; bCVector = 3 f32.
+using SetRagdollFn = void (*)(void* animation_ps, bool on, bool flag, const float* vector);
 
 // Résout en bloc les symboles des entités (Script.dll, Engine.dll, Game.dll). Script.dll est
 // chargée si besoin. Retourne false et renseigne `missing` au premier échec.
@@ -56,6 +58,7 @@ bool resolve_entities(const char*& missing);
 // Adresses des fonctions à hooker (valides après resolve_entities).
 void* on_process_address();
 void* play_motion_address();
+void* set_ragdoll_address();
 
 bool get_player(Entity& out);  // out.ptr == nullptr : pas de joueur (menu, chargement)
 bool get_pose(const Entity& e, Matrix& out);
@@ -71,6 +74,10 @@ bool get_animation_ps(const Entity& e, void*& out);
 bool play_motion(void* animation_ps, int type, void* desc, bool flag);
 // Range `resource` (eCMotionResource2*) dans l'emplacement `type` du PS.
 bool set_motion(void* animation_ps, int type, void* resource);
+// eCAnimation_PS::SetRagDollEnabled : `vector` = 3 f32 (bCVector) ou nul.
+bool set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector);
+// eCAnimation_PS::GetRagDollEnabled (bit 2 de +0x22C).
+bool get_ragdoll(const void* animation_ps, bool& out);
 // Nom de la ressource de motion (eCResource2::GetFileTitleA), 255 caractères au plus.
 bool get_resource_name(const void* resource, std::string& out);
 // eCResource2::GetMotion(nom) (Engine.dll, statique) : ressource du cache, créée au besoin.

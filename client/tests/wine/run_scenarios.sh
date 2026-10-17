@@ -78,7 +78,7 @@ expect_log "log_level = DEBUG : lignes DEBUG écrites" "$d" "DEBUG .*\[sync\] em
 
 d=$(setup sonde_on $'role = host\nprobe = 1')
 run "sonde on" "$d"
-expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, PlayMotion)"
+expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, PlayMotion, SetRagDollEnabled)"
 expect_log "probe = 1 : mod actif" "$d" "mod actif"
 expect_no_log "probe = 1 : pas de hook de session" "$d" "hooks installés (OnProcess)"
 expect_no_log "probe = 1 : aucune session" "$d" "\[sync\]"

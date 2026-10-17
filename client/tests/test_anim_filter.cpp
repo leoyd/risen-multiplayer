@@ -109,6 +109,38 @@ TEST("filtre : vidage partiel puis reprise") {
     CHECK_EQ(rest[6].desc[0], 10);
 }
 
+TEST("filtre : PlayMotion et ragdoll restitués dans l'ordre") {
+    AnimFilter f;
+    Capture a;
+    a.type = 0;
+    f.push(a);
+    Capture r;
+    r.kind = mp::sync::CaptureKind::Ragdoll;
+    r.ragdoll_on = true;
+    r.has_vector = false;  // vecteur nul
+    f.push(r);
+    Capture v;
+    v.kind = mp::sync::CaptureKind::Ragdoll;
+    v.ragdoll_flag = true;
+    v.has_vector = true;
+    v.vector[0] = 1.5f;
+    v.vector[1] = -2.0f;
+    v.vector[2] = 300.0f;
+    f.push(v);
+    Capture b;
+    b.type = 1;
+    f.push(b);
+    Capture out[5];
+    unsigned dropped = 0;
+    CHECK_EQ(f.drain(out, 5, dropped), static_cast<std::size_t>(4));
+    CHECK(out[0].kind == mp::sync::CaptureKind::Motion && out[0].type == 0);
+    CHECK(out[1].kind == mp::sync::CaptureKind::Ragdoll && out[1].ragdoll_on && !out[1].has_vector);
+    CHECK(out[1].type == 0 && !out[1].desc_present && out[1].resource == nullptr);  // champs PlayMotion neutres
+    CHECK(out[2].kind == mp::sync::CaptureKind::Ragdoll && !out[2].ragdoll_on && out[2].ragdoll_flag);
+    CHECK(out[2].has_vector && out[2].vector[0] == 1.5f && out[2].vector[1] == -2.0f && out[2].vector[2] == 300.0f);
+    CHECK(out[3].kind == mp::sync::CaptureKind::Motion && out[3].type == 1);
+}
+
 TEST("filtre : thread du hook retenu au premier appel, changement signalé") {
     AnimFilter f;
     CHECK_EQ(f.hook_thread(), 0u);

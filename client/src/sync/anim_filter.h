@@ -1,8 +1,9 @@
-// Filtre du hook eCAnimation_PS::PlayMotion (AD-2, AD-8) : seul état partagé entre le hook
-// et la frame (OnProcess). Réutilisé par la sonde (miroir) et par l'avatar.
+// Filtre des hooks eCAnimation_PS::PlayMotion et SetRagDollEnabled (AD-2, AD-8) : seul
+// état partagé entre les hooks et la frame (OnProcess). Réutilisé par la sonde (miroir) et
+// par l'avatar.
 //
-// - PS local (héros du joueur) : ses PlayMotion sont capturés, jamais bloqués.
-// - PS des répliques (copie de la sonde, avatar) : les PlayMotion que le moteur lance de
+// - PS local (héros du joueur) : ses appels sont capturés, jamais bloqués.
+// - PS des répliques (copie de la sonde, avatar) : les appels que le moteur lance de
 //   lui-même sont bloqués ; seul le rejeu, sous ReplayGuard sur le même thread, passe.
 // - Anneau des captures, vidé par la frame.
 //
@@ -21,13 +22,26 @@ namespace mp::sync {
 constexpr std::size_t kCaptureRing = 64;
 constexpr std::size_t kCaptureDescSize = 0x60;  // eSMotionPlayBackDesc
 
-// Un PlayMotion du héros local, copié par le hook.
+enum class CaptureKind : std::uint8_t {
+    Motion,   // eCAnimation_PS::PlayMotion
+    Ragdoll,  // eCAnimation_PS::SetRagDollEnabled (mort : story 2.1b)
+};
+
+// Un appel du héros local, copié par le hook. Les deux natures partagent l'anneau : leur
+// ordre est conservé.
 struct Capture {
+    CaptureKind kind = CaptureKind::Motion;
+    // PlayMotion
     int type = 0;
     bool flag = false;
     bool desc_present = false;   // descripteur non nul et lisible
     void* resource = nullptr;    // emplacement `type` du PS : nom (frame) et contrôle seulement
     std::uint8_t desc[kCaptureDescSize] = {};
+    // SetRagDollEnabled
+    bool ragdoll_on = false;
+    bool ragdoll_flag = false;   // second bool (non lu par le moteur sur le chemin observé)
+    bool has_vector = false;     // bCVector* non nul et lisible
+    float vector[3] = {};
 };
 
 class AnimFilter {
@@ -43,7 +57,7 @@ public:
     // Retire au plus `cap` captures (les plus anciennes d'abord). `dropped` reçoit le nombre
     // de captures perdues (anneau plein) depuis le dernier appel.
     std::size_t drain(Capture* out, std::size_t cap, unsigned& dropped);
-    // PlayMotion bloqués depuis le dernier appel.
+    // Appels bloqués (PlayMotion et SetRagDollEnabled) depuis le dernier appel.
     unsigned take_blocked();
     // Premier thread vu par le hook (0 : aucun appel encore), et s'il en a vu un autre.
     std::uint32_t hook_thread() const { return hook_thread_.load(); }
@@ -53,7 +67,7 @@ public:
     Verdict classify(void* animation_ps, std::uint32_t thread_id);
     void push(const Capture& capture);
 
-    // Garde de rejeu, propre au thread courant : pendant sa durée, les PlayMotion de ce
+    // Garde de rejeu, propre au thread courant : pendant sa durée, les appels de ce
     // thread sur une réplique passent. Les autres threads restent bloqués.
     class ReplayGuard {
     public:

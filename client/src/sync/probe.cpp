@@ -30,8 +30,9 @@ constexpr float kMaxNpcDistance = 1500.0f;  // F4 : PNJ à 15 m au plus
 using sync::Capture;
 namespace proto = mp::protocol;
 
-// L'état partagé avec le hook PlayMotion est dans sync::anim_filter() (AD-2) : PS du joueur
-// (capturé), PS de la copie en mode miroir (réplique bloquée), anneau des captures.
+// L'état partagé avec les hooks PlayMotion et SetRagDollEnabled est dans sync::anim_filter()
+// (AD-2) : PS du joueur (capturé), PS de la copie en mode miroir (réplique bloquée), anneau
+// des captures.
 
 // --- État du thread principal uniquement ------------------------------------------
 DWORD g_first_thread = 0;
@@ -55,7 +56,8 @@ ULONGLONG g_mirror_start = 0;          // base du champ `ms` des Motion du miroi
 game::Entity g_copy;          // oubliée dès que le joueur change (chargement, menu)
 void* g_copy_anim_ps = nullptr;
 void* g_last_player = nullptr;
-Capture g_last{};             // dernière capture, quelle qu'elle soit (repli de F4)
+Capture g_last{};             // dernière capture PlayMotion, quelle qu'elle soit (repli de F4)
+int g_last_ragdoll = -1;      // dernier état ragdoll capturé du joueur (-1 : aucun) : dédoublonnage
 bool g_have_last = false;
 // Classées par nom depuis le tick : rejouées en priorité par F4.
 Capture g_last_attack{};      // nom contenant « Attack_ » (coup), hors « Recover »/« Stumble »
@@ -138,6 +140,18 @@ proto::Motion to_motion(const Capture& c, std::uint32_t ms) {
 }
 
 std::string describe(const Capture& c) {
+    if (c.kind == sync::CaptureKind::Ragdoll) {
+        char buf[160];
+        if (c.has_vector) {
+            std::snprintf(buf, sizeof buf, "[probe] SetRagDollEnabled actif=%d b=%d vecteur=(%g, %g, %g)",
+                          c.ragdoll_on ? 1 : 0, c.ragdoll_flag ? 1 : 0, static_cast<double>(c.vector[0]),
+                          static_cast<double>(c.vector[1]), static_cast<double>(c.vector[2]));
+        } else {
+            std::snprintf(buf, sizeof buf, "[probe] SetRagDollEnabled actif=%d b=%d vecteur=nul", c.ragdoll_on ? 1 : 0,
+                          c.ragdoll_flag ? 1 : 0);
+        }
+        return buf;
+    }
     std::string line = "[probe] PlayMotion type=" + std::to_string(c.type) + " nom=« " + motion_name(c.resource) +
                        " » flag=" + (c.flag ? "1" : "0");
     if (!c.desc_present) return line + " (descripteur nul ou illisible)";
@@ -165,26 +179,51 @@ bool pressed(int vk, bool& was_down) {
 
 bool replay_by_name(void* anim_ps, const Capture& c, bool& set_ok);
 
+// Ragdoll capturé → même appel sur la copie, sous le garde de rejeu (sinon bloqué).
+bool replay_ragdoll(void* anim_ps, const Capture& c) {
+    sync::AnimFilter::ReplayGuard guard;
+    const bool ok = game::set_ragdoll(anim_ps, c.ragdoll_on, c.ragdoll_flag, c.has_vector ? c.vector : nullptr);
+    log::info(std::string("[probe] SetRagDollEnabled actif=") + (c.ragdoll_on ? "1" : "0") + " rejoué sur la copie : " +
+              (ok ? "OK" : "SEH"));
+    return ok;
+}
+
 void flush_captures() {
     static Capture batch[sync::kCaptureRing];
     unsigned dropped = 0;
     const std::size_t n = sync::anim_filter().drain(batch, sync::kCaptureRing, dropped);
 
     g_ring_overflow += dropped;
-    if (n != 0) {
-        g_last = batch[n - 1];
-        g_have_last = true;
+    for (std::size_t i = n; i-- > 0;) {
+        if (batch[i].kind == sync::CaptureKind::Motion) {
+            g_last = batch[i];
+            g_have_last = true;
+            break;
+        }
+    }
+    // Ragdoll : seuls les changements d'état comptent (le moteur sort aussitôt si l'état ne
+    // change pas) ; les appels répétés ne sont ni rejoués ni journalisés.
+    bool repeat[sync::kCaptureRing] = {};
+    for (std::size_t i = 0; i < n; ++i) {
+        if (batch[i].kind != sync::CaptureKind::Ragdoll) continue;
+        const int state = batch[i].ragdoll_on ? 1 : 0;
+        repeat[i] = state == g_last_ragdoll;
+        g_last_ragdoll = state;
     }
     void* copy_ps = g_mirror ? g_copy_anim_ps : nullptr;
     for (std::size_t i = 0; i < n && copy_ps != nullptr; ++i) {
+        if (repeat[i]) continue;
         bool set_ok = false;
-        if (replay_by_name(copy_ps, batch[i], set_ok)) {
+        const bool ok = batch[i].kind == sync::CaptureKind::Ragdoll ? replay_ragdoll(copy_ps, batch[i])
+                                                                     : replay_by_name(copy_ps, batch[i], set_ok);
+        if (ok) {
             ++g_mirror_replays;
         } else {
             ++g_mirror_failures;
         }
     }
     for (std::size_t i = 0; i < n; ++i) {
+        if (batch[i].kind != sync::CaptureKind::Motion) continue;
         const std::string& name = motion_name(batch[i].resource);
         if (name.find("Attack_") != std::string::npos && name.find("Recover") == std::string::npos &&
             name.find("Stumble") == std::string::npos) {
@@ -196,6 +235,10 @@ void flush_captures() {
         }
     }
     for (std::size_t i = 0; i < n; ++i) {
+        if (batch[i].kind == sync::CaptureKind::Ragdoll) {
+            if (!repeat[i]) log::info(describe(batch[i]));  // changement d'état, rare : jamais limité
+            continue;
+        }
         if (g_anim_lines >= kMaxAnimLinesPerSecond) {
             ++g_anim_skipped;
             continue;
@@ -241,11 +284,14 @@ void log_tick(ULONGLONG now) {
         game::read_motion_resource(g_copy_anim_ps, 0, slot0);
         game::Matrix copy_pose;
         const bool pose_ok = game::get_pose(g_copy, copy_pose);
+        bool ragdoll = false;
+        const bool ragdoll_ok = game::get_ragdoll(g_copy_anim_ps, ragdoll);
         log::info("[probe] copie " + hex_ptr(g_copy.ptr) + " : zone de traitement=" +
                   (range_ok ? (in_range ? "oui" : "NON") : "illisible") +
+                  ", ragdoll=" + (ragdoll_ok ? (ragdoll ? "oui" : "non") : "illisible") +
                   (g_mirror ? ", miroir par nom : " + std::to_string(g_mirror_replays) + " rejoués, " +
                                   std::to_string(g_mirror_failures) + " échecs, " +
-                                  std::to_string(sync::anim_filter().take_blocked()) + " bloqués/s, " +
+                                  std::to_string(sync::anim_filter().take_blocked()) + " appels moteur bloqués/s, " +
                                   std::to_string(g_name_mismatches) + " écarts de pointeur depuis F7"
                             : std::string()) +
                   ", emplacement 0 « " + motion_name(slot0) +
@@ -386,6 +432,11 @@ void toggle_mirror() {
         log::info("[probe] F7 : pas d'eCAnimation_PS sur la copie");
         return;
     }
+    bool copy_ragdoll = false;
+    if (game::get_ragdoll(g_copy_anim_ps, copy_ragdoll) && copy_ragdoll) {
+        log::info("[probe] F7 : la copie est restée en ragdoll (morte) ; recharger puis F6 pour une nouvelle copie");
+        return;
+    }
     game::Entity player;
     game::Matrix pp, cp;
     if (!game::get_player(player) || player.ptr == nullptr || !game::get_pose(player, pp) ||
@@ -408,8 +459,11 @@ void toggle_mirror() {
 }
 
 // Miroir, chaque frame : la copie prend la pose du joueur (orientation comprise),
-// décalée du vecteur mémorisé à l'activation.
+// décalée du vecteur mémorisé à l'activation. En ragdoll (mort), la physique pilote la
+// copie : on ne lui impose plus rien.
 void mirror_pose(const game::Entity& player) {
+    bool ragdoll = false;
+    if (game::get_ragdoll(g_copy_anim_ps, ragdoll) && ragdoll) return;  // lecture impossible : pose imposée
     game::Matrix p;
     if (!game::get_pose(player, p)) return;
     for (int i = 0; i < 3; ++i) p.m[12 + i] += g_mirror_offset[i];
@@ -462,7 +516,7 @@ void frame() {
     }
     ++g_frames;
 
-    // Mise à jour du filtre du hook PlayMotion.
+    // Mise à jour du filtre des hooks.
     sync::AnimFilter& filter = sync::anim_filter();
     game::Entity player;
     void* anim_ps = nullptr;
@@ -481,23 +535,24 @@ void frame() {
         g_names.clear();  // ressources peut-être libérées avec le monde
         g_by_name.clear();
         g_have_last_attack = g_have_last_other = g_have_last = false;
+        g_last_ragdoll = -1;
         // Captures de l'ancien monde : leurs ressources sont peut-être libérées, on les jette.
         static Capture stale[sync::kCaptureRing];
         unsigned dropped = 0;
         filter.drain(stale, sync::kCaptureRing, dropped);
     }
 
-    // AD-2 : le hook PlayMotion tourne-t-il sur le thread d'OnProcess ?
+    // AD-2 : les hooks (PlayMotion, SetRagDollEnabled) tournent-ils sur le thread d'OnProcess ?
     const std::uint32_t hook_tid = filter.hook_thread();
     if (!g_hook_thread_logged && hook_tid != 0) {
         g_hook_thread_logged = true;
-        log::info("[probe] hook PlayMotion : thread=" + std::to_string(hook_tid) +
+        log::info("[probe] hooks PlayMotion/SetRagDollEnabled : thread=" + std::to_string(hook_tid) +
                   (hook_tid == g_first_thread ? " (celui d'OnProcess)" : " (DIFFÉRENT du thread d'OnProcess " +
                                                                               std::to_string(g_first_thread) + ")"));
     }
     if (!g_hook_varied_logged && filter.hook_thread_varied()) {
         g_hook_varied_logged = true;
-        log::warn("[probe] hook PlayMotion : appelé depuis plusieurs threads");
+        log::warn("[probe] hooks PlayMotion/SetRagDollEnabled : appelés depuis plusieurs threads");
     }
 
     if (g_mirror && g_copy.ptr != nullptr && player.ptr != nullptr) mirror_pose(player);
@@ -543,6 +598,25 @@ bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcep
     c.flag = flag;
     c.desc_present = desc != nullptr && game::copy_bytes(desc, c.desc, sizeof c.desc);
     game::read_motion_resource(animation_ps, type, c.resource);
+    filter.push(c);
+    return true;
+}
+
+bool on_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) noexcept {
+    sync::AnimFilter& filter = sync::anim_filter();
+    switch (filter.classify(animation_ps, GetCurrentThreadId())) {
+        case sync::AnimFilter::Verdict::Pass: return true;
+        // Miroir : seul le rejeu met la copie en ragdoll. Une désactivation (nettoyage par le
+        // moteur) passe toujours : bloquée, elle laisserait un ragdoll orphelin (décision du
+        // 2026-10-17). Elle reste comptée dans les appels bloqués.
+        case sync::AnimFilter::Verdict::Block: return !on;
+        case sync::AnimFilter::Verdict::Capture: break;
+    }
+    Capture c;
+    c.kind = sync::CaptureKind::Ragdoll;
+    c.ragdoll_on = on;
+    c.ragdoll_flag = flag;
+    c.has_vector = vector != nullptr && game::copy_bytes(vector, c.vector, sizeof c.vector);
     filter.push(c);
     return true;
 }

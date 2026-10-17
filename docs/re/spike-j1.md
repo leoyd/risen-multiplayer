@@ -150,3 +150,14 @@ Session d'environ 1 min 10 : marche, course, sauts, escalade (ClimbLow, ClimbHig
 Seul `d18` est resté constant. Les autres changent selon le type ou à chaque appel. On garde donc les 7 champs dans `Motion`. Retirer `d18` ne ferait gagner que 4 octets : à revoir en 2.4 si le débit l'exige.
 
 **Débit** : en locomotion, environ 5 à 20 `PlayMotion` par seconde, en paires (type 0 et type 1). Une rafale de 87 à 190 appels par seconde concerne seulement les appels bloqués du moteur sur la copie.
+
+## Story 2.1b — ragdoll (2026-10-17)
+
+- **`eCAnimation_PS::SetRagDollEnabled(bool, bool, bCVector*)`** (`0x1804d7bd0`) : `RCX=this`, `DL=actif`, `R8B`=second `bool` (non lu sur le chemin observé), `R9=bCVector*` (nul possible). Le vecteur est passé à la création du ragdoll (`0x1804d3b50`) : impulsion ?
+  - L'état est rangé dans le bit 2 de `this+0x22C`, que relit `GetRagDollEnabled` (`0x1804d7ef0`).
+  - Désactiver appelle `StopRagDoll` (`0x1804d7b40`).
+  - Le bit 0 du même octet fait sortir `PlayMotion` dès son entrée.
+- **`bCVector`** = 3 `f32`, soit 12 octets (le constructeur de copie de SharedBase.dll recopie `+0`, `+4` et `+8`).
+- `NeedsDeathAnimation` (`0x1804d7f10`) rend vrai si `this+0x1E0 == 0` et que le bit 3 de `+0x22C` vaut 0. Certaines morts jouent donc peut-être aussi une animation : à observer.
+- La sonde capture `SetRagDollEnabled` sur le héros et le rejoue sur la copie. Résultats du test en jeu : *à compléter*.
+

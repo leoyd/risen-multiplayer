@@ -79,3 +79,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-1-miroir-par-nom.md`
   summary: La sonde garde le PS de la copie comme réplique si le moteur détruit la copie sans changement de joueur.
   evidence: Medium non vérifié, existait déjà en v5. À trancher en jeu : une copie temporaire peut-elle être détruite hors chargement ? L'avatar (2.2) devra de toute façon le détecter.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1b-ragdoll-miroir.md`
+  summary: Couvrir par des tests Linux le routage des captures par nature (`Motion` ou ragdoll) quand l'avatar le reprendra (événement `Death`, AD-10).
+  evidence: Dans la sonde (`probe.cpp`, réservée à Windows), ce routage n'est vérifié que par le test en jeu. Inverser les branches passerait tous les tests automatiques.

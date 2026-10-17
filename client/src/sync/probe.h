@@ -5,7 +5,8 @@
 // - F6 : copie du joueur ~2 m devant lui. F7 : mode miroir (la copie rejoue chaque
 //   animation du joueur par son nom, via un Motion encodé puis décodé, et suit ses
 //   déplacements ; story 2.1). F4 : même rejeu du dernier coup sur le PNJ le plus proche.
-// L'état partagé avec le hook passe par sync::anim_filter() (AD-2).
+// - Mort (story 2.1b) : SetRagDollEnabled du joueur capturé et rejoué sur la copie.
+// L'état partagé avec les hooks passe par sync::anim_filter() (AD-2).
 #pragma once
 
 namespace mp::sync::probe {
@@ -20,5 +21,9 @@ void on_frame() noexcept;
 // Retourne false pour bloquer l'original : en mode miroir, les PlayMotion que le
 // moteur lance de lui-même sur la copie.
 bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept;
+
+// Hook SetRagDollEnabled (story 2.1b), mêmes règles : capture sur le PS du joueur, blocage
+// sur la copie en mode miroir hors rejeu. `vector` = bCVector (3 f32) ou nul.
+bool on_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) noexcept;
 
 }  // namespace mp::sync::probe

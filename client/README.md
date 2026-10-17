@@ -243,6 +243,10 @@ Mode de rétro-ingénierie, **désactivé par défaut**. Avec `probe = 1` dans
   bloquées. La première résolution de chaque nom est journalisée (`GetMotion(« … ») = …`,
   identique ou non à la ressource capturée). Tant qu'une copie existe, une ligne `copie` par
   seconde donne son état : rejoués, échecs, bloqués, écarts de pointeur ;
+- **mort (story 2.1b)** : les appels à `eCAnimation_PS::SetRagDollEnabled` du joueur sont
+  capturés (ligne `SetRagDollEnabled actif=… vecteur=…`) et rejoués sur la copie en mode
+  miroir. Tant que la copie est en ragdoll, sa pose n'est plus imposée (`ragdoll=oui` dans la
+  ligne `copie`) ;
 - **F4** : rejoue, par le même chemin, le dernier coup capturé sur le PNJ le plus proche
   (15 m au plus).
 
@@ -251,6 +255,15 @@ marcher, courir, sauter, frapper (plusieurs coups), et se laisser mourir, en reg
 copie. Attendu : la copie reproduit les gestes comme le miroir v5 du spike J1
 (`docs/re/spike-j1.md`) ; les lignes `copie` montrent `0 échecs` et `0 écarts de pointeur`.
 Quitter, et fournir `Script_Multiplayer.log`.
+
+Test de la mort (story 2.1b) : F6, F7 (**avant** la mort : un ragdoll survenu miroir coupé
+n'est pas rattrapé), puis mourir d'une chute ; recharger, F6, F7, puis se laisser tuer au
+combat. Attendu : la copie s'effondre en ragdoll en même temps que le héros (une frame de
+retard, invisible), et le log montre `SetRagDollEnabled actif=1 … vecteur=…` puis `rejoué sur
+la copie : OK`. À relever dans le log : le vecteur (comparer à la position du héros dans la
+ligne `tick` : position du monde ou impulsion ?) et tout `PlayMotion` au nom de mort juste
+avant ou après (piste `NeedsDeathAnimation`). Une copie morte ne repart pas : recharger et
+refaire F6.
 
 Avec `probe = 0` ou sans la clé, la sonde est désactivée et seule la
 session est installée (hook `OnProcess` seul). Sonde et session sont exclusives.

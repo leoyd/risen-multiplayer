@@ -15,6 +15,7 @@ namespace {
 
 game::OnProcessFn g_original_on_process = nullptr;
 game::PlayMotionFn g_original_play_motion = nullptr;
+game::SetRagdollFn g_original_set_ragdoll = nullptr;
 bool g_initialized = false;
 
 void detour_on_process(void* application) {
@@ -30,6 +31,12 @@ void detour_on_process_session(void* application) {
 void detour_play_motion(void* animation_ps, int type, void* desc, bool flag) {
     if (sync::probe::on_play_motion(animation_ps, type, desc, flag)) {
         g_original_play_motion(animation_ps, type, desc, flag);
+    }
+}
+
+void detour_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) {
+    if (sync::probe::on_set_ragdoll(animation_ps, on, flag, vector)) {
+        g_original_set_ragdoll(animation_ps, on, flag, vector);
     }
 }
 
@@ -60,7 +67,9 @@ bool install_probe() {
     if (!create(game::on_process_address(), reinterpret_cast<void*>(&detour_on_process),
                 reinterpret_cast<void**>(&g_original_on_process), "OnProcess") ||
         !create(game::play_motion_address(), reinterpret_cast<void*>(&detour_play_motion),
-                reinterpret_cast<void**>(&g_original_play_motion), "PlayMotion")) {
+                reinterpret_cast<void**>(&g_original_play_motion), "PlayMotion") ||
+        !create(game::set_ragdoll_address(), reinterpret_cast<void*>(&detour_set_ragdoll),
+                reinterpret_cast<void**>(&g_original_set_ragdoll), "SetRagDollEnabled")) {
         remove();
         log::error("[hooks] sonde inactive");
         return false;
@@ -72,7 +81,7 @@ bool install_probe() {
         remove();
         return false;
     }
-    log::info("[hooks] hooks installés (OnProcess, PlayMotion)");
+    log::info("[hooks] hooks installés (OnProcess, PlayMotion, SetRagDollEnabled)");
     return true;
 }
 

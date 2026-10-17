@@ -33,6 +33,7 @@ struct EntityArray {
 using GetNPCsFn = EntityArray* (*)(EntityArray* sret);
 // Engine.dll
 using SetMotionFn = void (*)(void* animation_ps, int type, void* resource);
+using GetRagdollFn = bool (*)(const void* animation_ps);
 using GetFileTitleFn = void* (*)(const void* resource, void* bcstring_sret);
 // Statique, sans sret : rend un pointeur emprunté (cache des ressources).
 using GetMotionFn = void* (*)(const void* bcstring_name);
@@ -58,6 +59,8 @@ constexpr const char* kGetPropertySet =
     "?GetPropertySet@eCEntity@@QEBAPEBVeCEntityPropertySet@@W4eEPropertySetType@@@Z";
 constexpr const char* kSetMotion =
     "?SetMotion@eCAnimation_PS@@QEAAXW4eEMotionType@eAnimShared@@PEAVeCMotionResource2@@@Z";
+constexpr const char* kSetRagdoll = "?SetRagDollEnabled@eCAnimation_PS@@QEAAX_N0PEAVbCVector@@@Z";
+constexpr const char* kGetRagdoll = "?GetRagDollEnabled@eCAnimation_PS@@QEBA_NXZ";
 constexpr const char* kGetFileTitle = "?GetFileTitleA@eCResource2@@QEBA?AVbCString@@XZ";
 constexpr const char* kGetMotion = "?GetMotion@eCResource2@@SAPEAVeCMotionResource2@@AEBVbCString@@@Z";
 constexpr const char* kBCStringCtor = "??0bCString@@QEAA@PEBD@Z";
@@ -86,6 +89,8 @@ struct EntityAbi {
     void* on_process = nullptr;
     PlayMotionFn play_motion = nullptr;
     SetMotionFn set_motion = nullptr;
+    SetRagdollFn set_ragdoll = nullptr;
+    GetRagdollFn get_ragdoll = nullptr;
     GetFileTitleFn get_file_title = nullptr;
     GetMotionFn get_motion = nullptr;
     BCStringCtorFn bcstring_ctor = nullptr;
@@ -146,6 +151,8 @@ bool resolve_entities(const char*& missing) {
                     lookup(engine, kOnProcess, on_process, missing) &&
                     lookup(engine, kPlayMotion, a.play_motion, missing) &&
                     lookup(engine, kSetMotion, a.set_motion, missing) &&
+                    lookup(engine, kSetRagdoll, a.set_ragdoll, missing) &&
+                    lookup(engine, kGetRagdoll, a.get_ragdoll, missing) &&
                     lookup(engine, kGetFileTitle, a.get_file_title, missing) &&
                     lookup(engine, kGetMotion, a.get_motion, missing) &&
                     lookup(shared_base, kBCStringCtor, a.bcstring_ctor, missing) &&
@@ -159,6 +166,7 @@ bool resolve_entities(const char*& missing) {
 
 void* on_process_address() { return g_abi.on_process; }
 void* play_motion_address() { return reinterpret_cast<void*>(g_abi.play_motion); }
+void* set_ragdoll_address() { return reinterpret_cast<void*>(g_abi.set_ragdoll); }
 
 // Chaque enveloppe : pas d'objet C++ à détruire dans le cadre __try.
 
@@ -334,6 +342,35 @@ bool set_motion(void* animation_ps, int type, void* resource) {
         g_abi.set_motion(animation_ps, type, resource);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) {
+    if (!g_resolved || animation_ps == nullptr) return false;
+    // bCVector durable : on ignore si la création du ragdoll garde le pointeur (non vérifié).
+    static float v[3];
+    if (vector != nullptr) {
+        v[0] = vector[0];
+        v[1] = vector[1];
+        v[2] = vector[2];
+    }
+    __try {
+        g_abi.set_ragdoll(animation_ps, on, flag, vector != nullptr ? v : nullptr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool get_ragdoll(const void* animation_ps, bool& out) {
+    out = false;
+    if (!g_resolved || animation_ps == nullptr) return false;
+    __try {
+        out = g_abi.get_ragdoll(animation_ps);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
         return false;
     }
 }
