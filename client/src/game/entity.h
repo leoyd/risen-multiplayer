@@ -73,6 +73,10 @@ bool play_motion(void* animation_ps, int type, void* desc, bool flag);
 bool set_motion(void* animation_ps, int type, void* resource);
 // Nom de la ressource de motion (eCResource2::GetFileTitleA), 255 caractères au plus.
 bool get_resource_name(const void* resource, std::string& out);
+// eCResource2::GetMotion(nom) (Engine.dll, statique) : ressource du cache, créée au besoin.
+// Le pointeur rendu est emprunté : ne jamais le libérer (SetMotion prend sa référence).
+// out == nullptr : nom inconnu. Retourne false sur SEH ou nom vide/trop long.
+bool get_motion(const std::string& name, void*& out);
 
 // Entity::IsDead (Script.dll) : le PS 0x24 de l'entité, à l'offset +0xC0, vaut 12.
 bool is_dead(const Entity& e, bool& out);

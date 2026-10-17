@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v1 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v2 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -57,7 +57,7 @@ Empreintes du `Hello` : celles de `hello.bin` (Risen Steam x64, janvier 2023). �
 | `--quit` | à la fin de `--duration`, envoie `SessionEnd{1}` puis sort (comportement par défaut) |
 | `--kill` | à la fin de `--duration`, sort **sans rien envoyer** : l'hôte doit constater le timeout 5 s plus tard |
 | `--dup-hello` | chaque `Hello` part deux fois (l'hôte doit renvoyer le même `Welcome`), et un `Hello` supplémentaire part en session, une fois le premier heartbeat échangé et acquitté (l'hôte doit l'ignorer) |
-| `--bad-version` | envoie le `Hello` de `hello_v2.bin` (version 2) : l'hôte doit répondre `Reject{1}` |
+| `--bad-version` | envoie le `Hello` de `hello_future.bin` (version 0xFFFF) : l'hôte doit répondre `Reject{1}` |
 
 `--quit` et `--kill` sont exclusifs et demandent `--duration` > 0.
 
@@ -75,7 +75,7 @@ par seconde :
 
 ```
 2026-10-17 00:27:45.251 Connecting host=127.0.0.1:27960 pseudo="Invite" mod="0.1.0" drop=0%
-2026-10-17 00:27:45.251 -> Hello version_protocole=1 mod="0.1.0" pseudo="Invite" équipement="" empreintes=63c9aff6/01417000,…
+2026-10-17 00:27:45.251 -> Hello version_protocole=2 mod="0.1.0" pseudo="Invite" équipement="" empreintes=63c9aff6/01417000,…
 2026-10-17 00:27:45.251 <- Welcome conv=0xfe24b1fd pos=(1, 2, 3) lacet=0.5
 2026-10-17 00:27:45.251 InSession conv=0xfe24b1fd
 2026-10-17 00:27:46.251 Heartbeat envoyés=1 reçus=1 (total 1/1)

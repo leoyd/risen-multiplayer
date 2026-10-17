@@ -35,7 +35,7 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		reliable bool
 		want     Message
 	}{
-		{"hello.bin", false, Hello{ProtocolVersion: 1, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
+		{"hello.bin", false, Hello{ProtocolVersion: 2, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
 			Nickname: "Leo", Equipment: "It_Sword_01"}},
 		{"welcome.bin", false, Welcome{Conv: 0x12345678, X: 100.0, Y: -50.5, Z: 2000.0, Yaw: 1.5}},
 		{"reject.bin", false, Reject{Reason: 2}},
@@ -79,7 +79,7 @@ func TestInvalidVectors(t *testing.T) {
 		file string
 		want error
 	}{
-		{"hello_v2.bin", ErrUnsupportedVersion},
+		{"hello_future.bin", ErrUnsupportedVersion},
 		{"hello_truncated.bin", ErrTruncated},
 		{"hello_long_nickname.bin", ErrBadLength},
 		{"unknown_type.bin", ErrUnknownType},
@@ -91,10 +91,10 @@ func TestInvalidVectors(t *testing.T) {
 			}
 		})
 	}
-	if v, ok := PeekHelloVersion(vector(t, "hello_v2.bin")); !ok || v != 2 {
-		t.Fatalf("peek hello_v2 = %d, %v", v, ok)
+	if v, ok := PeekHelloVersion(vector(t, "hello_future.bin")); !ok || v != 0xffff {
+		t.Fatalf("peek hello_future = %d, %v", v, ok)
 	}
-	if v, ok := PeekHelloVersion(vector(t, "hello_truncated.bin")); !ok || v != 1 {
+	if v, ok := PeekHelloVersion(vector(t, "hello_truncated.bin")); !ok || v != 2 {
 		t.Fatalf("peek hello_truncated = %d, %v", v, ok)
 	}
 }
@@ -105,8 +105,10 @@ func TestAllVectorsCovered(t *testing.T) {
 		t.Fatal(err)
 	}
 	known := map[string]bool{"hello.bin": true, "welcome.bin": true, "reject.bin": true, "heartbeat.bin": true,
-		"session_end.bin": true, "hello_v2.bin": true, "hello_truncated.bin": true,
-		"hello_long_nickname.bin": true, "unknown_type.bin": true}
+		"session_end.bin": true, "hello_future.bin": true, "hello_truncated.bin": true,
+		"hello_long_nickname.bin": true, "unknown_type.bin": true,
+		// Motion (v2) : codec Go et vérification de ces vecteurs en story 2.4.
+		"motion.bin": true, "motion_bad_type.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -150,7 +152,7 @@ func TestDecodeErrors(t *testing.T) {
 		}
 	}
 	// Pseudo vide → BadLength.
-	empty := Hello{ProtocolVersion: 1, Nickname: "x"}
+	empty := Hello{ProtocolVersion: 2, Nickname: "x"}
 	b, err := EncodeControl(empty)
 	if err != nil {
 		t.Fatal(err)
@@ -176,13 +178,13 @@ func TestUnknownReasonsKept(t *testing.T) {
 }
 
 func TestEncoderBounds(t *testing.T) {
-	ok := Hello{ProtocolVersion: 1, ModVersion: "0.1.0", Nickname: "Leo"}
+	ok := Hello{ProtocolVersion: 2, ModVersion: "0.1.0", Nickname: "Leo"}
 	bad := []Hello{
-		{ProtocolVersion: 2, Nickname: "Leo"},
-		{ProtocolVersion: 1, Nickname: ""},
-		{ProtocolVersion: 1, Nickname: strings.Repeat("A", 33)},
-		{ProtocolVersion: 1, Nickname: "Leo", ModVersion: strings.Repeat("v", 256)},
-		{ProtocolVersion: 1, Nickname: "Leo", Equipment: strings.Repeat("e", 256)},
+		{ProtocolVersion: 1, Nickname: "Leo"},
+		{ProtocolVersion: 2, Nickname: ""},
+		{ProtocolVersion: 2, Nickname: strings.Repeat("A", 33)},
+		{ProtocolVersion: 2, Nickname: "Leo", ModVersion: strings.Repeat("v", 256)},
+		{ProtocolVersion: 2, Nickname: "Leo", Equipment: strings.Repeat("e", 256)},
 	}
 	if _, err := EncodeControl(ok); err != nil {
 		t.Fatal(err)
@@ -193,7 +195,7 @@ func TestEncoderBounds(t *testing.T) {
 		}
 	}
 	// Bornes maximales : 581 octets.
-	max := Hello{ProtocolVersion: 1, ModVersion: strings.Repeat("v", 255), Nickname: strings.Repeat("n", 32),
+	max := Hello{ProtocolVersion: 2, ModVersion: strings.Repeat("v", 255), Nickname: strings.Repeat("n", 32),
 		Equipment: strings.Repeat("e", 255)}
 	if b, err := EncodeControl(max); err != nil || len(b) != 581 {
 		t.Fatalf("hello maximal : %d %v", len(b), err)

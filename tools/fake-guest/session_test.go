@@ -44,7 +44,7 @@ func (s *syncBuffer) String() string {
 func guestConfig(host netip.AddrPort) sessionConfig {
 	return sessionConfig{
 		Host: host,
-		Hello: protocol.Hello{ProtocolVersion: 1, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
+		Hello: protocol.Hello{ProtocolVersion: 2, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
 			Nickname: "Invite"},
 		Seed:              1,
 		HelloInterval:     testHello,
@@ -94,18 +94,18 @@ func expectLog(t *testing.T, r guestRun, parts ...string) {
 
 // Le Hello de --bad-version et les empreintes par défaut sont ceux des vecteurs.
 func TestToolMatchesVectors(t *testing.T) {
-	v2, err := os.ReadFile("../../protocol/vectors/hello_v2.bin")
+	future, err := os.ReadFile("../../protocol/vectors/hello_future.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(v2, badVersionHello) {
-		t.Fatal("badVersionHello ≠ hello_v2.bin")
+	if !bytes.Equal(future, badVersionHello) {
+		t.Fatal("badVersionHello ≠ hello_future.bin")
 	}
 	ref, err := os.ReadFile("../../protocol/vectors/hello.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := protocol.Hello{ProtocolVersion: 1, ModVersion: "0.1.0", Fingerprint: steamFingerprint, Nickname: "Leo",
+	h := protocol.Hello{ProtocolVersion: 2, ModVersion: "0.1.0", Fingerprint: steamFingerprint, Nickname: "Leo",
 		Equipment: "It_Sword_01"}
 	if b, err := protocol.EncodeControl(h); err != nil || !bytes.Equal(b, ref) {
 		t.Fatal("empreintes par défaut ≠ hello.bin")
@@ -119,7 +119,7 @@ func TestNominal(t *testing.T) {
 	cfg.Duration = 1300 * time.Millisecond
 	r := runGuest(t, context.Background(), cfg)
 	expectCode(t, r, exitOK)
-	expectLog(t, r, "Connecting host=", "-> Hello version_protocole=1", "<- Welcome conv=", "InSession conv=0x",
+	expectLog(t, r, "Connecting host=", "-> Hello version_protocole=2", "<- Welcome conv=", "InSession conv=0x",
 		"Heartbeat envoyés=", "-> SessionEnd raison=1", "Ended raison=départ du joueur")
 	if n := strings.Count(r.log, "Heartbeat"); n > 3 {
 		t.Errorf("%d lignes de heartbeat : un résumé par seconde attendu", n)
@@ -208,9 +208,9 @@ func TestBadVersion(t *testing.T) {
 	cfg.BadVersion = true
 	r := runGuest(t, context.Background(), cfg)
 	expectCode(t, r, exitRejected)
-	expectLog(t, r, "-> Hello version_protocole=2", "<- Reject raison=1 (version du protocole différente)")
+	expectLog(t, r, "-> Hello version_protocole=65535", "<- Reject raison=1 (version du protocole différente)")
 	rec := host.record()
-	if len(rec.hellos) == 0 || rec.hellos[0].version != 2 {
+	if len(rec.hellos) == 0 || rec.hellos[0].version != 0xffff {
 		t.Errorf("version lue par l'hôte : %+v", rec.hellos)
 	}
 	if len(rec.rejects) != 1 || rec.rejects[0] != protocol.RejectProtocol {
@@ -448,7 +448,7 @@ func TestParseConfig(t *testing.T) {
 		t.Errorf("délais par défaut : %+v", cfg)
 	}
 	if cfg.Host != netip.MustParseAddrPort("10.0.0.7:27960") || cfg.Hello.Nickname != "Invite" ||
-		cfg.Hello.ModVersion != "0.1.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != 1 ||
+		cfg.Hello.ModVersion != "0.1.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != protocol.ProtocolVersion ||
 		cfg.Duration != 0 || cfg.Kill || cfg.Drop != 0 || cfg.Seed != 1 || cfg.DupHello || cfg.BadVersion {
 		t.Errorf("config par défaut : %+v", cfg)
 	}

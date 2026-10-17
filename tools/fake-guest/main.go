@@ -22,7 +22,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v1, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v2, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte.
 
@@ -78,7 +78,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	quit := fs.Bool("quit", false, "à la fin de --duration, envoie SessionEnd{1} puis sort (défaut)")
 	kill := fs.Bool("kill", false, "à la fin de --duration, sort sans rien envoyer")
 	dupHello := fs.Bool("dup-hello", false, "chaque Hello part deux fois, et un Hello de plus part en session, après le premier heartbeat acquitté")
-	badVersion := fs.Bool("bad-version", false, "envoie le Hello de hello_v2.bin (version 2) au lieu du Hello v1")
+	badVersion := fs.Bool("bad-version", false, "envoie le Hello de hello_future.bin (version 0xFFFF) au lieu du Hello v2")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
 		fs.PrintDefaults()

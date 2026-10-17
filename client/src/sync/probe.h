@@ -1,10 +1,11 @@
 // Sonde du spike J1 (`probe = 1`) : répond aux questions de docs/re/spike-j1.md.
 // - Tick par seconde : thread, images/s, joueur valide, pose brute du joueur.
-// - Capture des PlayMotion du joueur (type, ressource, 0x60 octets du descripteur),
+// - Capture des PlayMotion du joueur (type, nom, 7 scalaires du descripteur),
 //   journalisées depuis le tick, 20 lignes/s au plus.
 // - F6 : copie du joueur ~2 m devant lui. F7 : mode miroir (la copie rejoue chaque
-//   animation du joueur et suit ses déplacements). F4 : rejeu du dernier coup sur le
-//   PNJ le plus proche.
+//   animation du joueur par son nom, via un Motion encodé puis décodé, et suit ses
+//   déplacements ; story 2.1). F4 : même rejeu du dernier coup sur le PNJ le plus proche.
+// L'état partagé avec le hook passe par sync::anim_filter() (AD-2).
 #pragma once
 
 namespace mp::sync::probe {
@@ -14,7 +15,8 @@ namespace mp::sync::probe {
 void on_frame() noexcept;
 
 // Hook PlayMotion, appelé avant l'original : copie des octets si `animation_ps` est
-// celui du joueur (mis à jour à chaque tick). N'appelle jamais le jeu.
+// celui du joueur (mis à jour à chaque frame). N'appelle jamais le jeu, hormis les lectures
+// mémoire protégées de game/.
 // Retourne false pour bloquer l'original : en mode miroir, les PlayMotion que le
 // moteur lance de lui-même sur la copie.
 bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept;

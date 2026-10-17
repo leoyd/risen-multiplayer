@@ -34,7 +34,10 @@ using GetNPCsFn = EntityArray* (*)(EntityArray* sret);
 // Engine.dll
 using SetMotionFn = void (*)(void* animation_ps, int type, void* resource);
 using GetFileTitleFn = void* (*)(const void* resource, void* bcstring_sret);
+// Statique, sans sret : rend un pointeur emprunté (cache des ressources).
+using GetMotionFn = void* (*)(const void* bcstring_name);
 // SharedBase.dll
+using BCStringCtorFn = void* (*)(void* self, const char* text);
 using BCStringDtorFn = void (*)(void* self);
 // Engine.dll — variante const non virtuelle : elle fait elle-même le dispatch virtuel.
 using GetPropertySetFn = void* (*)(const void* entity, int type);
@@ -56,6 +59,8 @@ constexpr const char* kGetPropertySet =
 constexpr const char* kSetMotion =
     "?SetMotion@eCAnimation_PS@@QEAAXW4eEMotionType@eAnimShared@@PEAVeCMotionResource2@@@Z";
 constexpr const char* kGetFileTitle = "?GetFileTitleA@eCResource2@@QEBA?AVbCString@@XZ";
+constexpr const char* kGetMotion = "?GetMotion@eCResource2@@SAPEAVeCMotionResource2@@AEBVbCString@@@Z";
+constexpr const char* kBCStringCtor = "??0bCString@@QEAA@PEBD@Z";
 constexpr const char* kBCStringDtor = "??1bCString@@QEAA@XZ";
 constexpr const char* kOnProcess = "?OnProcess@eCApplication@@UEAAXXZ";
 constexpr const char* kPlayMotion =
@@ -82,6 +87,8 @@ struct EntityAbi {
     PlayMotionFn play_motion = nullptr;
     SetMotionFn set_motion = nullptr;
     GetFileTitleFn get_file_title = nullptr;
+    GetMotionFn get_motion = nullptr;
+    BCStringCtorFn bcstring_ctor = nullptr;
     BCStringDtorFn bcstring_dtor = nullptr;
 };
 
@@ -140,6 +147,8 @@ bool resolve_entities(const char*& missing) {
                     lookup(engine, kPlayMotion, a.play_motion, missing) &&
                     lookup(engine, kSetMotion, a.set_motion, missing) &&
                     lookup(engine, kGetFileTitle, a.get_file_title, missing) &&
+                    lookup(engine, kGetMotion, a.get_motion, missing) &&
+                    lookup(shared_base, kBCStringCtor, a.bcstring_ctor, missing) &&
                     lookup(shared_base, kBCStringDtor, a.bcstring_dtor, missing);
     if (!ok) return false;
     a.on_process = reinterpret_cast<void*>(on_process);
@@ -400,6 +409,39 @@ bool get_resource_name(const void* resource, std::string& out) {
     if (!title_into(resource, buf, sizeof buf, len)) return false;
     out.assign(buf, len);
     return true;
+}
+
+namespace {
+
+// bCString construit ici puis détruit ici : passé par référence (AEBV), il reste au mod.
+bool call_get_motion(const char* name, void*& out) {
+    void* text = nullptr;  // bCString : un seul pointeur
+    bool built = false;
+    bool ok = false;
+    __try {
+        g_abi.bcstring_ctor(&text, name);
+        built = true;
+        out = g_abi.get_motion(&text);
+        ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        ok = false;
+    }
+    if (built) {
+        __try {
+            g_abi.bcstring_dtor(&text);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
+    return ok;
+}
+
+}  // namespace
+
+bool get_motion(const std::string& name, void*& out) {
+    out = nullptr;
+    if (!g_resolved || name.empty() || name.size() > kMaxNameLength) return false;
+    return call_get_motion(name.c_str(), out);
 }
 
 }  // namespace mp::game

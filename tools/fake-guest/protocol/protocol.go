@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 1, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 2, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 1
+	ProtocolVersion   = 2
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -31,11 +31,12 @@ type Channel uint8
 
 const (
 	ChannelReliable Channel = 0 // segments KCP
-	ChannelSnapshot Channel = 1 // Epic 2, non défini en v1
+	ChannelSnapshot Channel = 1 // Epic 2, non défini en v2
 	ChannelControl  Channel = 2 // Hello, Welcome, Reject
 )
 
-// MsgType : 18 à 25 sont réservés et se décodent en ErrUnknownType.
+// MsgType : 18 à 25 sont réservés et se décodent en ErrUnknownType. Motion (19, v2) n'est
+// pas encore décodé ici : son codec Go arrive avec la story 2.4.
 type MsgType uint8
 
 const (

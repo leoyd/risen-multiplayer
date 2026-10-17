@@ -278,12 +278,12 @@ TEST("session hôte : Hello d'une autre adresse en session → Reject{4}, sessio
 TEST("session hôte : en session, l'ordre du §6 s'applique encore à un autre invité") {
     std::uint32_t conv = 0;
     Session s = hosting_with_a(conv);
-    const Bytes v2 = {0x02, 0x01, 0x02, 0x00, 0xff, 0xff, 0xff, 0xff};
-    const Output out = s.tick(1500, loaded_world(), control_from(kGuestB, v2));
+    const Bytes future = {0x02, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    const Output out = s.tick(1500, loaded_world(), control_from(kGuestB, future));
     CHECK(sent_reject(out, kGuestB, 1));
 }
 
-TEST("session hôte : refus v2 / mod / empreinte / illisible → Reject{1,2,3,5}") {
+TEST("session hôte : refus version future / mod / empreinte / illisible → Reject{1,2,3,5}") {
     struct Case {
         Bytes hello;
         std::uint8_t reason;
@@ -296,7 +296,7 @@ TEST("session hôte : refus v2 / mod / empreinte / illisible → Reject{1,2,3,5}
     Bytes truncated = encode(make_hello());
     truncated.resize(22);
     const Case cases[] = {
-        {{0x02, 0x01, 0x02, 0x00, 0xff, 0xff, 0xff, 0xff}, 1, "version du protocole différente (1)"},
+        {{0x02, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 1, "version du protocole différente (1)"},
         {encode(mod), 2, "version du mod différente (2)"},
         {encode(fp), 3, "empreinte du jeu différente (3)"},
         {truncated, 5, "Hello invalide (5)"},
@@ -383,6 +383,16 @@ TEST("session hôte : SessionEnd reçu → Ended avec la raison") {
     out = s.tick(3000, loaded_world(), {});
     CHECK(linger_closed(out));
     CHECK(s.state() == State::Hosting);  // l'hôte se réarme aussitôt
+}
+
+TEST("session hôte : Motion reçu en session → ignoré, la session continue") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    proto::Motion m;
+    m.net_id = 2;
+    const Output out = s.tick(2000, loaded_world(), reliable(encode_r(m)));
+    CHECK(s.state() == State::InSession);
+    CHECK(has_log(out, "Motion reçu, ignoré"));
 }
 
 TEST("session hôte : SessionEnd de raison inconnue → code brut au log") {

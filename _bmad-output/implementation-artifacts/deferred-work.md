@@ -69,3 +69,13 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-5-fin-de-session.md`
   summary: Marge faible entre la pause d'`OnProcess` pendant un chargement rapide (environ 3,5 s mesurées) et le timeout de 5 s ; à revoir si des timeouts apparaissent à la place de « fin de monde » (heartbeat depuis le thread réseau, ou timeout plus long).
   evidence: `docs/re/fin-de-monde.md`, réponse 4 ; complète l'entrée de la story 1.4 sur la pause d'`OnProcess`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-miroir-par-nom.md`
+  summary: Codec Go de `Motion` (et `ErrBadValue`) à écrire en story 2.4, en retirant `motion.bin` et `motion_bad_type.bin` de la liste blanche de `TestAllVectorsCovered`.
+  evidence: En 2.1, le Go est passé en v2 sans décoder `Motion` (report prévu par l'intent). La liste blanche fait passer ces vecteurs pour couverts.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-miroir-par-nom.md`
+  summary: Côté réception de `Motion` (story 2.4), refuser ou neutraliser les flottants non finis (NaN, ±Inf) avant `PlayMotion`.
+  evidence: Medium non vérifié. `valid()` accepte NaN et Inf ; l'effet d'un NaN dans le descripteur sur le moteur est inconnu. Un test en jeu avec un descripteur NaN, ou la lecture du code EMotionFX, trancherait.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-miroir-par-nom.md`
+  summary: La sonde garde le PS de la copie comme réplique si le moteur détruit la copie sans changement de joueur.
+  evidence: Medium non vérifié, existait déjà en v5. À trancher en jeu : une copie temporaire peut-elle être détruite hors chargement ? L'avatar (2.2) devra de toute façon le détecter.

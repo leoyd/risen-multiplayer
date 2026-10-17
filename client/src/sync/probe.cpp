@@ -1,18 +1,19 @@
 #include "sync/probe.h"
 
 #include "common/log.h"
+#include "core/protocol.h"
 #include "game/entity.h"
+#include "game/motion_desc.h"
+#include "sync/anim_filter.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 
-#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cmath>
-#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -21,37 +22,16 @@ namespace mp::sync::probe {
 
 namespace {
 
-constexpr std::size_t kDescDumpSize = 0x60;
-constexpr std::size_t kCaptureRing = 64;
 constexpr int kMaxAnimLinesPerSecond = 20;
 constexpr float kSpawnDistance = 200.0f;  // 2 m, si les unités sont des centimètres
 constexpr ULONGLONG kTickPeriodMs = 1000;
 constexpr float kMaxNpcDistance = 1500.0f;  // F4 : PNJ à 15 m au plus
 
-struct Capture {
-    int type;
-    bool flag;
-    bool desc_null;
-    bool desc_readable;
-    void* desc;
-    void* resource;
-    std::uint8_t bytes[kDescDumpSize];
-};
+using sync::Capture;
+namespace proto = mp::protocol;
 
-// --- État partagé avec le hook PlayMotion (protégé par g_lock) ----------------------
-SRWLOCK g_lock = SRWLOCK_INIT;
-Capture g_ring[kCaptureRing];
-std::size_t g_ring_head = 0;  // prochaine écriture
-std::size_t g_ring_count = 0;
-unsigned g_ring_dropped = 0;  // captures perdues (anneau plein)
-Capture g_last{};             // dernière capture
-bool g_have_last = false;
-std::atomic<void*> g_player_anim_ps{nullptr};
-// Diagnostic de la copie : PlayMotion lancés par le moteur sur son PS (hors rejeu F7).
-std::atomic<void*> g_copy_anim_ps{nullptr};
-std::atomic<unsigned> g_copy_engine_motions{0};
-std::atomic<unsigned> g_copy_blocked_motions{0};  // bloqués en mode miroir
-std::atomic<bool> g_mirror{false};                // mode miroir (F7), lu par le hook
+// L'état partagé avec le hook PlayMotion est dans sync::anim_filter() (AD-2) : PS du joueur
+// (capturé), PS de la copie en mode miroir (réplique bloquée), anneau des captures.
 
 // --- État du thread principal uniquement ------------------------------------------
 DWORD g_first_thread = 0;
@@ -64,12 +44,19 @@ unsigned g_ring_overflow = 0;  // perdues : anneau plein (> 64 PlayMotion en une
 bool g_f6_down = false;
 bool g_f7_down = false;
 bool g_f4_down = false;
-bool g_replaying = false;
+bool g_mirror = false;                 // mode miroir (F7)
 float g_mirror_offset[3] = {0, 0, 0};  // position copie - joueur à l'activation du miroir
-unsigned g_mirror_replays = 0;         // PlayMotion rejoués sur la copie (par seconde)
-unsigned g_mirror_failures = 0;     // vrai pendant notre propre PlayMotion (même thread que le hook)
+unsigned g_mirror_replays = 0;         // PlayMotion rejoués par nom sur la copie (par seconde)
+unsigned g_mirror_failures = 0;        // rejeux échoués (nom, Motion, GetMotion, SEH)
+unsigned g_name_mismatches = 0;        // GetMotion(nom) ≠ ressource capturée (depuis F7)
+bool g_hook_thread_logged = false;
+bool g_hook_varied_logged = false;
+ULONGLONG g_mirror_start = 0;          // base du champ `ms` des Motion du miroir
 game::Entity g_copy;          // oubliée dès que le joueur change (chargement, menu)
+void* g_copy_anim_ps = nullptr;
 void* g_last_player = nullptr;
+Capture g_last{};             // dernière capture, quelle qu'elle soit (repli de F4)
+bool g_have_last = false;
 // Classées par nom depuis le tick : rejouées en priorité par F4.
 Capture g_last_attack{};      // nom contenant « Attack_ » (coup), hors « Recover »/« Stumble »
 bool g_have_last_attack = false;
@@ -100,18 +87,6 @@ std::string format_position(const game::Matrix& m) {
     return buf;
 }
 
-std::string hex_dump(const std::uint8_t* b, std::size_t n) {
-    static const char kHex[] = "0123456789abcdef";
-    std::string s;
-    s.reserve(n * 3);
-    for (std::size_t i = 0; i < n; ++i) {
-        if (i != 0) s += (i % 16 == 0) ? '|' : ' ';
-        s += kHex[b[i] >> 4];
-        s += kHex[b[i] & 0xf];
-    }
-    return s;
-}
-
 // Noms des ressources de motion, par pointeur (les ressources sont partagées et
 // stables). Thread principal uniquement : GetFileTitleA est un appel au jeu.
 std::unordered_map<const void*, std::string> g_names;
@@ -130,13 +105,48 @@ const std::string& motion_name(const void* resource) {
     return g_names.emplace(resource, std::move(name)).first->second;
 }
 
+bool usable_name(const std::string& name) { return !name.empty() && name[0] != '('; }
+
+// Ressource par nom (eCResource2::GetMotion), mise en cache comme le fera l'avatar. Nul :
+// introuvable. À la première résolution d'un nom, on compare avec la ressource capturée.
+std::unordered_map<std::string, void*> g_by_name;
+
+bool motion_by_name(const std::string& name, const void* captured, void*& out) {
+    auto it = g_by_name.find(name);
+    if (it != g_by_name.end()) {
+        out = it->second;
+        return out != nullptr;
+    }
+    out = nullptr;
+    if (!game::get_motion(name, out)) {
+        // Exception (SEH) : pas mise en cache, le rejeu suivant réessaie ; comptée en échec.
+        log::warn("[probe] GetMotion(« " + name + " ») a levé une exception (SEH)");
+        return false;
+    }
+    g_by_name.emplace(name, out);
+    const bool same = out == captured;
+    if (!same) ++g_name_mismatches;
+    log::info("[probe] GetMotion(« " + name + " ») = " + hex_ptr(out) +
+              (same ? " (identique à la ressource capturée)" : " (DIFFÉRENT de " + hex_ptr(captured) + ")"));
+    return out != nullptr;
+}
+
+// Capture → Motion (7 scalaires lus par le moteur ; ani_id et net_id inutilisés ici).
+proto::Motion to_motion(const Capture& c, std::uint32_t ms) {
+    static_assert(sizeof c.desc == game::kPlayDescSize, "Capture::desc = eSMotionPlayBackDesc");
+    return game::motion_from_call(c.type, c.flag, c.desc_present ? &c.desc : nullptr, ms);
+}
+
 std::string describe(const Capture& c) {
     std::string line = "[probe] PlayMotion type=" + std::to_string(c.type) + " nom=« " + motion_name(c.resource) +
-                       " » flag=" + (c.flag ? "1" : "0") + " ressource=" + hex_ptr(c.resource) +
-                       " desc=" + hex_ptr(c.desc);
-    if (c.desc_null) return line + " (descripteur nul)";
-    if (!c.desc_readable) return line + " (descripteur illisible)";
-    return line + " : " + hex_dump(c.bytes, kDescDumpSize);
+                       " » flag=" + (c.flag ? "1" : "0");
+    if (!c.desc_present) return line + " (descripteur nul ou illisible)";
+    proto::Motion m = to_motion(c, 0);
+    char buf[160];
+    std::snprintf(buf, sizeof buf, " d00=%g d04=%g d08=%u d0C=%g d10=%u d14=%g d18=%u", static_cast<double>(m.d00),
+                  static_cast<double>(m.d04), m.d08, static_cast<double>(m.d0c), m.d10, static_cast<double>(m.d14),
+                  m.d18);
+    return line + buf;
 }
 
 bool game_has_focus() {
@@ -153,25 +163,22 @@ bool pressed(int vk, bool& was_down) {
     return edge;
 }
 
-bool replay_capture(void* anim_ps, const Capture& c, bool& set_ok);
+bool replay_by_name(void* anim_ps, const Capture& c, bool& set_ok);
 
 void flush_captures() {
-    Capture batch[kCaptureRing];
-    std::size_t n = 0;
+    static Capture batch[sync::kCaptureRing];
     unsigned dropped = 0;
-    AcquireSRWLockExclusive(&g_lock);
-    const std::size_t start = (g_ring_head + kCaptureRing - g_ring_count) % kCaptureRing;
-    for (; n < g_ring_count; ++n) batch[n] = g_ring[(start + n) % kCaptureRing];
-    g_ring_count = 0;
-    dropped = g_ring_dropped;
-    g_ring_dropped = 0;
-    ReleaseSRWLockExclusive(&g_lock);
+    const std::size_t n = sync::anim_filter().drain(batch, sync::kCaptureRing, dropped);
 
     g_ring_overflow += dropped;
-    void* copy_ps = g_mirror.load() ? g_copy_anim_ps.load() : nullptr;
+    if (n != 0) {
+        g_last = batch[n - 1];
+        g_have_last = true;
+    }
+    void* copy_ps = g_mirror ? g_copy_anim_ps : nullptr;
     for (std::size_t i = 0; i < n && copy_ps != nullptr; ++i) {
         bool set_ok = false;
-        if (replay_capture(copy_ps, batch[i], set_ok)) {
+        if (replay_by_name(copy_ps, batch[i], set_ok)) {
             ++g_mirror_replays;
         } else {
             ++g_mirror_failures;
@@ -221,25 +228,26 @@ void log_tick(ULONGLONG now) {
         } else {
             line += " pose illisible";
         }
-        line += " anim_ps=" + hex_ptr(g_player_anim_ps.load());
+        void* anim_ps = nullptr;
+        game::get_animation_ps(player, anim_ps);
+        line += " anim_ps=" + hex_ptr(anim_ps);
     }
     log::info(line);
     if (g_copy.ptr != nullptr) {
         // Diagnostic « copie figée » : le moteur la met-il à jour et l'anime-t-il ?
         bool in_range = false;
         const bool range_ok = game::is_processing_range_entered(g_copy, in_range);
-        void* copy_ps = g_copy_anim_ps.load();
         void* slot0 = nullptr;
-        game::read_motion_resource(copy_ps, 0, slot0);
+        game::read_motion_resource(g_copy_anim_ps, 0, slot0);
         game::Matrix copy_pose;
         const bool pose_ok = game::get_pose(g_copy, copy_pose);
         log::info("[probe] copie " + hex_ptr(g_copy.ptr) + " : zone de traitement=" +
-                  (range_ok ? (in_range ? "oui" : "NON") : "illisible") + ", PlayMotion du moteur=" +
-                  std::to_string(g_copy_engine_motions.exchange(0)) + "/s" +
-                  (g_mirror.load() ? ", miroir : " + std::to_string(g_mirror_replays) + " rejoués, " +
-                                         std::to_string(g_mirror_failures) + " échecs, " +
-                                         std::to_string(g_copy_blocked_motions.exchange(0)) + " bloqués/s"
-                                   : std::string()) +
+                  (range_ok ? (in_range ? "oui" : "NON") : "illisible") +
+                  (g_mirror ? ", miroir par nom : " + std::to_string(g_mirror_replays) + " rejoués, " +
+                                  std::to_string(g_mirror_failures) + " échecs, " +
+                                  std::to_string(sync::anim_filter().take_blocked()) + " bloqués/s, " +
+                                  std::to_string(g_name_mismatches) + " écarts de pointeur depuis F7"
+                            : std::string()) +
                   ", emplacement 0 « " + motion_name(slot0) +
                   " », pos=" + (pose_ok ? format_position(copy_pose) : std::string("illisible")));
     }
@@ -248,7 +256,7 @@ void log_tick(ULONGLONG now) {
     }
     if (g_ring_overflow != 0) {
         log::info("[probe] " + std::to_string(g_ring_overflow) + " PlayMotion perdus (anneau de " +
-                  std::to_string(kCaptureRing) + " plein en une frame)");
+                  std::to_string(sync::kCaptureRing) + " plein en une frame)");
     }
     g_anim_skipped = 0;
     g_ring_overflow = 0;
@@ -286,10 +294,7 @@ void spawn_copy() {
               ", copie=" + hex_ptr(copy.ptr) + ", pose demandée=[" + format_matrix(target) + "]");
     if (!ok || copy.ptr == nullptr) return;
     g_copy = copy;
-    void* copy_ps = nullptr;
-    game::get_animation_ps(copy, copy_ps);
-    g_copy_anim_ps.store(copy_ps);
-    g_copy_engine_motions.store(0);
+    game::get_animation_ps(copy, g_copy_anim_ps);
 
     game::Matrix copy_pose;
     log::info("[probe] F6 : pose de la copie=" +
@@ -303,21 +308,30 @@ void spawn_copy() {
               (after.ptr == player.ptr ? " (inchangé)" : " (CHANGÉ : la copie a peut-être pris le contrôle)"));
 }
 
-// SetMotion (ressource du joueur) puis PlayMotion avec une copie du descripteur, sur
-// `anim_ps`. `g_replaying` laisse passer cet appel dans le hook.
-bool replay_capture(void* anim_ps, const Capture& c, bool& set_ok) {
-    static std::uint8_t desc[kDescDumpSize];
-    void* desc_arg = nullptr;
-    if (!c.desc_null && c.desc_readable) {
-        std::memcpy(desc, c.bytes, kDescDumpSize);
-        desc_arg = desc;
-    }
-    set_ok = game::set_motion(anim_ps, c.type, c.resource);
+// Rejoue `c` sur `anim_ps` par le chemin exact de l'avatar (AD-8), sans le pointeur de
+// ressource ni les octets bruts du descripteur : Motion encodé puis décodé (core/), nom →
+// eCResource2::GetMotion → SetMotion → PlayMotion avec le descripteur reconstruit. Le garde
+// de rejeu laisse passer cet appel dans le hook si `anim_ps` est une réplique.
+bool replay_by_name(void* anim_ps, const Capture& c, bool& set_ok) {
+    set_ok = false;
+    const std::string& name = motion_name(c.resource);
+    if (!usable_name(name)) return false;
+
+    std::vector<std::uint8_t> wire;
+    const auto ms = static_cast<std::uint32_t>(GetTickCount64() - g_mirror_start);
+    if (!proto::encode_reliable(to_motion(c, ms), wire)) return false;
+    const auto decoded = proto::decode_reliable(wire.data(), wire.size());
+    const proto::Motion* m = decoded.ok() ? std::get_if<proto::Motion>(&decoded.message) : nullptr;
+    if (m == nullptr) return false;
+
+    void* resource = nullptr;
+    if (!motion_by_name(name, c.resource, resource)) return false;
+    static std::uint8_t desc[game::kPlayDescSize];
+    void* desc_arg = const_cast<void*>(game::replay_desc(*m, desc));
+    set_ok = game::set_motion(anim_ps, m->type, resource);
     if (!set_ok) return false;
-    g_replaying = true;
-    const bool ok = game::play_motion(anim_ps, c.type, desc_arg, c.flag);
-    g_replaying = false;
-    return ok;
+    sync::AnimFilter::ReplayGuard guard;
+    return game::play_motion(anim_ps, m->type, desc_arg, game::replay_flag(*m));
 }
 
 // Rejoue sur `target` la dernière attaque capturée, sinon la dernière animation hors
@@ -331,13 +345,9 @@ void replay_on(const game::Entity& target, const char* key, const std::string& l
     } else if (g_have_last_other) {
         last = g_last_other;
         kind = "dernière action";
-    } else {
-        AcquireSRWLockShared(&g_lock);
-        if (g_have_last) {
-            last = g_last;
-            kind = "dernière animation";
-        }
-        ReleaseSRWLockShared(&g_lock);
+    } else if (g_have_last) {
+        last = g_last;
+        kind = "dernière animation";
     }
     if (kind == nullptr) {
         log::info(std::string("[probe] ") + key + " : aucune animation capturée");
@@ -351,14 +361,14 @@ void replay_on(const game::Entity& target, const char* key, const std::string& l
     void* before = nullptr;
     game::read_motion_resource(anim_ps, last.type, before);
     bool set_ok = false;
-    const bool ok = replay_capture(anim_ps, last, set_ok);
+    const bool ok = replay_by_name(anim_ps, last, set_ok);
     void* after = nullptr;
     game::read_motion_resource(anim_ps, last.type, after);
     log::info(std::string("[probe] ") + key + " : " + kind + " « " + motion_name(last.resource) +
               " » (type=" + std::to_string(last.type) + ") rejouée sur " + label + " : SetMotion " +
               (set_ok ? "OK" : "SEH") + ", PlayMotion " + (ok ? "appelé" : (set_ok ? "SEH" : "non appelé")) +
               ", emplacement " + hex_ptr(before) + " « " + motion_name(before) + " » -> " + hex_ptr(after) +
-              (after == last.resource ? " (ressource du joueur)" : " (INATTENDU)"));
+              (after == last.resource ? " (même ressource que le joueur)" : " (INATTENDU)"));
 }
 
 void toggle_mirror() {
@@ -366,9 +376,14 @@ void toggle_mirror() {
         log::info("[probe] F7 : pas de copie (F6 d'abord)");
         return;
     }
-    if (g_mirror.load()) {
-        g_mirror.store(false);
+    if (g_mirror) {
+        sync::anim_filter().remove_replica(g_copy_anim_ps);
+        g_mirror = false;
         log::info("[probe] F7 : miroir désactivé (la copie reprend ses propres animations)");
+        return;
+    }
+    if (g_copy_anim_ps == nullptr) {
+        log::info("[probe] F7 : pas d'eCAnimation_PS sur la copie");
         return;
     }
     game::Entity player;
@@ -379,13 +394,16 @@ void toggle_mirror() {
         return;
     }
     for (int i = 0; i < 3; ++i) g_mirror_offset[i] = cp.m[12 + i] - pp.m[12 + i];
-    g_mirror_replays = g_mirror_failures = 0;
-    g_copy_blocked_motions.store(0);
-    g_mirror.store(true);
+    g_mirror_replays = g_mirror_failures = g_name_mismatches = 0;
+    g_by_name.clear();  // chaque nom est revérifié contre sa ressource capturée
+    g_mirror_start = GetTickCount64();
+    sync::anim_filter().take_blocked();
+    sync::anim_filter().add_replica(g_copy_anim_ps);
+    g_mirror = true;
     char off[96];
     std::snprintf(off, sizeof off, "(%.0f, %.0f, %.0f)", static_cast<double>(g_mirror_offset[0]),
                   static_cast<double>(g_mirror_offset[1]), static_cast<double>(g_mirror_offset[2]));
-    log::info(std::string("[probe] F7 : miroir activé, décalage copie-joueur=") + off +
+    log::info(std::string("[probe] F7 : miroir par nom activé, décalage copie-joueur=") + off +
               " ; animations du moteur sur la copie bloquées");
 }
 
@@ -445,26 +463,44 @@ void frame() {
     ++g_frames;
 
     // Mise à jour du filtre du hook PlayMotion.
+    sync::AnimFilter& filter = sync::anim_filter();
     game::Entity player;
     void* anim_ps = nullptr;
     if (game::get_player(player) && player.ptr != nullptr) game::get_animation_ps(player, anim_ps);
-    g_player_anim_ps.store(anim_ps);
+    filter.set_local(anim_ps);
     if (player.ptr != g_last_player) {
         // Chargement, retour au menu ou prise de contrôle : la copie temporaire a pu
         // être détruite avec le monde. Ne jamais réutiliser un pointeur peut-être libéré.
+        // Elle sort du filtre avant d'être oubliée (AD-2).
+        filter.remove_replica(g_copy_anim_ps);
         if (g_copy.ptr != nullptr) log::info("[probe] joueur changé : copie " + hex_ptr(g_copy.ptr) + " oubliée");
         g_copy = game::Entity{};
-        g_copy_anim_ps.store(nullptr);
-        g_mirror.store(false);
+        g_copy_anim_ps = nullptr;
+        g_mirror = false;
         g_last_player = player.ptr;
         g_names.clear();  // ressources peut-être libérées avec le monde
-        g_have_last_attack = g_have_last_other = false;
-        AcquireSRWLockExclusive(&g_lock);
-        g_have_last = false;
-        ReleaseSRWLockExclusive(&g_lock);
+        g_by_name.clear();
+        g_have_last_attack = g_have_last_other = g_have_last = false;
+        // Captures de l'ancien monde : leurs ressources sont peut-être libérées, on les jette.
+        static Capture stale[sync::kCaptureRing];
+        unsigned dropped = 0;
+        filter.drain(stale, sync::kCaptureRing, dropped);
     }
 
-    if (g_mirror.load() && g_copy.ptr != nullptr && player.ptr != nullptr) mirror_pose(player);
+    // AD-2 : le hook PlayMotion tourne-t-il sur le thread d'OnProcess ?
+    const std::uint32_t hook_tid = filter.hook_thread();
+    if (!g_hook_thread_logged && hook_tid != 0) {
+        g_hook_thread_logged = true;
+        log::info("[probe] hook PlayMotion : thread=" + std::to_string(hook_tid) +
+                  (hook_tid == g_first_thread ? " (celui d'OnProcess)" : " (DIFFÉRENT du thread d'OnProcess " +
+                                                                              std::to_string(g_first_thread) + ")"));
+    }
+    if (!g_hook_varied_logged && filter.hook_thread_varied()) {
+        g_hook_varied_logged = true;
+        log::warn("[probe] hook PlayMotion : appelé depuis plusieurs threads");
+    }
+
+    if (g_mirror && g_copy.ptr != nullptr && player.ptr != nullptr) mirror_pose(player);
     flush_captures();
 
     if (game_has_focus()) {
@@ -496,36 +532,18 @@ void on_frame() noexcept {
 }
 
 bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept {
-    if (animation_ps == nullptr) return true;
-    if (animation_ps == g_copy_anim_ps.load()) {
-        if (g_replaying) return true;
-        if (g_mirror.load()) {
-            g_copy_blocked_motions.fetch_add(1);
-            return false;  // miroir : seul le rejeu anime la copie
-        }
-        g_copy_engine_motions.fetch_add(1);
-        return true;
+    sync::AnimFilter& filter = sync::anim_filter();
+    switch (filter.classify(animation_ps, GetCurrentThreadId())) {
+        case sync::AnimFilter::Verdict::Pass: return true;
+        case sync::AnimFilter::Verdict::Block: return false;  // miroir : seul le rejeu anime la copie
+        case sync::AnimFilter::Verdict::Capture: break;
     }
-    if (animation_ps != g_player_anim_ps.load()) return true;
-    Capture c{};
+    Capture c;
     c.type = type;
     c.flag = flag;
-    c.desc = desc;
-    c.desc_null = desc == nullptr;
-    c.desc_readable = !c.desc_null && game::copy_bytes(desc, c.bytes, kDescDumpSize);
+    c.desc_present = desc != nullptr && game::copy_bytes(desc, c.desc, sizeof c.desc);
     game::read_motion_resource(animation_ps, type, c.resource);
-
-    AcquireSRWLockExclusive(&g_lock);
-    if (g_ring_count == kCaptureRing) {
-        ++g_ring_dropped;
-    } else {
-        g_ring[g_ring_head] = c;
-        g_ring_head = (g_ring_head + 1) % kCaptureRing;
-        ++g_ring_count;
-    }
-    g_last = c;
-    g_have_last = true;
-    ReleaseSRWLockExclusive(&g_lock);
+    filter.push(c);
     return true;
 }
 

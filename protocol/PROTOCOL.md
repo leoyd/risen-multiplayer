@@ -1,12 +1,12 @@
-# Protocole Risen Multiplayer — version 1
+# Protocole Risen Multiplayer — version 2
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
 et le codec Go le suivent, et les vecteurs de `protocol/vectors/` en sont tirés.
 
-La v1 couvre **uniquement la session** (poignée de main, présence, fin de session). Les
-snapshots, animations, apparitions et combats arrivent avec les epics suivants et
-incrémenteront la version.
+La v1 couvrait **uniquement la session** (poignée de main, présence, fin de session). La v2
+(story 2.1) ajoute `Motion`. Les snapshots, apparitions et combats arrivent avec les stories
+suivantes et incrémenteront la version.
 
 ## 1. Règles générales
 
@@ -23,7 +23,7 @@ incrémenteront la version.
 | Canal | Valeur | Contenu | Story |
 |---|---|---|---|
 | Fiable | `0` | segments KCP (`conv` = identifiant de session tiré par l'hôte) | 1.2 |
-| Snapshot | `1` | état complet à 20 Hz, non fiable — **non défini en v1** | Epic 2 |
+| Snapshot | `1` | état complet à 20 Hz, non fiable — **non défini en v2** | Epic 2 |
 | Contrôle | `2` | `Hello`, `Welcome`, `Reject`, hors KCP | 1.1 |
 
 - **Message de contrôle** = un datagramme complet : `[u8 canal=2][u8 MsgType][charge]`.
@@ -40,7 +40,8 @@ incrémenteront la version.
 | 3 | `Reject` | contrôle | hôte → invité |
 | 16 | `Heartbeat` | fiable | les deux sens, 1 Hz |
 | 17 | `SessionEnd` | fiable | les deux sens |
-| 18–25 | *réservés* | fiable | `AniName`, `Motion`, `Spawn`, `Despawn`, `HitRequest`, `HitOnGuest`, `Death`, `Respawn` — **non définis en v1** |
+| 19 | `Motion` | fiable | les deux sens : une animation lancée sur une entité dont l'émetteur a l'autorité (v2) |
+| 18, 20–25 | *réservés* | fiable | `AniName` (18), `Spawn`, `Despawn`, `HitRequest`, `HitOnGuest`, `Death`, `Respawn` — **non définis en v2** |
 
 Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -52,7 +53,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `1` en v1 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `2` en v2 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -108,6 +109,33 @@ Charge vide. Taille : 1 octet.
 
 Taille : 2 octets.
 
+### `Motion` (19) — fiable — v2
+
+Un appel à `eCAnimation_PS::PlayMotion(type, descripteur, flag)` (AD-8). Le récepteur rejoue :
+`eCResource2::GetMotion(nom de ani_id)` → `SetMotion(type, ressource)` → `PlayMotion(type,
+descripteur reconstruit, flag)`. Le descripteur `eSMotionPlayBackDesc` (0x60 octets) n'est
+jamais transmis : le moteur n'en lit que les 7 scalaires ci‑dessous (offsets `0x00`–`0x1B`,
+`docs/re/spike-j1.md`). Le récepteur reconstruit un descripteur de 0x60 octets à zéro, avec ces
+7 valeurs à leur offset.
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `net_id` | `u32` | entité animée (AD-6) |
+| `ms` | `u32` | millisecondes depuis l'entrée en session de l'émetteur (base du `tick`, AD-7) |
+| `type` | `u8` | `eEMotionType`, **0 à 7** |
+| `ani_id` | `u16` | nom d'animation interné par l'émetteur (`AniName`, à venir) |
+| `flags` | `u8` | bit 0 = argument `flag` de `PlayMotion` ; bit 1 = descripteur présent ; autres bits **à 0** |
+| `d00` | `f32` | descripteur `+0x00` |
+| `d04` | `f32` | descripteur `+0x04` |
+| `d08` | `u32` | descripteur `+0x08` (le moteur ne retient que 0 et 1) |
+| `d0C` | `f32` | descripteur `+0x0C` |
+| `d10` | `u32` | descripteur `+0x10` |
+| `d14` | `f32` | descripteur `+0x14` |
+| `d18` | `u32` | descripteur `+0x18` (le moteur le compare à 2) |
+
+Bit 1 de `flags` à 0 : les 7 scalaires valent 0 (sinon `BadValue`) et le récepteur passe un descripteur **nul**
+(lecture par défaut du moteur). Taille : 41 octets.
+
 **Raison inconnue** (`Reject` ou `SessionEnd`) : le message se décode quand même ; la valeur
 brute est conservée et l'appelant la journalise telle quelle (« raison inconnue (200) »).
 
@@ -120,12 +148,14 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide) |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 1 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 2 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets) |
 | `TrailingBytes` | octets restants après la fin du message |
+| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 1 ou un résultat de plus de 1200 octets.
+hors bornes, une version autre que 2, un champ hors domaine ou un résultat de plus de 1200
+octets.
 
 ## 6. Compatibilité
 
@@ -156,13 +186,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=1`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=2`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0100 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -172,7 +202,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `01 00` | `version_protocole` = 1 |
+| 0x02 | `02 00` | `version_protocole` = 2 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -241,32 +271,61 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 | 0x00 | `11` | `MsgType` SessionEnd (17) |
 | 0x01 | `01` | raison = 1 |
 
+#### `motion.bin` — `Motion` (fiable, sans octet de canal), 41 octets
+
+`net_id=2`, `ms=1234`, `type=0`, `ani_id=7`, `flags=3` (flag + descripteur), `d00=0.25`,
+`d04=0.5`, `d08=1`, `d0C=1.0`, `d10=0`, `d14=0.75`, `d18=2`.
+
+<!-- vector: motion.bin -->
+```text
+00000000: 1302 0000 00d2 0400 0000 0700 0300 0080  ................
+00000010: 3e00 0000 3f01 0000 0000 0080 3f00 0000  >...?.......?...
+00000020: 0000 0040 3f02 0000 00                   ...@?....
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `13` | `MsgType` Motion (19) |
+| 0x01 | `02 00 00 00` | `net_id` = 2 |
+| 0x05 | `d2 04 00 00` | `ms` = 1234 |
+| 0x09 | `00` | `type` = 0 |
+| 0x0a | `07 00` | `ani_id` = 7 |
+| 0x0c | `03` | `flags` = flag + descripteur |
+| 0x0d | `00 00 80 3e` | `d00` = 0.25 |
+| 0x11 | `00 00 00 3f` | `d04` = 0.5 |
+| 0x15 | `01 00 00 00` | `d08` = 1 |
+| 0x19 | `00 00 80 3f` | `d0C` = 1.0 |
+| 0x1d | `00 00 00 00` | `d10` = 0 |
+| 0x21 | `00 00 40 3f` | `d14` = 0.75 |
+| 0x25 | `02 00 00 00` | `d18` = 2 |
+
 ### Invalides
 
-#### `hello_v2.bin` — `Hello` d'une version future, 8 octets
+#### `hello_future.bin` — `Hello` d'une version future, 8 octets
 
-`peek_hello_version` → 2 ; décodage complet → `UnsupportedVersion`. La suite (`ff ff ff ff`)
-est volontairement illisible en v1.
+`peek_hello_version` → 65535 ; décodage complet → `UnsupportedVersion`. La suite
+(`ff ff ff ff`) est volontairement illisible. La version `0xFFFF` ne sera jamais atteinte : ce
+vecteur reste valable à chaque incrémentation.
 
-<!-- vector: hello_v2.bin -->
+<!-- vector: hello_future.bin -->
 ```text
-00000000: 0201 0200 ffff ffff                      ........
+00000000: 0201 ffff ffff ffff                      ........
 ```
 
 | Offset | Octets | Champ |
 |---|---|---|
 | 0x00 | `02` `01` | canal contrôle, `MsgType` Hello |
-| 0x02 | `02 00` | `version_protocole` = 2 |
+| 0x02 | `ff ff` | `version_protocole` = 65535 |
 | 0x04 | `ff ff ff ff` | charge d'une autre version |
 
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 1.
+`Truncated` ; `peek_hello_version` → 2.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0100 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -276,7 +335,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0100 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -293,9 +352,20 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 00000000: 0263                                     .c
 ```
 
+#### `motion_bad_type.bin` — `Motion` de type 8, 41 octets
+
+`motion.bin` avec `type` = 8 (offset 0x09) → `BadValue`.
+
+<!-- vector: motion_bad_type.bin -->
+```text
+00000000: 1302 0000 00d2 0400 0008 0700 0300 0080  ................
+00000010: 3e00 0000 3f01 0000 0000 0080 3f00 0000  >...?.......?...
+00000020: 0000 0040 3f02 0000 00                   ...@?....
+```
+
 ## 8. Règles de session
 
-Règles **normatives** de la v1 (le format des octets ne change pas). Elles s'appliquent à la
+Règles **normatives** depuis la v1, inchangées en v2. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -324,8 +394,8 @@ d'appels.
   sont ignorés.
 - Un `Hello` venu d'**une autre adresse** pendant une session reçoit `Reject{4}` (session
   pleine), sans effet sur la session en cours.
-  Les vérifications 1 à 4 du §6 s'appliquent d'abord : un `Hello` v2 venu d'une autre
-  adresse reçoit `Reject{1}`, pas `Reject{4}`.
+  Les vérifications 1 à 4 du §6 s'appliquent d'abord : un `Hello` d'une autre version venu
+  d'une autre adresse reçoit `Reject{1}`, pas `Reject{4}`.
 - Un `Hello` venu du **pair accepté** qui échoue à une vérification (version, décodage, mod,
   empreinte) est **ignoré** : ni `Reject`, ni `Welcome`, ni effet sur la session.
 - `Welcome` et `Reject` reçus par l'hôte sont ignorés.
@@ -350,6 +420,8 @@ d'appels.
 - **Raisons locales** envoyées par la DLL en session : `2` fin de monde (rechargement,
   chargement rapide, retour au menu), `3` mort de l'hôte (hôte seulement), `4` erreur interne.
   Hors session (`Hosting`, `Connecting`), une fin locale n'envoie rien.
+- `Motion` (v2) : reçu en session, il est **ignoré** tant qu'il n'y a pas d'avatar (story 2.4) ;
+  il ne compte que comme activité du pair.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -364,4 +436,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique en v1.
+  chargement. Pas de reconnexion automatique (v1, inchangé en v2).

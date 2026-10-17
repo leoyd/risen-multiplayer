@@ -83,6 +83,35 @@ void write(Writer& w, const SessionEnd& m) {
     w.u8(m.reason);
 }
 
+std::uint32_t bits_of(float v) {
+    std::uint32_t bits;
+    std::memcpy(&bits, &v, sizeof bits);
+    return bits;
+}
+
+bool valid(const Motion& m) {
+    if (m.type >= kMotionTypeCount || (m.flags & ~(kMotionFlagPlay | kMotionFlagDesc)) != 0) return false;
+    // Sans descripteur, les 7 scalaires sont nuls (PROTOCOL.md §4).
+    return (m.flags & kMotionFlagDesc) != 0 ||
+           (bits_of(m.d00) | bits_of(m.d04) | m.d08 | bits_of(m.d0c) | m.d10 | bits_of(m.d14) | m.d18) == 0;
+}
+
+void write(Writer& w, const Motion& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::Motion));
+    w.u32(m.net_id);
+    w.u32(m.ms);
+    w.u8(m.type);
+    w.u16(m.ani_id);
+    w.u8(m.flags);
+    w.f32(m.d00);
+    w.f32(m.d04);
+    w.u32(m.d08);
+    w.f32(m.d0c);
+    w.u32(m.d10);
+    w.f32(m.d14);
+    w.u32(m.d18);
+}
+
 // --- Lecture ------------------------------------------------------------------
 
 // Curseur borné : chaque lecture vérifie la place restante et lève le drapeau
@@ -189,6 +218,24 @@ DecodeError read(Reader& r, SessionEnd& m) {
     return r.finish();
 }
 
+DecodeError read(Reader& r, Motion& m) {
+    m.net_id = r.u32();
+    m.ms = r.u32();
+    m.type = r.u8();
+    m.ani_id = r.u16();
+    m.flags = r.u8();
+    m.d00 = r.f32();
+    m.d04 = r.f32();
+    m.d08 = r.u32();
+    m.d0c = r.f32();
+    m.d10 = r.u32();
+    m.d14 = r.f32();
+    m.d18 = r.u32();
+    const DecodeError e = r.finish();
+    if (e != DecodeError::None) return e;
+    return valid(m) ? DecodeError::None : DecodeError::BadValue;
+}
+
 template <typename Message, typename Variant>
 Decoded<Variant> decode_as(Reader& r) {
     Decoded<Variant> d;
@@ -212,6 +259,7 @@ bool encode_control(const ControlMessage& message, std::vector<std::uint8_t>& ou
 }
 
 bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& out) {
+    if (const Motion* motion = std::get_if<Motion>(&message); motion != nullptr && !valid(*motion)) return false;
     std::vector<std::uint8_t> buf;
     Writer w(buf);
     std::visit([&w](const auto& m) { write(w, m); }, message);
@@ -242,6 +290,7 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
     switch (static_cast<MsgType>(type)) {
         case MsgType::Heartbeat: return decode_as<Heartbeat, ReliableMessage>(r);
         case MsgType::SessionEnd: return decode_as<SessionEnd, ReliableMessage>(r);
+        case MsgType::Motion: return decode_as<Motion, ReliableMessage>(r);
         default: return {DecodeError::UnknownType, {}};
     }
 }
@@ -289,6 +338,7 @@ const char* decode_error_name(DecodeError error) {
         case DecodeError::UnsupportedVersion: return "version du protocole non prise en charge";
         case DecodeError::BadLength: return "longueur de texte hors bornes";
         case DecodeError::TrailingBytes: return "octets en trop";
+        case DecodeError::BadValue: return "champ hors domaine";
     }
     return "inconnue";
 }

@@ -229,19 +229,30 @@ Mode de rétro-ingénierie, **désactivé par défaut**. Avec `probe = 1` dans
 - une ligne `tick` par seconde : thread (identique au premier appel ?), images/s,
   joueur présent ou non, position et matrice brute du joueur ;
 - une ligne `PlayMotion` par animation lancée sur le joueur : type, **nom** de l'animation,
-  ressource de motion, adresse et 0x60 octets du descripteur en hexadécimal (20 lignes/s au plus, le surplus
-  est compté) ;
+  `flag` et les 7 scalaires du descripteur lus par le moteur (`d00` … `d18`) (20 lignes/s au
+  plus, le surplus est compté) ;
+- une ligne `hook PlayMotion : thread=…` au premier appel du hook : le thread est-il celui
+  d'`OnProcess` (AD-2) ?
 - **F6** (fenêtre du jeu active) : fait apparaître une copie temporaire du joueur environ
   2 m devant lui, et indique si le joueur a changé après l'apparition ;
-- **F7** : active ou coupe le **miroir**. La copie rejoue chaque animation du joueur
-  (`SetMotion` + `PlayMotion`) et suit ses déplacements en gardant son décalage
-  (`Entity::SetPose`). Les animations que le moteur lance de lui-même sur la copie sont
-  bloquées. Tant qu'une copie existe, une ligne `copie` par seconde donne son état ;
-- **F4** : rejoue le dernier coup capturé sur le PNJ le plus proche (15 m au plus).
+- **F7** : active ou coupe le **miroir par nom** (story 2.1). La copie rejoue chaque
+  animation du joueur par le chemin de l'avatar : `Motion` encodé puis décodé, nom →
+  `eCResource2::GetMotion` → `SetMotion` → `PlayMotion` avec un descripteur reconstruit (ni
+  pointeur de ressource ni octets bruts). Elle suit ses déplacements en gardant son décalage
+  (`Entity::MoveTo`). Les animations que le moteur lance de lui-même sur la copie sont
+  bloquées. La première résolution de chaque nom est journalisée (`GetMotion(« … ») = …`,
+  identique ou non à la ressource capturée). Tant qu'une copie existe, une ligne `copie` par
+  seconde donne son état : rejoués, échecs, bloqués, écarts de pointeur ;
+- **F4** : rejoue, par le même chemin, le dernier coup capturé sur le PNJ le plus proche
+  (15 m au plus).
 
-Protocole de test : charger une partie, F6 face à un espace dégagé, F7, puis marcher,
-courir, sauter, frapper en regardant la copie ; jouer environ 2 minutes, quitter, et fournir
-`Script_Multiplayer.log`. Avec `probe = 0` ou sans la clé, la sonde est désactivée et seule la
+Protocole de test (story 2.1) : charger une partie, F6 face à un espace dégagé, F7, puis
+marcher, courir, sauter, frapper (plusieurs coups), et se laisser mourir, en regardant la
+copie. Attendu : la copie reproduit les gestes comme le miroir v5 du spike J1
+(`docs/re/spike-j1.md`) ; les lignes `copie` montrent `0 échecs` et `0 écarts de pointeur`.
+Quitter, et fournir `Script_Multiplayer.log`.
+
+Avec `probe = 0` ou sans la clé, la sonde est désactivée et seule la
 session est installée (hook `OnProcess` seul). Sonde et session sont exclusives.
 
 ## Organisation
@@ -252,7 +263,7 @@ src/core/                   logique pure (config, version, codec du protocole, m
 src/common/                 log
 src/net/                    transport UDP + KCP : socket, canaux, thread réseau (testé sous Linux et Wine)
 src/game/                   adaptateur ABI du jeu (GetProcAddress) — seul code qui appelle le jeu
-src/sync/                   pilote de session (tick par frame) ; sonde du spike J1
+src/sync/                   pilote de session (tick par frame) ; filtre PlayMotion (AnimFilter) ; sonde du spike J1
 src/win/                    ScriptInit, hooks MinHook
 third_party/minhook/        MinHook, figé sur un commit (voir VERSION.txt)
 third_party/kcp/            KCP 2.1.1, figé sur un commit (voir VERSION.txt), compilé dans mp_net

@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 1 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 2 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -21,7 +21,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 1;
+inline constexpr std::uint16_t kProtocolVersion = 2;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -36,14 +36,15 @@ enum class Channel : std::uint8_t {
     Control = 2,   // hors KCP : Hello, Welcome, Reject
 };
 
-// 18 à 25 sont réservés (AniName, Motion, Spawn, Despawn, HitRequest, HitOnGuest,
-// Death, Respawn) et ne sont pas définis en v1 : ils se décodent en `UnknownType`.
+// 18 et 20 à 25 sont réservés (AniName, Spawn, Despawn, HitRequest, HitOnGuest, Death,
+// Respawn) et ne sont pas encore définis : ils se décodent en `UnknownType`.
 enum class MsgType : std::uint8_t {
     Hello = 1,
     Welcome = 2,
     Reject = 3,
     Heartbeat = 16,
     SessionEnd = 17,
+    Motion = 19,  // v2 (story 2.1)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -90,8 +91,30 @@ struct SessionEnd {
     std::uint8_t reason = 0;
 };
 
+inline constexpr std::uint8_t kMotionTypeCount = 8;      // eEMotionType 0 à 7
+inline constexpr std::uint8_t kMotionFlagPlay = 0x01;    // argument bool de PlayMotion
+inline constexpr std::uint8_t kMotionFlagDesc = 0x02;    // descripteur présent (sinon nul)
+
+// Un appel à eCAnimation_PS::PlayMotion (AD-8). Les 7 scalaires sont les seuls octets du
+// descripteur eSMotionPlayBackDesc lus par le moteur, nommés par leur offset
+// (docs/re/spike-j1.md). Sans kMotionFlagDesc, ils valent 0 et le descripteur est nul.
+struct Motion {
+    std::uint32_t net_id = 0;
+    std::uint32_t ms = 0;     // millisecondes depuis l'entrée en InSession de l'émetteur
+    std::uint8_t type = 0;    // 0 à 7
+    std::uint16_t ani_id = 0; // nom interné (AniName, story 2.4)
+    std::uint8_t flags = 0;   // kMotionFlagPlay | kMotionFlagDesc, autres bits à 0
+    float d00 = 0.0f;
+    float d04 = 0.0f;
+    std::uint32_t d08 = 0;
+    float d0c = 0.0f;
+    std::uint32_t d10 = 0;
+    float d14 = 0.0f;
+    std::uint32_t d18 = 0;
+};
+
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
-using ReliableMessage = std::variant<Heartbeat, SessionEnd>;
+using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,
@@ -101,6 +124,7 @@ enum class DecodeError : std::uint8_t {
     UnsupportedVersion,  // Hello d'une autre version du protocole (lire peek_hello_version)
     BadLength,           // longueur de texte hors bornes
     TrailingBytes,       // octets après la fin du message
+    BadValue,            // champ hors de son domaine (Motion : type, bits de flags, scalaires sans descripteur)
 };
 
 template <typename Message>
@@ -113,7 +137,8 @@ struct Decoded {
 
 // Encodage : `out` est remplacé par le datagramme (contrôle) ou par le message
 // (fiable). Retourne false, sans rien écrire dans `out`, si une borne n'est pas
-// respectée (texte trop long ou pseudo vide, version ≠ kProtocolVersion, > 1200 octets).
+// respectée (texte trop long ou pseudo vide, version ≠ kProtocolVersion, champ hors domaine,
+// > 1200 octets).
 bool encode_control(const ControlMessage& message, std::vector<std::uint8_t>& out);
 bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& out);
 

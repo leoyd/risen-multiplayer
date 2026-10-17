@@ -70,6 +70,29 @@ bool same(const Welcome& a, const Welcome& b) {
            bits(a.z) == bits(b.z) && bits(a.yaw) == bits(b.yaw);
 }
 
+Motion sample_motion() {
+    Motion m;
+    m.net_id = 2;
+    m.ms = 1234;
+    m.type = 0;
+    m.ani_id = 7;
+    m.flags = kMotionFlagPlay | kMotionFlagDesc;
+    m.d00 = 0.25f;
+    m.d04 = 0.5f;
+    m.d08 = 1;
+    m.d0c = 1.0f;
+    m.d10 = 0;
+    m.d14 = 0.75f;
+    m.d18 = 2;
+    return m;
+}
+
+bool same(const Motion& a, const Motion& b) {
+    return a.net_id == b.net_id && a.ms == b.ms && a.type == b.type && a.ani_id == b.ani_id &&
+           a.flags == b.flags && bits(a.d00) == bits(b.d00) && bits(a.d04) == bits(b.d04) && a.d08 == b.d08 &&
+           bits(a.d0c) == bits(b.d0c) && a.d10 == b.d10 && bits(a.d14) == bits(b.d14) && a.d18 == b.d18;
+}
+
 Decoded<ControlMessage> dc(const Bytes& b) { return decode_control(b.data(), b.size()); }
 Decoded<ReliableMessage> dr(const Bytes& b) { return decode_reliable(b.data(), b.size()); }
 
@@ -86,7 +109,7 @@ Bytes enc(const ReliableMessage& m) {
 }
 
 const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
-const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin"};
+const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin"};
 
 }  // namespace
 
@@ -147,6 +170,26 @@ TEST("protocole : aller-retour Welcome, Reject, Heartbeat, SessionEnd") {
     CHECK(dh.ok() && std::holds_alternative<Heartbeat>(dh.message));
 }
 
+TEST("protocole : aller-retour Motion, valeurs extrêmes") {
+    Motion m;
+    m.net_id = 0xffffffffu;
+    m.ms = 0x89abcdefu;
+    m.type = kMotionTypeCount - 1;
+    m.ani_id = 0xffff;
+    m.flags = kMotionFlagDesc;
+    m.d00 = -0.0f;
+    m.d04 = 3.5e6f;
+    m.d08 = 0xffffffffu;
+    m.d0c = -1.0f;
+    m.d10 = 0x12345678u;
+    m.d14 = 1e-30f;
+    m.d18 = 7;
+    const auto d = dr(enc(m));
+    const Motion* got = std::get_if<Motion>(&d.message);
+    CHECK(d.ok() && got != nullptr && same(*got, m));
+    CHECK_EQ(enc(m).size(), static_cast<std::size_t>(41));
+}
+
 // --- Vecteurs -------------------------------------------------------------------
 
 TEST("protocole : vecteur hello.bin") {
@@ -193,27 +236,77 @@ TEST("protocole : vecteur session_end.bin") {
     CHECK(enc(SessionEnd{1}) == b);
 }
 
+TEST("protocole : vecteur motion.bin") {
+    const Bytes b = load_vector("motion.bin");
+    const auto d = dr(b);
+    const Motion* got = std::get_if<Motion>(&d.message);
+    CHECK(d.ok() && got != nullptr && same(*got, sample_motion()));
+    CHECK(enc(sample_motion()) == b);
+    if (got != nullptr) CHECK(enc(*got) == b);
+}
+
+// --- Champ hors domaine -----------------------------------------------------------
+
+TEST("protocole : Motion de type 8 -> BadValue (vecteur)") {
+    CHECK(dr(load_vector("motion_bad_type.bin")).error == DecodeError::BadValue);
+}
+
+TEST("protocole : Motion avec un bit de flags inconnu -> BadValue") {
+    for (int bit = 2; bit < 8; ++bit) {
+        Bytes b = load_vector("motion.bin");
+        b[0x0c] = static_cast<std::uint8_t>(b[0x0c] | (1u << bit));
+        CHECK(dr(b).error == DecodeError::BadValue);
+    }
+}
+
+TEST("protocole : Motion sans descripteur, scalaires nuls exigés") {
+    Motion m;
+    m.flags = kMotionFlagPlay;  // pas de descripteur
+    const auto d = dr(enc(m));
+    const Motion* got = std::get_if<Motion>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->flags == kMotionFlagPlay);
+    // Un scalaire non nul sans le bit 1 : refusé au décodage (d14 à l'offset 0x21).
+    Bytes b = enc(m);
+    b[0x24] = 0x3f;
+    CHECK(dr(b).error == DecodeError::BadValue);
+    Bytes out = {0xAA};
+    m.d00 = -0.0f;  // bit de signe : non nul
+    CHECK(!encode_reliable(m, out));
+    CHECK(out == Bytes{0xAA});
+}
+
+TEST("protocole : l'encodeur refuse un Motion hors domaine") {
+    Bytes out = {0xAA};
+    Motion m = sample_motion();
+    m.type = kMotionTypeCount;
+    CHECK(!encode_reliable(m, out));
+    m = sample_motion();
+    m.flags = 0x04;
+    CHECK(!encode_reliable(m, out));
+    CHECK(out == Bytes{0xAA});
+}
+
 // --- Autre version --------------------------------------------------------------
 
-TEST("protocole : Hello v2, version lisible mais décodage refusé") {
-    const Bytes b = load_vector("hello_v2.bin");
+TEST("protocole : Hello d'une version future, version lisible mais décodage refusé") {
+    const Bytes b = load_vector("hello_future.bin");
     std::uint16_t version = 0;
     CHECK(peek_hello_version(b.data(), b.size(), version));
-    CHECK_EQ(version, 2);
+    CHECK_EQ(version, 0xffff);
     CHECK(dc(b).error == DecodeError::UnsupportedVersion);
     // Seuls les 4 premiers octets sont figés : ils suffisent à peek_hello_version.
     CHECK(peek_hello_version(b.data(), 4, version));
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v1 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v2 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 1);
+    CHECK_EQ(version, 2);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 1);
+    CHECK_EQ(version, 2);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -224,10 +317,12 @@ TEST("protocole : peek_hello_version sur v1 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 1") {
+TEST("protocole : l'encodeur refuse une version autre que 2") {
     Hello h = sample_hello();
-    h.protocol_version = 2;
+    h.protocol_version = 1;
     Bytes out = {0xAA};
+    CHECK(!encode_control(h, out));
+    h.protocol_version = 3;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -288,8 +383,11 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(Bytes{0, 16}).error == DecodeError::UnknownChannel);  // segment KCP, pas du contrôle
     CHECK(dc(load_vector("unknown_type.bin")).error == DecodeError::UnknownType);
     CHECK(dr(Bytes{99}).error == DecodeError::UnknownType);
-    // Types réservés (18 à 25) et types hors de leur canal.
-    for (std::uint8_t t = 18; t <= 25; ++t) CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
+    // Types réservés (18, 20 à 25) et types hors de leur canal.
+    for (std::uint8_t t = 18; t <= 25; ++t) {
+        if (t != static_cast<std::uint8_t>(MsgType::Motion)) CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
+    }
+    CHECK(dc(Bytes{2, 19}).error == DecodeError::UnknownType);  // Motion en contrôle
     CHECK(dc(Bytes{2, 16}).error == DecodeError::UnknownType);  // Heartbeat en contrôle
     CHECK(dr(Bytes{1, 1, 0}).error == DecodeError::UnknownType);  // Hello en fiable
     CHECK(dr(Bytes{0}).error == DecodeError::UnknownType);
@@ -343,12 +441,13 @@ TEST("protocole : noms lisibles des raisons") {
     CHECK_EQ(std::string(reject_reason_name(4)), std::string("session pleine"));
     CHECK_EQ(std::string(end_reason_name(3)), std::string("mort de l'hôte"));
     CHECK_EQ(std::string(decode_error_name(DecodeError::Truncated)), std::string("message tronqué"));
+    CHECK_EQ(std::string(decode_error_name(DecodeError::BadValue)), std::string("champ hors domaine"));
 }
 
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 1);
+    CHECK_EQ(kProtocolVersion, 2);
     CHECK_EQ(static_cast<int>(Channel::Reliable), 0);
     CHECK_EQ(static_cast<int>(Channel::Snapshot), 1);
     CHECK_EQ(static_cast<int>(Channel::Control), 2);
@@ -357,6 +456,7 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::Reject), 3);
     CHECK_EQ(static_cast<int>(MsgType::Heartbeat), 16);
     CHECK_EQ(static_cast<int>(MsgType::SessionEnd), 17);
+    CHECK_EQ(static_cast<int>(MsgType::Motion), 19);
     CHECK_EQ(static_cast<int>(RejectReason::Protocol), 1);
     CHECK_EQ(static_cast<int>(RejectReason::BadHello), 5);
     CHECK_EQ(static_cast<int>(EndReason::PlayerLeft), 1);

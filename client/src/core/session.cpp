@@ -390,6 +390,11 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         out.logs.push_back({Level::Debug, "[sync] Heartbeat reçu (" + std::to_string(heartbeats_rx_) + ")"});
         return;
     }
+    if (std::holds_alternative<proto::Motion>(decoded.message)) {
+        // Avatar : story 2.4. En attendant, ignoré sans bruit hors debug.
+        out.logs.push_back({Level::Debug, "[sync] Motion reçu, ignoré (pas encore d'avatar)"});
+        return;
+    }
     const auto& e = std::get<proto::SessionEnd>(decoded.message);
     out.logs.push_back({Level::Info, "[sync] SessionEnd reçu : " + end_text(e.reason)});
     // L'hôte dont l'invité part se réarme aussitôt ; l'invité attend le monde suivant.

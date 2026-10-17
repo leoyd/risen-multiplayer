@@ -34,8 +34,8 @@ const (
 	tickInterval             = 5 * time.Millisecond
 )
 
-// badVersionHello : le Hello de protocol/vectors/hello_v2.bin (version 2, suite illisible).
-var badVersionHello = []byte{0x02, 0x01, 0x02, 0x00, 0xff, 0xff, 0xff, 0xff}
+// badVersionHello : le Hello de protocol/vectors/hello_future.bin (version 0xFFFF, suite illisible).
+var badVersionHello = []byte{0x02, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 
 // Empreintes par défaut : celles de hello.bin (Risen Steam x64, janvier 2023).
 var steamFingerprint = [protocol.FingerprintModule]protocol.Fingerprint{
@@ -243,10 +243,10 @@ func (g *guest) helloCopies() int {
 	return 1
 }
 
-// sendHello envoie `copies` fois le Hello (ou celui de hello_v2.bin avec --bad-version).
+// sendHello envoie `copies` fois le Hello (ou celui de hello_future.bin avec --bad-version).
 func (g *guest) sendHello(copies int) {
 	b := badVersionHello
-	desc := "Hello version_protocole=2 (hello_v2.bin)"
+	desc := "Hello version_protocole=65535 (hello_future.bin)"
 	if !g.cfg.BadVersion {
 		var err error
 		if b, err = protocol.EncodeControl(g.cfg.Hello); err != nil {

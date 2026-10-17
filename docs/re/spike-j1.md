@@ -91,3 +91,45 @@ Hook `OnProcess` (thread, fps, état de session, pose du joueur, une fois par se
   - un descripteur reconstruit (le miroir rejoue le pointeur de ressource et le descripteur brut) ;
   - le retour au menu ;
   - le chargement rapide (AD-11).
+
+## Story 2.1 — chemin par nom et descripteur (2026-10-17)
+
+Méthode : désassemblage (`objdump -d`). REA/Hopper ne démarre toujours pas (pont, timeout).
+
+- **`eCResource2::GetMotion(bCString const&)`** (`?GetMotion@eCResource2@@SAPEAVeCMotionResource2@@AEBVbCString@@@Z`,
+  Engine.dll, `0x1800a06a0`) : statique, sans sret. Elle appelle la recherche du cache des
+  ressources (type 3 = motion, `0x180684050` → `0x180681980`). Celle-ci normalise le nom, cherche
+  l'entrée et la crée si besoin, puis appelle `QueryMotion` (vtable `+0x110`). Le pointeur rendu est
+  **emprunté** : aucune référence n'est prise à l'aller, on ne le libère jamais, et `SetMotion`
+  prend la sienne (`res + 0x24`).
+- **`eCAnimation_PS::PlayMotion`** (`0x1804d4f10`) : lit l'emplacement `this + 0x120 + type*0x10`,
+  rend la ressource prête (`0x180684100`), puis appelle `eCWrapper_emfx3ActorInstance::PlayMotion`
+  (`0x1804e0770`, sur `this + 0x30`) avec la ressource, le descripteur et le `bool`.
+- **Descripteur `eSMotionPlayBackDesc`** : le wrapper n'en lit **que les octets 0x00 à 0x1B**, qu'il
+  recopie dans la structure de lecture EMotionFX (sur la pile) :
+
+  | Offset | Type | Usage observé |
+  |---|---|---|
+  | `+0x00` | f32 | copié tel quel (sauf type 4 quand une parade est en cours) ; fondu d'entrée ? |
+  | `+0x04` | f32 | copié tel quel (sauf type 4) ; fondu de sortie ? |
+  | `+0x08` | u32 | retenu seulement s'il vaut 0 ou 1 ; mémorisé pour les types 0 et 4 |
+  | `+0x0C` | f32 | copié tel quel ; poids ? |
+  | `+0x10` | u32 | copié tel quel |
+  | `+0x14` | f32 | copié tel quel ; poids ou vitesse ? |
+  | `+0x18` | u32 | comparé à 2 (booléen) |
+
+  Les octets `0x1C`–`0x5F` (pointeurs compris) ne sont pas lus sur ce chemin. Un descripteur
+  **nul** donne la lecture par défaut. D'où la disposition de `Motion` dans `PROTOCOL.md` (v2) :
+  les 7 scalaires, et un descripteur reconstruit à zéro autour d'eux (`game/motion_desc`).
+- **Hook et threads (AD-2)** : la sonde journalise une fois le thread du hook `PlayMotion`, et
+  indique si c'est celui d'`OnProcess`. Résultat à reporter ci‑dessous.
+
+### Test en jeu de la story 2.1
+
+*À compléter avec le log du test (miroir par nom : marche, course, saut, attaques, mort).*
+
+- Rejeu par nom (`GetMotion` → `SetMotion` → `PlayMotion`, descripteur reconstruit) : à observer.
+- `GetMotion(nom)` identique à la ressource capturée : à observer.
+- Thread du hook `PlayMotion` : à observer.
+- Scalaires observés par type d'animation, et champs constants : à relever.
+
