@@ -159,5 +159,19 @@ Seul `d18` est resté constant. Les autres changent selon le type ou à chaque a
   - Le bit 0 du même octet fait sortir `PlayMotion` dès son entrée.
 - **`bCVector`** = 3 `f32`, soit 12 octets (le constructeur de copie de SharedBase.dll recopie `+0`, `+4` et `+8`).
 - `NeedsDeathAnimation` (`0x1804d7f10`) rend vrai si `this+0x1E0 == 0` et que le bit 3 de `+0x22C` vaut 0. Certaines morts jouent donc peut-être aussi une animation : à observer.
-- La sonde capture `SetRagDollEnabled` sur le héros et le rejoue sur la copie. Résultats du test en jeu : *à compléter*.
+- La sonde capture `SetRagDollEnabled` sur le héros et le rejoue sur la copie.
+
+### Test en jeu de la story 2.1b (2026-10-17, Proton)
+
+Session de 5 minutes en deux parties : d'abord une mort par chute, puis, après rechargement, des combats à l'épée et à mains nues avec des humains. Aucun échec ni écart de pointeur pendant toute la session.
+
+- **Mort par chute : passe par le ragdoll, rejoué sur la copie.**
+  - Ordre observé : `Fall_Begin`, puis `SetRagDollEnabled actif=1 b=1 vecteur=(0, -1506.42, 0)`, `rejoué sur la copie : OK`, et la ligne `copie` passe à `ragdoll=oui`.
+  - Environ 2 s plus tard : `SetRagDollEnabled actif=0 b=1 vecteur=nul`, rejoué lui aussi. La copie revient à `ragdoll=non`, et sa pose est de nouveau imposée (le héros reste au sol, à la même position).
+  - **Le vecteur est une vitesse,** pas une position : −15 m/s vers le bas pour une chute, alors que le héros était à Y ≈ 1 300. On le rejoue donc tel quel, sans décalage.
+  - Le second `bool` vaut 1 à l'activation comme à la désactivation.
+- **K.-O. au combat contre des humains : ne passe pas par le ragdoll.** C'est une suite de `PlayMotion` : `Hero_Stand_None_None_P0_Down_Begin`, puis `Hero_Down_None_None_P0_Ambient_Loop` en boucle, puis `Hero_Down_None_None_P0_Stand_Begin` au relevé. Le miroir par nom les rejoue déjà, et aucun `SetRagDollEnabled` n'a été vu pendant les combats.
+- **Autres gestes rejoués par nom :** coups à mains nues (`Fist_S0_Attack_*`, `AttackKick`), achèvement (`S0_Finish_00`, `AttackRecoverFinish`), ramassage (`Take_Begin`/`Take_End`), écoute (`Listen_Loop`) et glissade (`Slide_End`).
+- **Pas encore observé : une mort au combat contre un monstre.** C'est probablement un ragdoll, ce qui reste à confirmer.
+
 
