@@ -58,6 +58,10 @@ void* g_copy_anim_ps = nullptr;
 void* g_last_player = nullptr;
 Capture g_last{};             // dernière capture PlayMotion, quelle qu'elle soit (repli de F4)
 int g_last_ragdoll = -1;      // dernier état ragdoll capturé du joueur (-1 : aucun) : dédoublonnage
+bool g_copy_dead = false;      // copie mise en ragdoll (mort) : sa pose n'est plus imposée
+bool g_copy_settle = false;    // fin de ragdoll du joueur à reproduire : CheckRagdollDeathPose sur la copie
+ULONGLONG g_copy_settle_until = 0;
+constexpr ULONGLONG kSettleTimeoutMs = 10000;
 bool g_have_last = false;
 // Classées par nom depuis le tick : rejouées en priorité par F4.
 Capture g_last_attack{};      // nom contenant « Attack_ » (coup), hors « Recover »/« Stumble »
@@ -180,12 +184,45 @@ bool pressed(int vk, bool& was_down) {
 bool replay_by_name(void* anim_ps, const Capture& c, bool& set_ok);
 
 // Ragdoll capturé → même appel sur la copie, sous le garde de rejeu (sinon bloqué).
+// Fin de ragdoll (actif=0) : chez le joueur, c'est CheckRagdollDeathPose qui fige d'abord la
+// pose du squelette puis coupe le ragdoll. Rejouer le seul SetRagDollEnabled(0) laisse la copie
+// en T-pose (test en jeu 2.1b) : on demande donc à la copie sa propre CheckRagdollDeathPose,
+// réessayée à chaque frame tant que son corps bouge encore (settle_copy).
 bool replay_ragdoll(void* anim_ps, const Capture& c) {
+    if (!c.ragdoll_on) {
+        g_copy_settle = true;
+        g_copy_settle_until = GetTickCount64() + kSettleTimeoutMs;
+        log::info("[probe] SetRagDollEnabled actif=0 du joueur : pose de mort à figer sur la copie");
+        return true;
+    }
+    g_copy_dead = true;
     sync::AnimFilter::ReplayGuard guard;
     const bool ok = game::set_ragdoll(anim_ps, c.ragdoll_on, c.ragdoll_flag, c.has_vector ? c.vector : nullptr);
     log::info(std::string("[probe] SetRagDollEnabled actif=") + (c.ragdoll_on ? "1" : "0") + " rejoué sur la copie : " +
               (ok ? "OK" : "SEH"));
     return ok;
+}
+
+void settle_copy() {
+    if (!g_copy_settle || g_copy_anim_ps == nullptr) return;
+    bool ragdoll = false;
+    if (game::get_ragdoll(g_copy_anim_ps, ragdoll) && !ragdoll) {
+        g_copy_settle = false;
+        log::info("[probe] copie : plus de ragdoll (le moteur l'a déjà figée), rien à faire");
+        return;
+    }
+    bool done = false;
+    {
+        sync::AnimFilter::ReplayGuard guard;  // laisse passer son SetRagDollEnabled(0) interne
+        game::check_ragdoll_death_pose(g_copy_anim_ps, done);
+    }
+    if (done) {
+        g_copy_settle = false;
+        log::info("[probe] copie : CheckRagdollDeathPose OK (pose de mort figée)");
+    } else if (GetTickCount64() > g_copy_settle_until) {
+        g_copy_settle = false;
+        log::warn("[probe] copie : corps toujours en mouvement après 10 s, laissée en ragdoll");
+    }
 }
 
 void flush_captures() {
@@ -462,6 +499,7 @@ void toggle_mirror() {
 // décalée du vecteur mémorisé à l'activation. En ragdoll (mort), la physique pilote la
 // copie : on ne lui impose plus rien.
 void mirror_pose(const game::Entity& player) {
+    if (g_copy_dead) return;  // morte : elle reste où le ragdoll l'a laissée
     bool ragdoll = false;
     if (game::get_ragdoll(g_copy_anim_ps, ragdoll) && ragdoll) return;  // lecture impossible : pose imposée
     game::Matrix p;
@@ -536,6 +574,7 @@ void frame() {
         g_by_name.clear();
         g_have_last_attack = g_have_last_other = g_have_last = false;
         g_last_ragdoll = -1;
+        g_copy_dead = g_copy_settle = false;
         // Captures de l'ancien monde : leurs ressources sont peut-être libérées, on les jette.
         static Capture stale[sync::kCaptureRing];
         unsigned dropped = 0;
@@ -556,6 +595,7 @@ void frame() {
     }
 
     if (g_mirror && g_copy.ptr != nullptr && player.ptr != nullptr) mirror_pose(player);
+    if (g_mirror && g_copy.ptr != nullptr) settle_copy();
     flush_captures();
 
     if (game_has_focus()) {

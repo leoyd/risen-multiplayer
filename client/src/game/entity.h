@@ -78,6 +78,10 @@ bool set_motion(void* animation_ps, int type, void* resource);
 bool set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector);
 // eCAnimation_PS::GetRagDollEnabled (bit 2 de +0x22C).
 bool get_ragdoll(const void* animation_ps, bool& out);
+// eCAnimation_PS::CheckRagdollDeathPose : si le ragdoll s'est immobilisé, fige la pose du
+// squelette puis coupe le ragdoll (SetRagDollEnabled(0, 1, nul)). `done` : vrai si c'est fait,
+// faux si pas de ragdoll ou corps encore en mouvement (réessayer plus tard).
+bool check_ragdoll_death_pose(void* animation_ps, bool& done);
 // Nom de la ressource de motion (eCResource2::GetFileTitleA), 255 caractères au plus.
 bool get_resource_name(const void* resource, std::string& out);
 // eCResource2::GetMotion(nom) (Engine.dll, statique) : ressource du cache, créée au besoin.

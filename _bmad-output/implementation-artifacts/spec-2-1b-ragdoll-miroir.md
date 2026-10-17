@@ -30,7 +30,7 @@ context:
   - réplique : bloquée, sauf sous le garde de rejeu. **Décision (2026-10-17, option recommandée retenue) :** une désactivation (`actif=0`) lancée par le moteur sur une réplique passe toujours. Le moteur peut nettoyer la copie, jamais la tuer. L'avatar suivra la même règle ;
   - autres PS : laissés passer.
 - **Capture** : une `Capture` porte maintenant sa nature, `PlayMotion` ou ragdoll. Pour le ragdoll, elle garde les deux `bool` et le vecteur s'il n'est pas nul : 3 `f32` copiés sous SEH. `bCVector` est supposé faire 12 octets. Les deux natures partagent le même anneau, ce qui préserve l'ordre.
-- **Miroir** : le ragdoll capturé est rejoué sur la copie avec les mêmes arguments, sous `ReplayGuard`. Tant que la copie est en ragdoll (d'après `GetRagDollEnabled`), la sonde cesse de lui imposer la pose du joueur (`MoveTo`) : c'est la physique qui la pilote.
+- **Miroir** : le ragdoll capturé est rejoué sur la copie avec les mêmes arguments, sous `ReplayGuard`. **Décision (2026-10-17, après le test en jeu) :** la fin du ragdoll du joueur (`actif=0`) n'est pas rejouée telle quelle. Elle laissait la copie en T-pose, puis debout, parce que chez le joueur c'est `CheckRagdollDeathPose` qui fige la pose du squelette avant de couper le ragdoll. La copie reçoit à la place sa propre `CheckRagdollDeathPose`, réessayée à chaque frame (10 s au plus), et sa pose n'est plus imposée une fois qu'elle est morte. Tant que la copie est en ragdoll (d'après `GetRagDollEnabled`), la sonde cesse de lui imposer la pose du joueur (`MoveTo`) : c'est la physique qui la pilote.
 - **Log** : une ligne par appel capturé (actif, second `bool`, vecteur), le résultat du rejeu sur la copie, et l'état ragdoll de la copie dans la ligne `copie`.
 
 **Never:**
@@ -81,6 +81,12 @@ context:
 - Given `probe = 1`, F6 puis F7, when le héros meurt par chute, puis au combat, then la copie s'effondre en ragdoll au même moment, et le log montre la capture et le rejeu. Vérification manuelle par l'utilisateur, résultats dans `docs/re/spike-j1.md`.
 
 ## Spec Change Log
+
+- **2026-10-17, retour du test en jeu** (utilisateur : « effondrée en ragdoll, puis T-pose, puis relevée »). Rejouer `SetRagDollEnabled(0)` ne fige pas la pose de mort, car c'est `CheckRagdollDeathPose` qui la fige (appel interne `0x1804dfd90`, `this+0x1D0`). Changements :
+  - la fin de ragdoll déclenche `CheckRagdollDeathPose` sur la copie ;
+  - la pose n'est plus imposée à une copie morte.
+
+  Défaut évité : la copie se relève en T-pose. **KEEP** : l'activation du ragdoll rejouée avec le vecteur (vitesse) tel quel ; la désactivation lancée par le moteur sur une réplique passe toujours.
 
 ## Implementation Notes
 

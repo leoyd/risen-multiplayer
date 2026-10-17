@@ -34,6 +34,7 @@ using GetNPCsFn = EntityArray* (*)(EntityArray* sret);
 // Engine.dll
 using SetMotionFn = void (*)(void* animation_ps, int type, void* resource);
 using GetRagdollFn = bool (*)(const void* animation_ps);
+using CheckRagdollDeathPoseFn = bool (*)(void* animation_ps);
 using GetFileTitleFn = void* (*)(const void* resource, void* bcstring_sret);
 // Statique, sans sret : rend un pointeur emprunté (cache des ressources).
 using GetMotionFn = void* (*)(const void* bcstring_name);
@@ -61,6 +62,7 @@ constexpr const char* kSetMotion =
     "?SetMotion@eCAnimation_PS@@QEAAXW4eEMotionType@eAnimShared@@PEAVeCMotionResource2@@@Z";
 constexpr const char* kSetRagdoll = "?SetRagDollEnabled@eCAnimation_PS@@QEAAX_N0PEAVbCVector@@@Z";
 constexpr const char* kGetRagdoll = "?GetRagDollEnabled@eCAnimation_PS@@QEBA_NXZ";
+constexpr const char* kCheckRagdollDeathPose = "?CheckRagdollDeathPose@eCAnimation_PS@@IEAA_NXZ";
 constexpr const char* kGetFileTitle = "?GetFileTitleA@eCResource2@@QEBA?AVbCString@@XZ";
 constexpr const char* kGetMotion = "?GetMotion@eCResource2@@SAPEAVeCMotionResource2@@AEBVbCString@@@Z";
 constexpr const char* kBCStringCtor = "??0bCString@@QEAA@PEBD@Z";
@@ -91,6 +93,7 @@ struct EntityAbi {
     SetMotionFn set_motion = nullptr;
     SetRagdollFn set_ragdoll = nullptr;
     GetRagdollFn get_ragdoll = nullptr;
+    CheckRagdollDeathPoseFn check_ragdoll_death_pose = nullptr;
     GetFileTitleFn get_file_title = nullptr;
     GetMotionFn get_motion = nullptr;
     BCStringCtorFn bcstring_ctor = nullptr;
@@ -153,6 +156,7 @@ bool resolve_entities(const char*& missing) {
                     lookup(engine, kSetMotion, a.set_motion, missing) &&
                     lookup(engine, kSetRagdoll, a.set_ragdoll, missing) &&
                     lookup(engine, kGetRagdoll, a.get_ragdoll, missing) &&
+                    lookup(engine, kCheckRagdollDeathPose, a.check_ragdoll_death_pose, missing) &&
                     lookup(engine, kGetFileTitle, a.get_file_title, missing) &&
                     lookup(engine, kGetMotion, a.get_motion, missing) &&
                     lookup(shared_base, kBCStringCtor, a.bcstring_ctor, missing) &&
@@ -371,6 +375,18 @@ bool get_ragdoll(const void* animation_ps, bool& out) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = false;
+        return false;
+    }
+}
+
+bool check_ragdoll_death_pose(void* animation_ps, bool& done) {
+    done = false;
+    if (!g_resolved || animation_ps == nullptr) return false;
+    __try {
+        done = g_abi.check_ragdoll_death_pose(animation_ps);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        done = false;
         return false;
     }
 }

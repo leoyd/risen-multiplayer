@@ -173,5 +173,7 @@ Session de 5 minutes en deux parties : d'abord une mort par chute, puis, après 
 - **K.-O. au combat contre des humains : ne passe pas par le ragdoll.** C'est une suite de `PlayMotion` : `Hero_Stand_None_None_P0_Down_Begin`, puis `Hero_Down_None_None_P0_Ambient_Loop` en boucle, puis `Hero_Down_None_None_P0_Stand_Begin` au relevé. Le miroir par nom les rejoue déjà, et aucun `SetRagDollEnabled` n'a été vu pendant les combats.
 - **Autres gestes rejoués par nom :** coups à mains nues (`Fist_S0_Attack_*`, `AttackKick`), achèvement (`S0_Finish_00`, `AttackRecoverFinish`), ramassage (`Take_Begin`/`Take_End`), écoute (`Listen_Loop`) et glissade (`Slide_End`).
 - **Pas encore observé : une mort au combat contre un monstre.** C'est probablement un ragdoll, ce qui reste à confirmer.
-
+- **La copie n'est pas restée couchée** (constat de l'utilisateur) : effondrée en ragdoll, puis en T-pose au rejeu de `actif=0`, puis relevée quand la sonde lui a réimposé la pose.
+  - Cause : `eCAnimation_PS::CheckRagdollDeathPose` (`0x1804d5120`, exportée). Quand le ragdoll s'est immobilisé (octet `+0x6C`, bit 0, de l'objet ragdoll `this+0x1C0`), elle fige la pose du squelette via `0x1804dfd90` (sur `this+0x30`, rangée à `this+0x1D0`), puis appelle `SetRagDollEnabled(0, 1, nul)`, puis envoie un message à l'entité.
+  - Correctif de la sonde : la fin du ragdoll du joueur déclenche `CheckRagdollDeathPose` sur la copie, et la copie morte n'est plus repositionnée. Résultat du nouveau test : *à compléter*.
 
