@@ -124,12 +124,29 @@ Méthode : désassemblage (`objdump -d`). REA/Hopper ne démarre toujours pas (p
 - **Hook et threads (AD-2)** : la sonde journalise une fois le thread du hook `PlayMotion`, et
   indique si c'est celui d'`OnProcess`. Résultat à reporter ci‑dessous.
 
-### Test en jeu de la story 2.1
+### Test en jeu de la story 2.1 (2026-10-17, Proton)
 
-*À compléter avec le log du test (miroir par nom : marche, course, saut, attaques, mort).*
+Session d'environ 1 min 10 : marche, course, sauts, escalade (ClimbLow, ClimbHigh), parade au bouclier, attaques à une main, esquives (V2Jump), coups reçus (StumbleRangedHeavy), puis mort par chute.
 
-- Rejeu par nom (`GetMotion` → `SetMotion` → `PlayMotion`, descripteur reconstruit) : à observer.
-- `GetMotion(nom)` identique à la ressource capturée : à observer.
-- Thread du hook `PlayMotion` : à observer.
-- Scalaires observés par type d'animation, et champs constants : à relever.
+- **Rejeu par nom : validé.** La copie reproduit les gestes à l'identique (constat de l'utilisateur). Chaque ligne `copie` indique **0 échec et 0 écart de pointeur**.
+- **`GetMotion(nom)` rend exactement la ressource capturée** pour les 35 noms distincts rencontrés : le nom (`GetFileTitleA`) suffit à retrouver la ressource.
+- **Descripteur reconstruit : suffisant.** Le moteur accepte le descripteur de 0x60 octets reconstruit à partir des 7 scalaires seuls.
+- **Thread du hook (AD-2) : confirmé.** `hook PlayMotion : thread=324 (celui d'OnProcess)`, sans changement de thread ensuite. L'hypothèse d'AD-2 est levée.
+- **Blocage** : de 0 à 190 `PlayMotion` du moteur par seconde sont bloqués sur la copie, surtout pendant les chutes et après la mort.
+- **Mort : non reproduite, car elle ne passe pas par `PlayMotion`.** Le dernier appel capturé est `Fall_Begin`, puis plus aucun `PlayMotion` sur le héros pendant la chute mortelle. La copie garde sa dernière animation. Engine.dll exporte `eCAnimation_PS::SetRagDollEnabled(bool, bool, bCVector*)`, `StopRagDoll`, `CheckRagdollDeathPose` et `NeedsDeathAnimation` : la mort passe par le **ragdoll**. Elle devra être répliquée par un événement à part (`Death{NetId}`, AD-10), pas par `Motion`. Reste à établir : est-ce `SetRagDollEnabled` qui est appelé, avec quels arguments, et cela vaut-il pour toutes les morts (combat compris) ?
 
+**Scalaires observés (35 animations, 7 types de mouvement) :**
+
+| Champ | Valeurs | Lecture |
+|---|---|---|
+| `d00` | 0 ; 0.2 (locomotion) ; 0.1 (parade, coup reçu) | fondu d'entrée (s) |
+| `d04` | 0 ; 0.1 (type 5, coup reçu) | fondu de sortie (s) |
+| `d08` | 0 ; 1 (parade de type 4) | mode |
+| `d0C` | 1, ou poids variable 0 à 1,8 (locomotion) | poids ou vitesse : **varie à chaque appel** |
+| `d10` | 1 ou 0xFFFFFFFF (−1 : boucle ?) | nombre de lectures ? |
+| `d14` | 1 (type 0), poids variable (type 1) | poids de mélange : **varie** |
+| `d18` | toujours 1 | constant dans ce test |
+
+Seul `d18` est resté constant. Les autres changent selon le type ou à chaque appel. On garde donc les 7 champs dans `Motion`. Retirer `d18` ne ferait gagner que 4 octets : à revoir en 2.4 si le débit l'exige.
+
+**Débit** : en locomotion, environ 5 à 20 `PlayMotion` par seconde, en paires (type 0 et type 1). Une rafale de 87 à 190 appels par seconde concerne seulement les appels bloqués du moteur sur la copie.
