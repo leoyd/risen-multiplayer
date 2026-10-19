@@ -34,6 +34,16 @@ std::string reason_text(const char* name, std::uint8_t reason) {
 std::string reject_text(std::uint8_t reason) { return reason_text(proto::reject_reason_name(reason), reason); }
 std::string end_text(std::uint8_t reason) { return reason_text(proto::end_reason_name(reason), reason); }
 
+// Ligne de diagnostic d'un Motion (debug seulement).
+std::string motion_text(const proto::Motion& m) {
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "ani %u type %u ms %u flags %u d00 %.2f d0C %.3f d10 %d d14 %.3f",
+                  static_cast<unsigned>(m.ani_id), static_cast<unsigned>(m.type), m.ms, static_cast<unsigned>(m.flags),
+                  static_cast<double>(m.d00), static_cast<double>(m.d0c), static_cast<int>(m.d10),
+                  static_cast<double>(m.d14));
+    return buf;
+}
+
 std::string net_id_text(std::uint32_t id) {
     return id == proto::kHostNetId ? "1 (hôte)" : id == proto::kGuestNetId ? "2 (invité)" : std::to_string(id);
 }
@@ -619,8 +629,9 @@ void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& 
         return;
     }
     auto it = ani_ids_.find(in.name);
+    const bool fresh = it == ani_ids_.end();  // nom nouveau : AniName d'abord
     std::uint16_t id = 0;
-    if (it != ani_ids_.end()) {
+    if (!fresh) {
         id = it->second;
     } else {
         if (next_ani_id_ >= kAniIdCount) {
@@ -648,6 +659,8 @@ void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& 
     if (!proto::encode_reliable(m, bytes)) return;  // validé avant l'internement : ne peut échouer
     out.commands.push_back(SendReliable{std::move(bytes)});
     ++anim_.sent;
+    out.logs.push_back({Level::Debug, "[sync] Motion envoyé : " + motion_text(m) +
+                                          (fresh ? " « " + in.name + " »" : std::string())});
 }
 
 void Session::send_death(const World& world, Output& out) {
@@ -711,6 +724,9 @@ void Session::play_due_motions(std::uint64_t now, Output& out) {
             ++anim_.superseded;
             continue;
         }
+        char lag[64];
+        std::snprintf(lag, sizeof lag, " (affiché %+.0f ms)", shown >= 1e299 ? 0.0 : shown - p.motion.ms);
+        out.logs.push_back({Level::Debug, "[sync] Motion rejoué : " + motion_text(p.motion) + lag + " « " + p.name + " »"});
         out.commands.push_back(PlayAvatarMotion{peer_net_id(), std::move(p.name), p.motion});
         ++anim_.played;
     }

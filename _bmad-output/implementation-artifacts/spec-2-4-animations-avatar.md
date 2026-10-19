@@ -127,6 +127,16 @@ context:
 - **Mort, option A** : `LocalRagdoll` est supprimé. `send_death` lit `World::dead` à chaque tick en session. Le hook ragdoll ne capture plus le héros local : il ne fait que bloquer le moteur sur l'avatar, via `classify_ragdoll`. Le code map mentionne encore `LocalRagdoll` : il est périmé sur ce point.
 - **De bout en bout** (`session_fake_guest`) : course, saut et attaque sont rejoués dans l'ordre (`PlayAvatarMotion`), puis la mort (`AvatarDeath`), sans aucun `Motion` ignoré. L'écho : avatar déplacé.
 
+### Test en jeu (2026-10-19)
+
+- **Écho** (utilisateur) : l'avatar reproduit les gestes (saut, attaques, parade, dégainage), **sauf la course** : les premiers pas sont normaux, puis l'animation ralentit fortement ou se bloque.
+- **`scenarios/gestes.txt`** : fluide, et les animations jouent. **`scenarios/mort.txt`** : l'avatar passe en ragdoll.
+- **Diagnostic** (lignes `debug` « Motion envoyé / rejoué ») :
+  - le rejeu tombe à l'heure, entre +0 et +11 ms de l'instant d'affichage ; aucun `Motion` n'est ignoré ni jeté, et seuls 0 à 4 sont écrasés par 5 s ;
+  - en course, `PlayMotion` ne fait que démarrer la locomotion (`Move_Begin`, puis `Move_Run_N_Fwd` une fois, avec `d0C` = 0,98), suivi de quelques type 1 (`Run_N_Left/Right`) aux poids d'environ 0,001.
+- **Cause probable** : le mélange des directions et la vitesse de lecture sont recalculés à chaque frame par `gCCharacterMovement_PS` (Game.dll : `ProcessMovementAnimation`, `CalcAniVelocity`), d'après la vitesse du personnage. L'avatar est placé par `MoveTo`, donc son contrôleur le croit immobile. Ce point fait l'objet de la story 2.4b (piste A retenue par l'utilisateur : donner à l'avatar sa vitesse interpolée).
+- Les lignes `debug` « Motion envoyé / rejoué » sont gardées pour le diagnostic.
+
 ## Spec Change Log
 
 ## Review Triage Log

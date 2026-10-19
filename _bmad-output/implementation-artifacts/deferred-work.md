@@ -108,3 +108,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-4-animations-avatar.md`
   summary: Tester les compteurs `Motion` (et snapshots) du bilan `debug` de 5 s.
   evidence: Inverser deux compteurs dans le `snprintf` ne fait échouer aucun test ; le README demande pourtant de lire cette ligne.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4-animations-avatar.md`
+  summary: Story 2.4b, locomotion de l'avatar — la course se ralentit ou se bloque, parce que le mélange et la vitesse de locomotion viennent de `gCCharacterMovement_PS` (vitesse du personnage), pas de `PlayMotion`. Pistes : A) donner chaque frame la vitesse interpolée (`SetCurrentVelocity`) ; B) piloter l'avatar comme un PNJ (`SetGoalPose`) sans bloquer sa locomotion ; C) transmettre les poids de locomotion.
+  evidence: Test en jeu du 2026-10-19 en écho (log « Motion envoyé / rejoué ») : rejeu à l'heure, mais en course `PlayMotion` ne fait que démarrer `Move_Run_N_Fwd`. Piste A retenue par l'utilisateur.
