@@ -10,8 +10,10 @@
 #endif
 #include <windows.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -28,6 +30,7 @@ struct Entry {
     std::uint32_t net_id = 0;
     game::Entity entity;
     void* animation_ps = nullptr;  // réplique dans l'AnimFilter (nul : pas de PS trouvé)
+    void* wrapper = nullptr;       // enveloppe EMotionFX, réplique aussi (story 2.4b)
     void* player = nullptr;        // héros local à la création : le monde de l'avatar
     bool move_error_logged = false;
     bool dead = false;  // en ragdoll (Death) : plus de pose ni d'animation imposées
@@ -38,6 +41,46 @@ std::vector<Entry> g_table;
 // noms déjà signalés en échec (une ligne chacun).
 std::unordered_map<std::string, void*> g_resources;
 std::unordered_set<std::string> g_failed_names;
+
+// Diagnostic 2.4b : réglages de locomotion du héros local (comptés, dernières valeurs des types
+// 0 et 1) et réglages bloqués sur l'avatar, journalisés chaque seconde en debug.
+std::atomic<void*> g_local_wrapper{nullptr};
+void* g_local_ps = nullptr;  // frame seulement
+struct WrapperStats {
+    unsigned hero[4] = {};
+    unsigned blocked[4] = {};
+    float hero_speed[2] = {};
+    float hero_weight[2] = {};
+};
+std::mutex g_stats_mutex;
+WrapperStats g_stats;
+ULONGLONG g_next_stats_log = 0;
+
+void log_wrapper_stats() {
+    if (!log::debug_enabled()) return;
+    const ULONGLONG t = GetTickCount64();
+    if (t < g_next_stats_log) return;
+    g_next_stats_log = t + 1000;
+    WrapperStats s;
+    {
+        std::lock_guard<std::mutex> lock(g_stats_mutex);
+        s = g_stats;
+        g_stats = WrapperStats{};
+        // Dernières valeurs conservées d'une seconde à l'autre.
+        for (int i = 0; i < 2; ++i) {
+            g_stats.hero_speed[i] = s.hero_speed[i];
+            g_stats.hero_weight[i] = s.hero_weight[i];
+        }
+    }
+    char buf[320];
+    std::snprintf(buf, sizeof buf,
+                  "[sync] locomotion (1 s) — héros : SetPlaySpeed %u (type0 %.2f, type1 %.2f), SetTargetWeight %u "
+                  "(type0 %.2f, type1 %.2f), SwitchFadeOut %u, StopMotion %u ; bloqués sur l'avatar : %u, %u, %u, %u",
+                  s.hero[0], static_cast<double>(s.hero_speed[0]), static_cast<double>(s.hero_speed[1]), s.hero[1],
+                  static_cast<double>(s.hero_weight[0]), static_cast<double>(s.hero_weight[1]), s.hero[2], s.hero[3],
+                  s.blocked[0], s.blocked[1], s.blocked[2], s.blocked[3]);
+    log::debug(buf);
+}
 
 std::string hex_ptr(const void* p) {
     char buf[24];
@@ -98,6 +141,13 @@ void spawn(std::uint32_t net_id, const Pose& pose) {
         log::warn("[sync] avatar " + std::to_string(net_id) + " : pas d'eCAnimation_PS, le moteur peut l'animer");
     } else {
         anim_filter().add_replica(e.animation_ps);
+        // Story 2.4b : l'enveloppe aussi, pour bloquer les réglages de locomotion du moteur.
+        if (game::get_actor_wrapper(e.animation_ps, e.wrapper) && e.wrapper != nullptr) {
+            anim_filter().add_replica(e.wrapper);
+        } else {
+            e.wrapper = nullptr;
+            log::warn("[sync] avatar " + std::to_string(net_id) + " : pas d'enveloppe EMotionFX, locomotion non protégée");
+        }
     }
     anim_filter().take_blocked();  // compteur remis à zéro : bilan au retrait
     g_table.push_back(e);
@@ -111,6 +161,7 @@ void despawn(std::uint32_t net_id) {
         const Entry e = *it;
         // AD-11 : d'abord l'AnimFilter et la table, ensuite seulement la destruction.
         if (e.animation_ps != nullptr) anim_filter().remove_replica(e.animation_ps);
+        if (e.wrapper != nullptr) anim_filter().remove_replica(e.wrapper);
         g_table.erase(it);
         g_resources.clear();
         g_failed_names.clear();
@@ -140,6 +191,7 @@ void move(std::uint32_t net_id, const Pose& pose) {
             log::error("[sync] avatar " + std::to_string(net_id) +
                        " : Entity::MoveTo a levé une exception (SEH) : avatar plus déplacé");
         }
+        log_wrapper_stats();
         return;
     }
 }
@@ -232,6 +284,31 @@ bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcep
     game::read_motion_resource(animation_ps, type, c.resource);
     filter.push(c);
     return true;
+}
+
+void track_local(void* animation_ps) {
+    if (animation_ps == g_local_ps) return;
+    g_local_ps = animation_ps;
+    void* wrapper = nullptr;
+    if (animation_ps != nullptr && !game::get_actor_wrapper(animation_ps, wrapper)) wrapper = nullptr;
+    g_local_wrapper.store(wrapper);
+}
+
+bool on_wrapper_call(void* wrapper, WrapperCall call, int type, float value) noexcept {
+    const int k = static_cast<int>(call);
+    if (wrapper != nullptr && wrapper == g_local_wrapper.load()) {
+        std::lock_guard<std::mutex> lock(g_stats_mutex);
+        ++g_stats.hero[k];
+        if (type == 0 || type == 1) {
+            if (call == WrapperCall::PlaySpeed) g_stats.hero_speed[type] = value;
+            if (call == WrapperCall::TargetWeight) g_stats.hero_weight[type] = value;
+        }
+        return true;
+    }
+    if (anim_filter().classify(wrapper, GetCurrentThreadId()) != AnimFilter::Verdict::Block) return true;
+    std::lock_guard<std::mutex> lock(g_stats_mutex);
+    ++g_stats.blocked[k];
+    return false;  // le contrôleur de l'avatar ne règle plus nos animations rejouées
 }
 
 bool on_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) noexcept {

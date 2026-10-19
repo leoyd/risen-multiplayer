@@ -69,6 +69,14 @@ constexpr const char* kGetMotion = "?GetMotion@eCResource2@@SAPEAVeCMotionResour
 constexpr const char* kBCStringCtor = "??0bCString@@QEAA@PEBD@Z";
 constexpr const char* kBCStringDtor = "??1bCString@@QEAA@XZ";
 constexpr const char* kOnProcess = "?OnProcess@eCApplication@@UEAAXXZ";
+constexpr const char* kSetPlaySpeed = "?SetPlaySpeed@eCWrapper_emfx3ActorInstance@@QEAAXW4eEMotionType@eAnimShared@@M@Z";
+constexpr const char* kSetTargetWeight =
+    "?SetTargetWeight@eCWrapper_emfx3ActorInstance@@QEAAXW4eEMotionType@eAnimShared@@MM@Z";
+constexpr const char* kSwitchFadeOut = "?SwitchFadeOut@eCWrapper_emfx3ActorInstance@@QEAAXW4eEMotionType@eAnimShared@@_NM@Z";
+constexpr const char* kWrapperStopMotion =
+    "?StopMotion@eCWrapper_emfx3ActorInstance@@QEAAXW4eEMotionType@eAnimShared@@M_N@Z";
+constexpr const char* kGetActorWrapper = "?GetActorWrapper@eCAnimation_PS@@QEAAPEAVeCWrapper_emfx3ActorInstance@@XZ";
+using GetActorWrapperFn = void* (*)(void* animation_ps);
 constexpr const char* kPlayMotion =
     "?PlayMotion@eCAnimation_PS@@QEAAXW4eEMotionType@eAnimShared@@PEAUeSMotionPlayBackDesc@3@_N@Z";
 
@@ -92,6 +100,11 @@ struct EntityAbi {
     GetPropertySetFn get_property_set = nullptr;
     void* on_process = nullptr;
     PlayMotionFn play_motion = nullptr;
+    SetPlaySpeedFn set_play_speed = nullptr;
+    SetTargetWeightFn set_target_weight = nullptr;
+    SwitchFadeOutFn switch_fade_out = nullptr;
+    WrapperStopMotionFn wrapper_stop_motion = nullptr;
+    GetActorWrapperFn get_actor_wrapper = nullptr;
     SetMotionFn set_motion = nullptr;
     SetRagdollFn set_ragdoll = nullptr;
     GetRagdollFn get_ragdoll = nullptr;
@@ -155,6 +168,11 @@ bool resolve_entities(const char*& missing) {
                     lookup(engine, kGetPropertySet, a.get_property_set, missing) &&
                     lookup(engine, kOnProcess, on_process, missing) &&
                     lookup(engine, kPlayMotion, a.play_motion, missing) &&
+                    lookup(engine, kSetPlaySpeed, a.set_play_speed, missing) &&
+                    lookup(engine, kSetTargetWeight, a.set_target_weight, missing) &&
+                    lookup(engine, kSwitchFadeOut, a.switch_fade_out, missing) &&
+                    lookup(engine, kWrapperStopMotion, a.wrapper_stop_motion, missing) &&
+                    lookup(engine, kGetActorWrapper, a.get_actor_wrapper, missing) &&
                     lookup(engine, kSetMotion, a.set_motion, missing) &&
                     lookup(engine, kSetRagdoll, a.set_ragdoll, missing) &&
                     lookup(engine, kGetRagdoll, a.get_ragdoll, missing) &&
@@ -172,6 +190,22 @@ bool resolve_entities(const char*& missing) {
 void* on_process_address() { return g_abi.on_process; }
 void* play_motion_address() { return reinterpret_cast<void*>(g_abi.play_motion); }
 void* set_ragdoll_address() { return reinterpret_cast<void*>(g_abi.set_ragdoll); }
+void* set_play_speed_address() { return reinterpret_cast<void*>(g_abi.set_play_speed); }
+void* set_target_weight_address() { return reinterpret_cast<void*>(g_abi.set_target_weight); }
+void* switch_fade_out_address() { return reinterpret_cast<void*>(g_abi.switch_fade_out); }
+void* wrapper_stop_motion_address() { return reinterpret_cast<void*>(g_abi.wrapper_stop_motion); }
+
+bool get_actor_wrapper(void* animation_ps, void*& out) {
+    out = nullptr;
+    if (!g_resolved || animation_ps == nullptr) return false;
+    __try {
+        out = g_abi.get_actor_wrapper(animation_ps);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
 
 // Chaque enveloppe : pas d'objet C++ à détruire dans le cadre __try.
 

@@ -40,6 +40,13 @@ void teleport_player(const core::session::Pose& pose);
 // le PS du héros local (AnimFilter), retournent false pour bloquer ceux du moteur sur un avatar.
 // N'appellent jamais le jeu, hormis les lectures mémoire protégées de game/.
 bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept;
+// Story 2.4b : réglages de locomotion de l'enveloppe EMotionFX (SetPlaySpeed, SetTargetWeight,
+// SwitchFadeOut, StopMotion). Ceux que le moteur applique à l'avatar sont bloqués (son
+// contrôleur le croit immobile) ; ceux du héros local sont comptés pour le diagnostic.
+enum class WrapperCall { PlaySpeed, TargetWeight, FadeOut, StopMotion };
+bool on_wrapper_call(void* wrapper, WrapperCall call, int type, float value) noexcept;
+// Frame : enveloppe du héros local (pour le diagnostic), d'après son PS.
+void track_local(void* animation_ps);
 bool on_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) noexcept;
 
 }  // namespace mp::sync::avatar

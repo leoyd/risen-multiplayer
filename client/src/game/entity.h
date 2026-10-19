@@ -51,6 +51,13 @@ constexpr int kMotionTypeCount = 8;          // PlayMotion ignore type > 7
 
 using OnProcessFn = void (*)(void* application);
 using PlayMotionFn = void (*)(void* animation_ps, int type, void* desc, bool flag);
+// Réglages de l'enveloppe EMotionFX (eCWrapper_emfx3ActorInstance, Engine.dll), appelés à chaque
+// frame par le contrôleur de déplacement (gCCharacterMovement_PS, Game.dll) pour la locomotion
+// (story 2.4b). x64 : this RCX, type EDX, flottants en XMM2/XMM3, bool en R8B/R9B selon la position.
+using SetPlaySpeedFn = void (*)(void* wrapper, int type, float speed);
+using SetTargetWeightFn = void (*)(void* wrapper, int type, float weight, float time);
+using SwitchFadeOutFn = void (*)(void* wrapper, int type, bool on, float time);
+using WrapperStopMotionFn = void (*)(void* wrapper, int type, float time, bool flag);
 // eCAnimation_PS::SetRagDollEnabled(bool actif, bool, bCVector*) ; bCVector = 3 f32.
 using SetRagdollFn = void (*)(void* animation_ps, bool on, bool flag, const float* vector);
 
@@ -62,6 +69,12 @@ bool resolve_entities(const char*& missing);
 void* on_process_address();
 void* play_motion_address();
 void* set_ragdoll_address();
+void* set_play_speed_address();
+void* set_target_weight_address();
+void* switch_fade_out_address();
+void* wrapper_stop_motion_address();
+// eCAnimation_PS::GetActorWrapper : enveloppe EMotionFX du PS (nul possible).
+bool get_actor_wrapper(void* animation_ps, void*& out);
 
 bool get_player(Entity& out);  // out.ptr == nullptr : pas de joueur (menu, chargement)
 bool get_pose(const Entity& e, Matrix& out);

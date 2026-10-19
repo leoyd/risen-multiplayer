@@ -226,6 +226,7 @@ void local_captures(const cs::World& world) {
         if (!game::get_animation_ps(e, ps)) ps = nullptr;
     }
     filter.set_local(ps);
+    avatar::track_local(ps);  // diagnostic de locomotion (story 2.4b)
     const std::size_t n = filter.drain(g_captures, sync::kCaptureRing, dropped);
     if (dropped != 0) log::debug("[sync] captures perdues (anneau plein) : " + std::to_string(dropped));
     for (std::size_t i = 0; i < n; ++i) {
