@@ -244,10 +244,14 @@ func TestScenarioParam(t *testing.T) {
 		t.Fatalf("événements : %+v", sc.events)
 	}
 	for _, bad := range []string{"pause 1\nparam 0 8 poids 1\n", "pause 1\nparam 0 0 force 1\n", "pause 1\nparam 0 0 vitesse 1 0.2\n",
-		"pause 1\nparam 0 0 poids\n", "pause 1\nparam 0 0 poids 1 -1\n"} {
+		"pause 1\nparam 0 0 poids\n", "pause 1\nparam 0 0 poids 1 -1\n", "pause 1\nparam 0 0 fondu 0.5 0.2\n"} {
 		if _, err := parseScenario(strings.NewReader(bad)); err == nil {
 			t.Errorf("%q accepté", bad)
 		}
+	}
+	if sc2, err := parseScenario(strings.NewReader("pause 1\nparam 0 0 fondu 1 0.3\nparam 0.5 0 arret 0 0.2\n")); err != nil ||
+		sc2.events[0].param.Param != protocol.ParamFadeOut || sc2.events[1].param.Param != protocol.ParamStopMotion {
+		t.Fatalf("fondu/arret : %v", err)
 	}
 	host := startHost(t, defaultHost())
 	cfg := guestConfig(host.addr())

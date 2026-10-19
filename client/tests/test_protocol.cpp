@@ -688,5 +688,10 @@ TEST("protocole : MotionParam — domaine : [0, 100], durée [0, 60], vitesse sa
     CHECK(bad_decoded(1.0f, 61.0f, 0, 0));
     CHECK(bad_decoded(1.0f, 0.1f, 1, 0));  // vitesse avec durée
     CHECK(!bad_decoded(1.8f, 0.0f, 1, 7));
+    CHECK(!bad_decoded(1.0f, 0.3f, 2, 0));   // fondu activé
+    CHECK(!bad_decoded(0.0f, 0.2f, 3, 1));   // arrêt
+    CHECK(bad_decoded(0.5f, 0.3f, 2, 0));    // fondu : valeur 0 ou 1
+    CHECK(bad_decoded(2.0f, 0.2f, 3, 0));    // arrêt : valeur 0 ou 1
+    CHECK(bad_decoded(1.0f, 0.2f, 4, 0));    // nature inconnue
     CHECK(decode_control(Bytes{2, 26}.data(), 2).error == DecodeError::UnknownType);
 }

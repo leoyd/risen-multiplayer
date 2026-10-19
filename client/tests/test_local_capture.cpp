@@ -79,6 +79,11 @@ TEST("captures : réglage de locomotion → LocalParam (type, nature, valeur, du
     in = local_input(c, "");
     lp = in ? std::get_if<cs::LocalParam>(&*in) : nullptr;
     CHECK(lp != nullptr && lp->kind == 1);
+    c.param_kind = 3;  // arrêt
+    c.value = 1.0f;
+    in = local_input(c, "");
+    lp = in ? std::get_if<cs::LocalParam>(&*in) : nullptr;
+    CHECK(lp != nullptr && lp->kind == 3 && lp->value == 1.0f);
     c.type = 8;
     CHECK(!local_input(c, "").has_value());
 }

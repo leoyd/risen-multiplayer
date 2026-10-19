@@ -1845,14 +1845,14 @@ TEST("locomotion : démarrage → Motion puis MotionParam ; 300 réglages identi
     CHECK_EQ(sent_of<proto::MotionParam>(s.tick(1230, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.5f))).size(), 1u);
 }
 
-TEST("locomotion : accélération 0,03 → 1,0 → un MotionParam par pas de plus de 0,01") {
+TEST("locomotion : accélération 0,03 → 1,0 → un MotionParam par pas de plus de 0,02 (vitesse)") {
     Session s = host_with_avatar();
     std::vector<Input> in;
     for (int i = 0; i < 970; ++i) in.push_back(LocalParam{0, 1, 0.03f + 0.001f * static_cast<float>(i), 0.0f});
     in.push_back(LocalParam{0, 1, 1.0f, 0.0f});  // fin de la rampe, exacte
     const auto p = sent_of<proto::MotionParam>(s.tick(1200, loaded_world(), in));
-    CHECK(p.size() >= 80 && p.size() <= 100);  // ≈ 0,97 / 0,011
-    for (std::size_t i = 1; i + 1 < p.size(); ++i) CHECK(p[i].value - p[i - 1].value > kParamEpsilon);
+    CHECK(p.size() >= 40 && p.size() <= 55);  // ≈ 0,97 / 0,021
+    for (std::size_t i = 1; i + 1 < p.size(); ++i) CHECK(p[i].value - p[i - 1].value > kParamSpeedEpsilon);
     if (!p.empty()) CHECK(p[0].kind == 1 && p[0].value == 0.03f && p.back().value == 1.0f);
 }
 
@@ -1867,11 +1867,11 @@ TEST("locomotion : nouveau Motion du même type → le réglage identique repart
     CHECK(sent_of<proto::MotionParam>(out).empty());
 }
 
-TEST("locomotion : valeur non finie, type 8, nature 2, hors session → rien") {
+TEST("locomotion : valeur non finie, type 8, nature 4, hors session → rien") {
     Session s = host_with_avatar();
     CHECK(sent_of<proto::MotionParam>(s.tick(1200, loaded_world(), local_param(0, proto::MotionParamKind::PlaySpeed, std::nanf("")))).empty());
     CHECK(sent_of<proto::MotionParam>(s.tick(1210, loaded_world(), {LocalParam{8, 0, 1.0f, 0.0f}})).empty());
-    CHECK(sent_of<proto::MotionParam>(s.tick(1220, loaded_world(), {LocalParam{0, 2, 1.0f, 0.0f}})).empty());
+    CHECK(sent_of<proto::MotionParam>(s.tick(1220, loaded_world(), {LocalParam{0, 4, 1.0f, 0.0f}})).empty());
     Session idle(host_settings());
     idle.tick(0, loaded_world(), {});
     CHECK(reliables_sent(idle.tick(100, loaded_world(), local_param(0, proto::MotionParamKind::PlaySpeed, 1.0f))).empty());
@@ -1946,4 +1946,22 @@ TEST("locomotion : nouvelle session → le premier réglage repart, même identi
     s.tick(2500, loaded_world(), control_from(kGuestA, encode(make_hello())));
     CHECK(s.state() == State::InSession);
     CHECK_EQ(sent_of<proto::MotionParam>(s.tick(2600, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f))).size(), 1u);
+}
+
+TEST("locomotion : fondu et arrêt (natures 2 et 3) — envoyés si différents, rejoués, valeur 0/1 exigée") {
+    Session s = host_with_avatar();
+    auto fade = local_param(0, proto::MotionParamKind::FadeOut, 1.0f, 0.3f);
+    CHECK_EQ(sent_of<proto::MotionParam>(s.tick(1200, loaded_world(), fade)).size(), 1u);
+    CHECK(sent_of<proto::MotionParam>(s.tick(1210, loaded_world(), fade)).empty());  // identique
+    auto stop = local_param(0, proto::MotionParamKind::StopMotion, 0.0f, 0.2f);
+    auto sent = sent_of<proto::MotionParam>(s.tick(1220, loaded_world(), stop));
+    CHECK(sent.size() == 1 && sent[0].kind == 3 && sent[0].value == 0.0f && sent[0].time == 0.2f);
+    CHECK_EQ(sent_of<proto::MotionParam>(s.tick(1230, loaded_world(), local_param(0, proto::MotionParamKind::StopMotion, 0.0f, 0.4f))).size(), 1u);
+    CHECK(sent_of<proto::MotionParam>(s.tick(1240, loaded_world(), local_param(0, proto::MotionParamKind::FadeOut, 0.5f, 0.3f))).empty());
+    // Réception : rejoué tel quel.
+    Session r = host_with_clock();
+    proto::MotionParam p = peer_param(0, 1, 1.0f, 0.3f);
+    p.kind = static_cast<std::uint8_t>(proto::MotionParamKind::FadeOut);
+    const auto played = commands_of<PlayAvatarParam>(r.tick(1400, loaded_world(), reliable(encode_r(p))));
+    CHECK(played.size() == 1 && played[0]->param.kind == 2 && played[0]->param.time == 0.3f);
 }

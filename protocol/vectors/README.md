@@ -27,7 +27,7 @@ Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) 
 | `unknown_type.bin` | contrôle, `MsgType` 99 | `UnknownType` |
 | `motion_bad_type.bin` | `motion.bin` avec `type=8` | `BadValue` |
 | `aniname_empty.bin` | `AniName` au nom vide | `BadLength` |
-| `motion_param_bad.bin` | `motion_param.bin` avec `nature=2` | `BadValue` |
+| `motion_param_bad.bin` | `motion_param.bin` avec `nature=4` | `BadValue` |
 | `snapshot_truncated.bin` | `snapshot.bin` annonçant 2 entités | `Truncated` |
 
 Les valeurs détaillées champ par champ sont dans `PROTOCOL.md`.

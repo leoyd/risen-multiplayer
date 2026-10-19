@@ -63,7 +63,7 @@ struct LastCapture {
     float value = 0.0f;
     float time = 0.0f;
 };
-LastCapture g_last_capture[8][2];
+LastCapture g_last_capture[8][4];
 ULONGLONG g_next_stats_log = 0;
 
 void log_wrapper_stats() {
@@ -249,9 +249,20 @@ void play_param(std::uint32_t net_id, const protocol::MotionParam& param) {
         bool ok = false;
         {
             AnimFilter::ReplayGuard guard;  // le hook laisse passer ce réglage sur la réplique
-            ok = param.kind == static_cast<std::uint8_t>(protocol::MotionParamKind::TargetWeight)
-                     ? game::set_target_weight(e.wrapper, param.type, param.value, param.time)
-                     : game::set_play_speed(e.wrapper, param.type, param.value);
+            switch (static_cast<protocol::MotionParamKind>(param.kind)) {
+                case protocol::MotionParamKind::TargetWeight:
+                    ok = game::set_target_weight(e.wrapper, param.type, param.value, param.time);
+                    break;
+                case protocol::MotionParamKind::PlaySpeed:
+                    ok = game::set_play_speed(e.wrapper, param.type, param.value);
+                    break;
+                case protocol::MotionParamKind::FadeOut:
+                    ok = game::switch_fade_out(e.wrapper, param.type, param.value != 0.0f, param.time);
+                    break;
+                case protocol::MotionParamKind::StopMotion:
+                    ok = game::wrapper_stop_motion(e.wrapper, param.type, param.time, param.value != 0.0f);
+                    break;
+            }
         }
         if (!ok && !e.param_error_logged) {
             e.param_error_logged = true;
@@ -344,9 +355,13 @@ bool on_wrapper_call(void* wrapper, WrapperCall call, int type, float value, flo
         }
         // Story 2.4b : poids cible et vitesse de lecture partent en MotionParam (même anneau que
         // les PlayMotion : l'ordre est conservé).
-        if ((call == WrapperCall::TargetWeight || call == WrapperCall::PlaySpeed) && type >= 0 && type < 8) {
-            const int kind = call == WrapperCall::TargetWeight ? 0 : 1;
-            const float t = kind == 0 ? time : 0.0f;
+        if (type >= 0 && type < 8) {
+            // Natures de MotionParam : 0 poids, 1 vitesse, 2 fondu, 3 arrêt.
+            const int kind = call == WrapperCall::TargetWeight ? 0
+                             : call == WrapperCall::PlaySpeed  ? 1
+                             : call == WrapperCall::FadeOut    ? 2
+                                                               : 3;
+            const float t = kind == 1 ? 0.0f : time;
             {
                 std::lock_guard<std::mutex> lock(g_stats_mutex);
                 LastCapture& last = g_last_capture[type][kind];

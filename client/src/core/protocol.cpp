@@ -127,7 +127,9 @@ bool valid(const MotionParam& m) {
     if (m.type >= kMotionTypeCount || m.kind >= kMotionParamKindCount) return false;
     if (!std::isfinite(m.value) || !std::isfinite(m.time)) return false;
     if (m.value < 0.0f || m.value > kMaxMotionParamValue || m.time < 0.0f || m.time > kMaxMotionParamTime) return false;
-    return m.kind != static_cast<std::uint8_t>(MotionParamKind::PlaySpeed) || m.time == 0.0f;
+    if (m.kind == static_cast<std::uint8_t>(MotionParamKind::PlaySpeed)) return m.time == 0.0f;
+    if (m.kind >= static_cast<std::uint8_t>(MotionParamKind::FadeOut)) return m.value == 0.0f || m.value == 1.0f;
+    return true;
 }
 
 void write(Writer& w, const MotionParam& m) {

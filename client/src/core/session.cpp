@@ -707,9 +707,13 @@ void Session::on_local_param(std::uint64_t now, const LocalParam& in, Output& ou
     LastParam& last = last_params_[p.type][p.kind];
     // Seuls les changements partent ; une valeur finale exacte de 0 ou 1 (fin de fondu) part
     // toujours, même proche de la précédente, pour que l'avatar ne reste pas à 0,99 ou 0,008.
+    // Fondu et arrêt (natures 2 et 3) : seulement s'ils diffèrent (valeur ou durée).
     const bool exact_end = (p.value == 0.0f || p.value == 1.0f) && p.value != last.value;
-    if (last.valid && std::fabs(p.value - last.value) <= kParamEpsilon &&
-        std::fabs(p.time - last.time) <= kParamTimeEpsilon && !exact_end) {
+    const float eps = p.kind == static_cast<std::uint8_t>(proto::MotionParamKind::PlaySpeed) ? kParamSpeedEpsilon
+                      : p.kind == static_cast<std::uint8_t>(proto::MotionParamKind::TargetWeight) ? kParamEpsilon
+                                                                                                   : 0.0f;
+    if (last.valid && std::fabs(p.value - last.value) <= eps && std::fabs(p.time - last.time) <= kParamTimeEpsilon &&
+        !exact_end) {
         return;
     }
     last = LastParam{true, p.value, p.time};

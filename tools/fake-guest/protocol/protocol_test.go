@@ -280,10 +280,15 @@ func TestMotionAndAniNameErrors(t *testing.T) {
 	if _, err := EncodeReliable(MotionParam{Kind: 8}); err == nil {
 		t.Fatal("MotionParam de type 8 encodé")
 	}
-	for _, bad := range []MotionParam{{Value: float32(math.NaN())}, {Param: 2}, {Time: float32(math.Inf(1))},
+	for _, bad := range []MotionParam{{Value: float32(math.NaN())}, {Param: 4}, {Param: ParamFadeOut, Value: 0.5}, {Time: float32(math.Inf(1))},
 		{Value: -1}, {Value: 101}, {Time: 61}, {Param: ParamPlaySpeed, Value: 1, Time: 0.1}} {
 		if _, err := EncodeReliable(bad); err == nil {
 			t.Fatalf("MotionParam hors domaine encodé : %+v", bad)
+		}
+	}
+	for _, ok := range []MotionParam{{Param: ParamFadeOut, Value: 1, Time: 0.3}, {Param: ParamStopMotion, Value: 0, Time: 0.2}} {
+		if _, err := EncodeReliable(ok); err != nil {
+			t.Fatalf("MotionParam valide refusé : %+v", ok)
 		}
 	}
 	if _, err := DecodeControl([]byte{2, 26}); !errors.Is(err, ErrUnknownType) {

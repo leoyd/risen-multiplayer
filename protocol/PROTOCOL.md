@@ -194,9 +194,9 @@ fait monter ce poids et règle sa vitesse de lecture.
 | `net_id` | `u32` | entité animée (AD-6) |
 | `ms` | `u32` | même base que `Motion.ms` |
 | `type` | `u8` | `eEMotionType`, **0 à 7** |
-| `nature` | `u8` | `0` = `SetTargetWeight(type, valeur, durée)` ; `1` = `SetPlaySpeed(type, valeur)` ; autre → `BadValue` |
-| `valeur` | `f32` | poids cible ou vitesse de lecture, **dans [0, 100]** (sinon `BadValue`) |
-| `durée` | `f32` | durée du fondu (s) pour `SetTargetWeight`, **dans [0, 60]** ; **exactement 0** pour `SetPlaySpeed` (sinon `BadValue`) |
+| `nature` | `u8` | `0` = `SetTargetWeight(type, valeur, durée)` ; `1` = `SetPlaySpeed(type, valeur)` ; `2` = `SwitchFadeOut(type, valeur ≠ 0, durée)` ; `3` = `StopMotion(type, durée, valeur ≠ 0)` ; autre → `BadValue` |
+| `valeur` | `f32` | poids cible ou vitesse de lecture, **dans [0, 100]** ; **0 ou 1** pour les natures 2 et 3 (sinon `BadValue`) |
+| `durée` | `f32` | durée du fondu (s), **dans [0, 60]** ; **exactement 0** pour `SetPlaySpeed` (sinon `BadValue`) |
 
 Taille : 19 octets.
 
@@ -236,7 +236,7 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 6 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) |
 | `TrailingBytes` | octets restants après la fin du message |
-| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 1, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
+| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
 hors bornes, une version autre que 6, un champ hors domaine ou un résultat de plus de 1200
@@ -561,13 +561,13 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 00000000: 1207 0000                                ....
 ```
 
-#### `motion_param_bad.bin` — `MotionParam` de nature 2, 19 octets
+#### `motion_param_bad.bin` — `MotionParam` de nature 4, 19 octets
 
-`motion_param.bin` avec `nature` = 2 (offset 0x0a) → `BadValue`.
+`motion_param.bin` avec `nature` = 4 (offset 0x0a) → `BadValue`.
 
 <!-- vector: motion_param_bad.bin -->
 ```text
-00000000: 1a02 0000 00d2 0400 0000 0200 0080 3f00  ..............?.
+00000000: 1a02 0000 00d2 0400 0000 0400 0080 3f00  ..............?.
 00000010: 0080 3e                                  ..>
 ```
 
@@ -649,9 +649,10 @@ d'appels.
     snapshots) atteint `ms` ; un `Motion` en retard (ou reçu avant tout snapshot) part aussitôt ;
     parmi ceux qui partent à la même frame, seul le plus récent des types 0 et 1 est rejoué.
 - **Réglages de locomotion** (v6) : l'émetteur envoie un `MotionParam` quand le poids cible ou la
-  vitesse de lecture d'un type change chez son héros (écart de plus de 0,01, durée différente de
-  plus de 0,005 s, valeur finale exacte de 0 ou 1, ou premier réglage après un `Motion` de ce type),
-  en session seulement. Le récepteur l'accepte aux
+  vitesse de lecture d'un type change chez son héros (écart de plus de 0,01 pour un poids, de 0,02
+  pour une vitesse, durée différente de plus de 0,005 s, valeur finale exacte de 0 ou 1, ou premier
+  réglage après un `Motion` de ce type), ou quand un fondu (`SwitchFadeOut`) ou un arrêt
+  (`StopMotion`) diffère du précédent, en session seulement. Le récepteur l'accepte aux
   mêmes conditions qu'un `Motion` et le rejoue sur l'avatar au même instant d'affichage, dans l'ordre
   d'arrivée ; parmi ceux qui partent à la même frame, un réglage des types 0/1 placé avant le
   `Motion` gardé de son type est écarté (il visait l'animation remplacée).

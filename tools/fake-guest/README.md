@@ -80,6 +80,7 @@ ligne, jouées dans l'ordre puis en boucle ; chacune part de la pose du `Spawn` 
 | `pause <durée s>` | immobile |
 | `anim <instant s> <type> <nom> [d00 d04 d08 d0C d10 d14 d18]` | `Motion` (et `AniName` la première fois) à cet instant de chaque boucle ; scalaires par défaut `0.2 0 0 1 1 1 1` (`d10 = -1` → `0xFFFFFFFF`) |
 | `mort <instant s>` | `Death{2}`, une seule fois |
+| `param <instant s> <type> <poids\|vitesse\|fondu\|arret> <valeur> [durée s]` | `MotionParam` (story 2.4b) : `SetTargetWeight`, `SetPlaySpeed`, `SwitchFadeOut`, `StopMotion` ; valeur 0 ou 1 pour `fondu` et `arret` |
 | `# …` | commentaire (ligne entière) |
 
 Exemples dans `scenarios/` : `cercle.txt`, `aller-retour.txt`, `mixte.txt` (tout à la fois, à deux

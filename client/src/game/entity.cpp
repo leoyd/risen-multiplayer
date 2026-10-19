@@ -215,6 +215,26 @@ bool set_play_speed(void* wrapper, int type, float speed) {
     }
 }
 
+bool switch_fade_out(void* wrapper, int type, bool on, float time) {
+    if (!g_resolved || wrapper == nullptr) return false;
+    __try {
+        g_abi.switch_fade_out(wrapper, type, on, time);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool wrapper_stop_motion(void* wrapper, int type, float time, bool flag) {
+    if (!g_resolved || wrapper == nullptr) return false;
+    __try {
+        g_abi.wrapper_stop_motion(wrapper, type, time, flag);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool get_actor_wrapper(void* animation_ps, void*& out) {
     out = nullptr;
     if (!g_resolved || animation_ps == nullptr) return false;

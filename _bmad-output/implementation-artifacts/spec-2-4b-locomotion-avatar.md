@@ -51,7 +51,7 @@ La raison : Risen démarre une animation de locomotion avec un poids presque nul
 - **Faux invité** : codec ; `--echo` renvoie aussi les `MotionParam` de l'hôte, redatés.
 
 **Never:**
-- Pas de transmission de `SwitchFadeOut`/`StopMotion` dans cette story : un `PlayMotion` remplace l'animation du même type. Ce sera ajouté si une animation reste visible à l'arrêt.
+- ~~Pas de transmission de `SwitchFadeOut`/`StopMotion` dans cette story.~~ **Décision (2026-10-20, après le test en jeu, utilisateur)** : à l'arrêt, aucune transition ; T-pose dans les escaliers. `MotionParam` prend deux natures de plus, 2 = `SwitchFadeOut(type, actif, durée)` (valeur 0 ou 1) et 3 = `StopMotion(type, durée, drapeau)` (valeur 0 ou 1). Elles sont capturées, dédupliquées (même valeur et même durée → rien) et rejouées comme les autres. Le protocole reste en v6, qui n'a pas quitté la branche. Le seuil de la vitesse de lecture passe à 0,02 pour réduire le trafic (mesuré : 1 000 à 2 500 `MotionParam` par 5 s).
 - Pas de PNJ ; pas de changement du snapshot (AD-7 inchangé).
 
 ## I/O & Edge-Case Matrix
@@ -109,6 +109,11 @@ La raison : Risen démarre une animation de locomotion avec un poids presque nul
 - **Rejeu** : `game::set_target_weight` et `set_play_speed` appellent les fonctions accrochées ; sous `ReplayGuard`, le détour laisse passer l'appel vers l'original.
 - **Faux invité** : directive `param <instant s> <type> <poids|vitesse> <valeur> [durée]`. `--echo` renvoie les `MotionParam`. L'hôte simulé en envoie un avec chaque `Motion`.
 - **De bout en bout** : `anim`, puis `param`, puis `anim` sont rejoués dans cet ordre (`PlayAvatarMotion` / `PlayAvatarParam`).
+
+### Test en jeu (2026-10-20) et extension
+
+- **Test** (utilisateur, écho) : marche et marche arrière OK, course et démarrage OK. Restaient deux défauts : aucune transition à l'arrêt, et une T-pose dans les escaliers, l'avatar reprenant une marche correcte quelques pas après. Log : 1 000 à 2 500 `MotionParam` par 5 s, aucune erreur.
+- **Extension** (décision consignée dans le bloc figé) : `MotionParam` natures 2 et 3 (`SwitchFadeOut`, `StopMotion`), capturées, dédupliquées et rejouées ; seuil de la vitesse porté à 0,02. Vecteur `motion_param_bad.bin` passé en nature 4. Directive `param … fondu|arret` dans le faux invité. Tests : déduplication et rejeu du fondu et de l'arrêt, domaine (valeur 0 ou 1).
 
 ## Spec Change Log
 

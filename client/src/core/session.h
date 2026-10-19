@@ -164,7 +164,8 @@ struct PlayAvatarParam {  // rejouer un réglage de locomotion du pair sur l'ava
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam>;
 
-inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un réglage
+inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
+inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
 inline constexpr float kParamTimeEpsilon = 0.005f;  // écart minimal de durée de fondu
 
 inline constexpr std::size_t kMaxPendingMotions = 256;  // Motion du pair en attente d'affichage

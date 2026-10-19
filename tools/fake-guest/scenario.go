@@ -11,7 +11,8 @@ package main
 //	                                         Motion à cet instant de la boucle (story 2.4) ;
 //	                                         scalaires par défaut : 0.2 0 0 1 1 1 1 (d10 = -1 : 0xFFFFFFFF)
 //	mort <instant s>                         Death à cet instant (une seule fois)
-//	param <instant s> <type> <poids|vitesse> <valeur> [durée s]
+//	param <instant s> <type> <poids|vitesse|fondu|arret> <valeur> [durée s]
+//	                                         (fondu, arret : valeur 0 ou 1)
 //	                                         MotionParam à cet instant (story 2.4b)
 //	# commentaire (ligne entière)
 //
@@ -152,8 +153,12 @@ func parseEvent(f []string) (event, error) {
 			p.Param = protocol.ParamTargetWeight
 		case "vitesse":
 			p.Param = protocol.ParamPlaySpeed
+		case "fondu":
+			p.Param = protocol.ParamFadeOut
+		case "arret":
+			p.Param = protocol.ParamStopMotion
 		default:
-			return event{}, fmt.Errorf("nature %q : « poids » ou « vitesse » attendu", f[3])
+			return event{}, fmt.Errorf("nature %q : « poids », « vitesse », « fondu » ou « arret » attendu", f[3])
 		}
 		v, err := num(f[4])
 		if err != nil {
@@ -161,6 +166,9 @@ func parseEvent(f []string) (event, error) {
 		}
 		if v < 0 || v > protocol.MaxMotionParamValue {
 			return event{}, fmt.Errorf("valeur %q hors de [0, 100]", f[4])
+		}
+		if (p.Param == protocol.ParamFadeOut || p.Param == protocol.ParamStopMotion) && v != 0 && v != 1 {
+			return event{}, fmt.Errorf("valeur %q : 0 ou 1 attendu pour %s", f[4], f[3])
 		}
 		p.Value = float32(v)
 		if len(f) == 6 {

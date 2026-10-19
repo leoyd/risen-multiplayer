@@ -72,13 +72,13 @@ void detour_set_target_weight(void* wrapper, int type, float weight, float time)
 }
 
 void detour_switch_fade_out(void* wrapper, int type, bool on, float time) {
-    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::FadeOut, type, time, time)) {
+    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::FadeOut, type, on ? 1.0f : 0.0f, time)) {
         g_original_switch_fade_out(wrapper, type, on, time);
     }
 }
 
 void detour_wrapper_stop_motion(void* wrapper, int type, float time, bool flag) {
-    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::StopMotion, type, time, time)) {
+    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::StopMotion, type, flag ? 1.0f : 0.0f, time)) {
         g_original_wrapper_stop_motion(wrapper, type, time, flag);
     }
 }

@@ -178,8 +178,10 @@ type MotionParam struct {
 }
 
 const (
-	ParamTargetWeight = 0
-	ParamPlaySpeed    = 1
+	ParamTargetWeight = 0 // SetTargetWeight(type, valeur, durée)
+	ParamPlaySpeed    = 1 // SetPlaySpeed(type, valeur), durée 0
+	ParamFadeOut      = 2 // SwitchFadeOut(type, valeur != 0, durée), valeur 0 ou 1
+	ParamStopMotion   = 3 // StopMotion(type, durée, valeur != 0), valeur 0 ou 1
 )
 
 func finite32(v float32) bool { return !math.IsNaN(float64(v)) && !math.IsInf(float64(v), 0) }
@@ -190,13 +192,19 @@ const (
 )
 
 func validMotionParam(m MotionParam) bool {
-	if m.Kind >= MotionTypeCount || m.Param > ParamPlaySpeed || !finite32(m.Value) || !finite32(m.Time) {
+	if m.Kind >= MotionTypeCount || m.Param > ParamStopMotion || !finite32(m.Value) || !finite32(m.Time) {
 		return false
 	}
 	if m.Value < 0 || m.Value > MaxMotionParamValue || m.Time < 0 || m.Time > MaxMotionParamTime {
 		return false
 	}
-	return m.Param != ParamPlaySpeed || m.Time == 0
+	switch m.Param {
+	case ParamPlaySpeed:
+		return m.Time == 0
+	case ParamFadeOut, ParamStopMotion:
+		return m.Value == 0 || m.Value == 1
+	}
+	return true
 }
 
 const (

@@ -172,10 +172,12 @@ struct Death {
 // Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,
 // valeur, durée) ou SetPlaySpeed(type, valeur). Daté comme Motion, rejoué au même instant.
 enum class MotionParamKind : std::uint8_t {
-    TargetWeight = 0,
-    PlaySpeed = 1,
+    TargetWeight = 0,  // SetTargetWeight(type, valeur, durée)
+    PlaySpeed = 1,     // SetPlaySpeed(type, valeur), durée 0
+    FadeOut = 2,       // SwitchFadeOut(type, valeur != 0, durée), valeur 0 ou 1
+    StopMotion = 3,    // StopMotion(type, durée, valeur != 0), valeur 0 ou 1
 };
-inline constexpr std::uint8_t kMotionParamKindCount = 2;
+inline constexpr std::uint8_t kMotionParamKindCount = 4;
 inline constexpr float kMaxMotionParamValue = 100.0f;  // poids ou vitesse : [0, 100]
 inline constexpr float kMaxMotionParamTime = 60.0f;    // durée de fondu : [0, 60] s ; 0 pour une vitesse
 struct MotionParam {

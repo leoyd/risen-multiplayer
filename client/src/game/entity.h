@@ -79,6 +79,8 @@ bool get_actor_wrapper(void* animation_ps, void*& out);
 // une réplique). Sous SEH.
 bool set_target_weight(void* wrapper, int type, float weight, float time);
 bool set_play_speed(void* wrapper, int type, float speed);
+bool switch_fade_out(void* wrapper, int type, bool on, float time);
+bool wrapper_stop_motion(void* wrapper, int type, float time, bool flag);
 
 bool get_player(Entity& out);  // out.ptr == nullptr : pas de joueur (menu, chargement)
 bool get_pose(const Entity& e, Matrix& out);

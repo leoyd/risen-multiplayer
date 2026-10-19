@@ -273,8 +273,8 @@ Prérequis : `role = host`, `probe = 0`, `log_level = debug`, overlay Steam dés
 
 **Locomotion (story 2.4b).** Risen démarre une animation de déplacement avec un poids presque nul,
 puis en règle le poids et la vitesse de lecture à chaque frame (`SetTargetWeight`, `SetPlaySpeed`
-de l'enveloppe EMotionFX). Ces réglages du héros partent en `MotionParam` (les changements
-seulement) et sont rejoués sur l'avatar ; ceux que le contrôleur de l'avatar lancerait de lui-même
+de l'enveloppe EMotionFX), et l'arrête par un fondu (`SwitchFadeOut`, `StopMotion`). Ces réglages
+du héros partent en `MotionParam` (les changements seulement) et sont rejoués sur l'avatar ; ceux que le contrôleur de l'avatar lancerait de lui-même
 sont bloqués (il le croit immobile, car `MoveTo` le recale). Test : en écho, démarrer, courir en
 avant puis en arrière, s'arrêter, marcher, tourner : ni T-pose au démarrage, ni blocage. La ligne
 `[sync] locomotion (1 s)` compte les réglages du héros et ceux bloqués sur l'avatar.
