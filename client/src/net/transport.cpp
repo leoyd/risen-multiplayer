@@ -41,7 +41,8 @@ std::uint64_t next_random(std::uint64_t& state) {
     X(too_big) X(send_errors) X(recv_errors) X(rx_too_big) X(ignored_empty)                 \
     X(ignored_snapshot) X(ignored_unknown_channel) X(ignored_no_reliable)                   \
     X(ignored_wrong_peer) X(ignored_wrong_conv) X(kcp_input_errors) X(reliable_without_kcp) \
-    X(reliable_send_errors) X(command_queue_full) X(event_queue_full) X(internal_errors)
+    X(reliable_send_errors) X(command_queue_full) X(event_queue_full) X(internal_errors)      \
+    X(snapshots_sent) X(snapshots_received) X(snapshot_without_peer)
 
 struct Transport::Counters {
 #define MP_DECLARE(name) std::atomic<std::uint64_t> name{0};
@@ -234,7 +235,13 @@ void Transport::handle_datagram(const Endpoint& from, const std::uint8_t* data, 
             push_event(ControlReceived{from, Bytes(data, data + size)});
             return;
         case static_cast<std::uint8_t>(Channel::Snapshot):
-            bump(counters_->ignored_snapshot);  // Epic 2
+            // Seul le pair de session envoie des snapshots, une fois le KCP ouvert (§8).
+            if (!reliable_ || from != reliable_->peer) {
+                bump(counters_->ignored_snapshot);
+                return;
+            }
+            bump(counters_->snapshots_received);
+            push_event(SnapshotReceived{Bytes(data, data + size)});
             return;
         case static_cast<std::uint8_t>(Channel::Reliable):
             break;
@@ -277,6 +284,13 @@ void Transport::execute(Command& command) {
         }
     } else if (std::holds_alternative<CloseReliable>(command)) {
         close_reliable();
+    } else if (auto* s = std::get_if<SendSnapshot>(&command)) {
+        if (!reliable_) {
+            bump(counters_->snapshot_without_peer);
+        } else {
+            send_datagram(reliable_->peer, s->bytes.data(), s->bytes.size());
+            bump(counters_->snapshots_sent);
+        }
     }
 }
 

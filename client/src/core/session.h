@@ -17,6 +17,10 @@
 // son héros ; l'invité est d'abord téléporté devant l'hôte (Teleport). Un Spawn reçu du pair
 // donne SpawnAvatar, un Despawn reçu ou toute fin de session donne DespawnAvatar. La session
 // sait seulement si l'avatar existe ; sa création et sa destruction sont l'affaire de sync/.
+//
+// Snapshots (story 2.3, AD-7) : en session, la pose du héros part à 20 Hz (à l'horloge) ; ceux
+// du pair alimentent l'horloge distante et l'interpolateur, qui donnent à chaque tick la pose
+// de l'avatar (MoveAvatar), affichée avec 150 ms de retard.
 #pragma once
 
 #include <array>
@@ -26,6 +30,8 @@
 #include <vector>
 
 #include "core/config.h"
+#include "core/interpolation.h"
+#include "core/pose.h"
 #include "core/version.h"
 #include "net/udp_socket.h"  // Endpoint, parse_ipv4 (en-tête seul, aucun socket utilisé ici)
 
@@ -61,7 +67,7 @@ struct World {
     std::uintptr_t player = 0;  // Entity::GetPlayer(), entier opaque (jamais déréférencé ici)
     bool running = false;       // gCSession::IsGameRunning (instance nulle : false)
     bool dead = false;          // Entity::IsDead du joueur
-    bool pose_ok = false;       // pose lue (Hosting : Welcome ; Connecting : Spawn de l'invité)
+    bool pose_ok = false;       // pose du héros lue (Welcome, Spawn, snapshots)
     float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f;
 
     bool loaded() const { return player != 0 && running; }  // monde chargé
@@ -75,13 +81,12 @@ struct ControlIn {
 struct ReliableIn {
     Bytes bytes;  // [MsgType][charge]
 };
-using Input = std::variant<ControlIn, ReliableIn>;
-
-// Pose d'un héros : position et lacet (AD-7).
-struct Pose {
-    float x = 0.0f, y = 0.0f, z = 0.0f;
-    float yaw = 0.0f;  // radians, atan2(m[8], m[10])
+struct SnapshotIn {
+    Bytes bytes;  // datagramme de canal 1 complet, venu du pair
 };
+using Input = std::variant<ControlIn, ReliableIn, SnapshotIn>;
+
+using core::Pose;
 
 // Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
 // (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
@@ -114,8 +119,17 @@ struct SpawnAvatar {  // créer l'avatar du pair
 struct DespawnAvatar {  // retirer puis détruire l'avatar du pair
     std::uint32_t net_id = 0;
 };
-using Command =
-    std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar, DespawnAvatar>;
+struct SendSnapshot {  // datagramme de canal 1 complet, pour le pair
+    Bytes bytes;
+};
+struct MoveAvatar {  // placer l'avatar (Entity::MoveTo), à chaque tick
+    std::uint32_t net_id = 0;
+    Pose pose;
+};
+using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
+                             DespawnAvatar, SendSnapshot, MoveAvatar>;
+
+inline constexpr std::uint64_t kSnapshotStatsMs = 5000;  // bilan debug des snapshots
 
 enum class Level { Debug, Info, Warn, Error };
 struct LogLine {
@@ -149,6 +163,10 @@ private:
     void arm(std::uint64_t now, const World& world, Output& out);
     void on_control(std::uint64_t now, const ControlIn& in, Output& out);
     void on_reliable(std::uint64_t now, const ReliableIn& in, Output& out);
+    void on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& out);
+    void send_snapshot(std::uint64_t now, const World& world, Output& out);
+    void place_avatar(std::uint64_t now, Output& out);
+    void snapshot_stats(std::uint64_t now, Output& out);
     void host_on_hello(std::uint64_t now, const ControlIn& in, Output& out);
     void guest_on_control(std::uint64_t now, const ControlIn& in, Output& out);
     void timers(std::uint64_t now, Output& out);
@@ -192,6 +210,17 @@ private:
     bool foreign_warned_ = false;  // invité : réponse d'une autre adresse déjà signalée
     World world_;             // monde du tick en cours (pose du Welcome)
     bool avatar_present_ = false;  // SpawnAvatar émis, pas encore de DespawnAvatar
+
+    // Snapshots (story 2.3), remis à zéro à chaque entrée en session.
+    std::uint64_t t0_ = 0;              // entrée en InSession (base du tick)
+    std::int64_t last_tick_sent_ = -1;
+    core::RemoteClock clock_;
+    core::Interpolator interp_;         // avatar du pair
+    std::uint64_t next_stats_ = 0;
+    struct SnapshotCounters {
+        unsigned sent = 0, received = 0, unreadable = 0, ignored = 0;
+        unsigned interpolated = 0, extrapolated = 0, held = 0;
+    } snap_;
 
     std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)
     std::uint64_t linger_until_ = 0;   // Ended : fin du maintien du KCP

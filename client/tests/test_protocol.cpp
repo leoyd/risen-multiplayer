@@ -341,14 +341,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v3 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v4 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 3);
+    CHECK_EQ(version, 4);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 3);
+    CHECK_EQ(version, 4);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -359,12 +359,12 @@ TEST("protocole : peek_hello_version sur v3 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 3") {
+TEST("protocole : l'encodeur refuse une version autre que 4") {
     Hello h = sample_hello();
-    h.protocol_version = 2;
+    h.protocol_version = 3;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 4;
+    h.protocol_version = 5;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -490,7 +490,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 3);
+    CHECK_EQ(kProtocolVersion, 4);
     CHECK_EQ(static_cast<int>(Channel::Reliable), 0);
     CHECK_EQ(static_cast<int>(Channel::Snapshot), 1);
     CHECK_EQ(static_cast<int>(Channel::Control), 2);
@@ -508,4 +508,90 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(RejectReason::BadHello), 5);
     CHECK_EQ(static_cast<int>(EndReason::PlayerLeft), 1);
     CHECK_EQ(static_cast<int>(EndReason::InternalError), 4);
+}
+
+// --- Snapshot (story 2.3, canal 1) -------------------------------------------------
+
+namespace {
+
+Snapshot sample_snapshot() {
+    Snapshot s;
+    s.tick = 1234;
+    SnapshotEntity e;
+    e.net_id = 2;
+    e.x = 100.0f;
+    e.y = -50.5f;
+    e.z = 2000.0f;
+    e.yaw = 1.5f;
+    e.hp = 75;
+    s.entities.push_back(e);
+    return s;
+}
+
+bool same(const Snapshot& a, const Snapshot& b) {
+    if (a.tick != b.tick || a.entities.size() != b.entities.size()) return false;
+    for (std::size_t i = 0; i < a.entities.size(); ++i) {
+        const SnapshotEntity &x = a.entities[i], &y = b.entities[i];
+        if (x.net_id != y.net_id || bits(x.x) != bits(y.x) || bits(x.y) != bits(y.y) || bits(x.z) != bits(y.z) ||
+            bits(x.yaw) != bits(y.yaw) || x.hp != y.hp) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Decoded<Snapshot> ds(const Bytes& b) { return decode_snapshot(b.data(), b.size()); }
+
+}  // namespace
+
+TEST("protocole : vecteur snapshot.bin") {
+    const Bytes b = load_vector("snapshot.bin");
+    const auto d = ds(b);
+    CHECK(d.ok() && same(d.message, sample_snapshot()));
+    Bytes out;
+    CHECK(encode_snapshot(sample_snapshot(), out));
+    CHECK(out == b);
+}
+
+TEST("protocole : snapshot_truncated.bin → Truncated ; coupé, + 1 octet, autre canal") {
+    CHECK(ds(load_vector("snapshot_truncated.bin")).error == DecodeError::Truncated);
+    const Bytes b = load_vector("snapshot.bin");
+    for (std::size_t n = 0; n < b.size(); ++n) {
+        CHECK(ds(Bytes(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(n))).error == DecodeError::Truncated);
+    }
+    Bytes longer = b;
+    longer.push_back(0);
+    CHECK(ds(longer).error == DecodeError::TrailingBytes);
+    Bytes other = b;
+    other[0] = 2;
+    CHECK(ds(other).error == DecodeError::UnknownChannel);
+    CHECK(ds(Bytes{}).error == DecodeError::Truncated);
+}
+
+TEST("protocole : snapshot vide, 54 entités (1194 octets), 55 refusées") {
+    Snapshot s;
+    s.tick = 7;
+    Bytes out;
+    CHECK(encode_snapshot(s, out));
+    CHECK_EQ(out.size(), 6u);
+    CHECK(ds(out).ok() && ds(out).message.entities.empty());
+    s.entities.resize(kMaxSnapshotEntities);
+    for (std::size_t i = 0; i < s.entities.size(); ++i) s.entities[i].net_id = static_cast<std::uint32_t>(i);
+    CHECK(encode_snapshot(s, out));
+    CHECK_EQ(out.size(), 1194u);
+    CHECK(ds(out).ok() && same(ds(out).message, s));
+    s.entities.resize(kMaxSnapshotEntities + 1);
+    Bytes kept = {0xAA};
+    CHECK(!encode_snapshot(s, kept));
+    CHECK(kept == Bytes{0xAA});
+}
+
+TEST("protocole : snapshot annonçant 55 entités → BadValue au décodage") {
+    Snapshot s;
+    s.entities.resize(kMaxSnapshotEntities);
+    Bytes b;
+    CHECK(encode_snapshot(s, b));
+    b[5] = static_cast<std::uint8_t>(kMaxSnapshotEntities + 1);
+    b.insert(b.end(), kSnapshotEntitySize, 0);
+    CHECK(ds(b).error == DecodeError::BadValue);
 }

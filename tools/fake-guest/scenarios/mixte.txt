@@ -1,0 +1,7 @@
+# Cercle, allers-retours à deux vitesses (marche, course), demi-tours secs et arrêts.
+cercle 300 6
+pause 1
+aller-retour 600 150
+aller-retour 400 400
+pause 2
+cercle 150 4

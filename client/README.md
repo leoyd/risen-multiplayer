@@ -89,9 +89,11 @@ et vérifie les codes de sortie et les logs : nominal, `--dup-hello`, `--bad-ver
 invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte), puis
 (story 1.5) trois cycles « rejoindre, fin de monde, réarmer » avec `SessionEnd{2}` reçu par le
 faux invité et trois `conv` distincts, le réarmement de l'hôte après `--quit` (un second invité
-rejoint le même monde) et la mort de l'hôte (`SessionEnd{3}`), enfin (story 2.2) « rejoindre,
+rejoint le même monde) et la mort de l'hôte (`SessionEnd{3}`), puis (story 2.2) « rejoindre,
 `--kill`, rejoindre, quitter » : un `SpawnAvatar` et un `DespawnAvatar` par session, jamais
-deux avatars (`avatars présents=2` absent du log), `Despawn` avant `SessionEnd`. Le test CTest
+deux avatars (`avatars présents=2` absent du log), `Despawn` avant `SessionEnd`, enfin (story 2.3)
+un cercle avec 100 ms ± 20 ms de latence et 10 % de pertes : l'avatar parcourt plus de 8 m, avec
+un saut max (du `Spawn` au dernier `MoveAvatar`) de moins de 10 cm. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
 55 s. Lancement à la main :
 
@@ -219,6 +221,29 @@ invité : 2 m devant le héros de l'hôte, tourné vers lui.
 avatar existe, un thread à part suspend le thread principal, déroule sa pile (`RtlVirtualUnwind`) et
 l'écrit au log trois fois, à 1 s d'intervalle (`[watchdog] pile N du thread principal`, une ligne
 `module+offset` par frame). Elle ne touche jamais au jeu.
+
+### Déplacements de l'avatar en jeu (story 2.3, une machine)
+
+Chaque pair envoie à 20 Hz (canal 1) la pose de son héros ; l'avatar est replacé à chaque frame
+sur la pose interpolée, avec 150 ms de retard (Hermite pour la position, chemin le plus court
+pour le lacet, extrapolation de 250 ms au plus si les snapshots s'arrêtent). Il reste en T-pose
+jusqu'à la story 2.4 : il glisse sans animation.
+
+Prérequis : `role = host`, `probe = 0`, `log_level = debug`, overlay Steam désactivé.
+
+1. Charger une partie dans un endroit dégagé et plat, puis :
+   `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 60s --scenario tools/fake-guest/scenarios/mixte.txt --delay 100ms --jitter 20ms`
+2. **À l'écran** : l'avatar apparaît à 2 m devant le héros, puis décrit un cercle de 3 m de rayon,
+   s'arrête, fait des allers-retours tout droit (lent, puis rapide) avec des demi-tours secs,
+   s'arrête, et fait un petit cercle ; puis tout recommence. Attendu : **aucune téléportation ni
+   à-coup** ; l'orientation suit la direction du mouvement.
+3. Variante : ajouter `--drop 10` (10 % de pertes) ; le mouvement doit rester fluide.
+4. Variante : relancer avec `--duration 15s --kill` (sortie sans rien envoyer) : au milieu d'un
+   cercle, les snapshots s'arrêtent ; l'avatar continue 0,25 s sur sa lancée puis s'arrête, et
+   disparaît au timeout, 5 s plus tard. (Ctrl-C, lui, envoie aussitôt `Despawn`.)
+5. Fournir `Script_Multiplayer.log` : toutes les 5 s, une ligne `[sync] snapshots (5 s) :
+   envoyés …, reçus …` (≈ 100 de chaque) donne les frames interpolées, extrapolées et figées, et
+   le décalage d'horloge.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

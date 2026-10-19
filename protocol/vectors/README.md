@@ -1,4 +1,4 @@
-# Vecteurs de référence du protocole v3
+# Vecteurs de référence du protocole v4
 
 Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) et Go
 (faux invité, story 1.3). Ils sont la référence **indépendante de l'encodeur** : chaque
@@ -9,7 +9,7 @@ Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) 
 
 | Fichier | Message | Attendu |
 |---|---|---|
-| `hello.bin` | `Hello` v3, `"0.1.0"`, empreintes Steam x64 2023, `"Leo"`, `"It_Sword_01"` | décodé, réencodé à l'octet près |
+| `hello.bin` | `Hello` v4, `"0.1.0"`, empreintes Steam x64 2023, `"Leo"`, `"It_Sword_01"` | décodé, réencodé à l'octet près |
 | `welcome.bin` | `Welcome` `conv=0x12345678`, `(100.0, -50.5, 2000.0)`, lacet `1.5` | décodé, réencodé à l'octet près |
 | `reject.bin` | `Reject` raison 2 | décodé, réencodé à l'octet près |
 | `heartbeat.bin` | `Heartbeat` (fiable, sans canal) | décodé, réencodé à l'octet près |
@@ -17,11 +17,13 @@ Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) 
 | `motion.bin` | `Motion` v2 (fiable, sans canal), `net_id=2`, `type=0`, `ani_id=7`, descripteur présent | décodé, réencodé à l'octet près |
 | `spawn.bin` | `Spawn` v3 (fiable, sans canal), `net_id=2`, `type=0`, `(100.0, -50.5, 2000.0)`, lacet `1.5` | décodé, réencodé à l'octet près |
 | `despawn.bin` | `Despawn` v3 (fiable, sans canal), `net_id=2` | décodé, réencodé à l'octet près |
+| `snapshot.bin` | snapshot v4 (canal 1), `tick=1234`, une entité `net_id=2`, `(100.0, -50.5, 2000.0)`, lacet `1.5`, `pv=75` | décodé, réencodé à l'octet près |
 | `hello_future.bin` | `Hello` `version_protocole=0xFFFF`, suite illisible | `peek_hello_version` → 65535, décodage `UnsupportedVersion` |
 | `hello_truncated.bin` | 22 premiers octets de `hello.bin` | `Truncated` |
 | `hello_long_nickname.bin` | `hello.bin` avec un pseudo de 33 octets | `BadLength` |
 | `unknown_type.bin` | contrôle, `MsgType` 99 | `UnknownType` |
 | `motion_bad_type.bin` | `motion.bin` avec `type=8` | `BadValue` |
+| `snapshot_truncated.bin` | `snapshot.bin` annonçant 2 entités | `Truncated` |
 
 Les valeurs détaillées champ par champ sont dans `PROTOCOL.md`.
 

@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v3 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v4 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -57,13 +57,31 @@ Empreintes du `Hello` : celles de `hello.bin` (Risen Steam x64, janvier 2023). �
 
 | Option | Effet |
 |---|---|
-| `--drop <0..100>` | jette ce pourcentage des datagrammes **sortants** (contrôle et KCP), graine `--seed` (défaut 1) |
+| `--drop <0..100>` | jette ce pourcentage des datagrammes **sortants** (contrôle, KCP et snapshots), graine `--seed` (défaut 1) |
+| `--delay <durée>` | retarde chaque datagramme sortant (ex. `100ms`) : latence simulée sans `tc netem` (qui demande root) |
+| `--jitter <durée>` | ajoute à `--delay` une gigue uniforme ± cette durée (ex. `20ms`) ; l'ordre des datagrammes peut changer |
 | `--quit` | à la fin de `--duration`, envoie `SessionEnd{1}` puis sort (comportement par défaut) |
 | `--kill` | à la fin de `--duration`, sort **sans rien envoyer** : l'hôte doit constater le timeout 5 s plus tard |
 | `--dup-hello` | chaque `Hello` part deux fois (l'hôte doit renvoyer le même `Welcome`), et un `Hello` supplémentaire part en session, une fois le premier heartbeat échangé et acquitté (l'hôte doit l'ignorer) |
 | `--bad-version` | envoie le `Hello` de `hello_future.bin` (version 0xFFFF) : l'hôte doit répondre `Reject{1}` |
 
 `--quit` et `--kill` sont exclusifs et demandent `--duration` > 0.
+
+### Trajectoire (`--scenario`, story 2.3)
+
+En session, le faux invité envoie à 20 Hz (canal 1) le snapshot de son avatar : la pose de son
+`Spawn` (2 m devant l'hôte), ou celle d'un scénario. `--scenario <fichier>` : une directive par
+ligne, jouées dans l'ordre puis en boucle ; chacune part de la pose du `Spawn` et y revient.
+
+| Directive | Effet |
+|---|---|
+| `cercle <rayon cm> <durée d'un tour s>` | tour complet en tournant vers la droite |
+| `aller-retour <longueur cm> <vitesse cm/s>` | tout droit, **demi-tour sec**, retour |
+| `pause <durée s>` | immobile |
+| `# …` | commentaire (ligne entière) |
+
+Exemples dans `scenarios/` : `cercle.txt`, `aller-retour.txt`, `mixte.txt` (tout à la fois, à deux
+vitesses). La ligne de bilan donne chaque seconde les snapshots envoyés et reçus de l'hôte.
 
 ### Comportement (PROTOCOL.md §8)
 

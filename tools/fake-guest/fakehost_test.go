@@ -53,11 +53,13 @@ type hostRecord struct {
 	ignoredHello int // Hello du pair arrivés après un segment KCP (ignorés, §8)
 	heartbeats   int
 	sessionEnds  []uint8
-	spawns       []protocol.Spawn   // Spawn reçus de l'invité (v3)
-	despawns     []uint32           // NetId des Despawn reçus
-	order        []protocol.MsgType // Spawn, Despawn et SessionEnd, dans l'ordre de réception
-	lastDatagram time.Time          // dernier datagramme du pair de session
-	timeoutAt    time.Time          // fin « timeout » constatée
+	spawns       []protocol.Spawn    // Spawn reçus de l'invité (v3)
+	despawns     []uint32            // NetId des Despawn reçus
+	order        []protocol.MsgType  // Spawn, Despawn et SessionEnd, dans l'ordre de réception
+	snapshots    []protocol.Snapshot // snapshots reçus de l'invité (v4)
+	snapshotAt   []time.Time         // heure de réception de chacun
+	lastDatagram time.Time           // dernier datagramme du pair de session
+	timeoutAt    time.Time           // fin « timeout » constatée
 	ended        string
 }
 
@@ -83,6 +85,9 @@ type simHost struct {
 	endAt      time.Time
 	closingAt  time.Time // SessionEnd envoyé : KCP gardé jusqu'à cet instant
 	hellosFrom map[netip.AddrPort]int
+
+	sessionStart time.Time // base du tick des snapshots de l'hôte
+	lastSnapTick int64
 }
 
 func startHost(t *testing.T, cfg hostConfig) *simHost {
@@ -213,6 +218,16 @@ func (h *simHost) handle(d datagram) {
 	switch protocol.Channel(d.b[0]) {
 	case protocol.ChannelControl:
 		h.handleControl(d)
+	case protocol.ChannelSnapshot:
+		if h.k == nil || d.from != h.peer {
+			return
+		}
+		if s, err := protocol.DecodeSnapshot(d.b); err == nil {
+			h.mu.Lock()
+			h.rec.snapshots = append(h.rec.snapshots, s)
+			h.rec.snapshotAt = append(h.rec.snapshotAt, time.Now())
+			h.mu.Unlock()
+		}
 	case protocol.ChannelReliable:
 		if h.k == nil || d.from != h.peer {
 			return
@@ -293,6 +308,7 @@ func (h *simHost) openSession(peer netip.AddrPort) {
 	if h.cfg.SessionEndAfter > 0 {
 		h.endAt = now.Add(h.cfg.SessionEndAfter)
 	}
+	h.sessionStart, h.lastSnapTick = now, -1
 	h.welcome = protocol.Welcome{Conv: conv, X: 1, Y: 2, Z: 3, Yaw: 0.5}
 	h.sendControl(peer, h.welcome)
 	h.sendReliable(protocol.Spawn{NetId: protocol.HostNetId, Kind: protocol.SpawnTypeHero, X: 1, Y: 2, Z: 3, Yaw: 0.5})
@@ -377,5 +393,12 @@ func (h *simHost) tick() {
 	if !now.Before(h.nextHB) {
 		h.sendReliable(protocol.Heartbeat{})
 		h.nextHB = now.Add(h.cfg.HeartbeatInterval)
+	}
+	// Snapshot de l'hôte à 20 Hz (pose fixe du Welcome).
+	if tick := int64(now.Sub(h.sessionStart) / (50 * time.Millisecond)); tick != h.lastSnapTick {
+		h.lastSnapTick = tick
+		b, _ := protocol.EncodeSnapshot(protocol.Snapshot{Tick: uint32(tick),
+			Entities: []protocol.SnapshotEntity{{NetId: protocol.HostNetId, X: 1, Y: 2, Z: 3, Yaw: 0.5}}})
+		h.send(h.peer, b)
 	}
 }

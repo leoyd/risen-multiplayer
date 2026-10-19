@@ -1,0 +1,3 @@
+# 6 m tout droit à 3 m/s, demi-tour sec, retour ; puis une seconde d'arrêt.
+aller-retour 600 300
+pause 1

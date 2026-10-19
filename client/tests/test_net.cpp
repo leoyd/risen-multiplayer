@@ -284,6 +284,62 @@ TEST("net : canaux ignorés et comptés (1, 9, 0 sans KCP, autre adresse, autre 
     CHECK_EQ(s.datagrams_received, 11u);
 }
 
+TEST("net : snapshots (canal 1) — échangés avec le pair du KCP seulement") {
+    Transport b;
+    if (!start_or_report(b, 0)) return;
+    UdpSocket peer, stranger;
+    std::string error;
+    CHECK(peer.open(0, error));
+    CHECK(stranger.open(0, error));
+    const Endpoint to_b = loopback(b.local_port());
+    const Bytes snap = load_vector("snapshot.bin");
+    auto send = [&](UdpSocket& s, const Bytes& d) { CHECK(s.send_to(to_b, d.data(), d.size())); };
+
+    // Envoi sans KCP : compté, rien ne part.
+    CHECK(b.post(SendSnapshot{snap}));
+    CHECK(wait_until(std::chrono::milliseconds(2000), [&] { return b.pending_commands() == 0; }));
+    CHECK_EQ(b.stats().snapshot_without_peer, 1u);
+
+    CHECK(b.post(OpenReliable{kConv, loopback(peer.local_port())}));
+    CHECK(wait_until(std::chrono::milliseconds(2000), [&] { return b.pending_commands() == 0; }));
+    send(stranger, snap);  // autre adresse : ignoré
+    send(peer, snap);      // pair : rendu tel quel
+    send(peer, marker(3));
+    Event e;
+    bool got = false, marker_seen = false;
+    CHECK(wait_until(std::chrono::milliseconds(2000), [&] {
+        while (b.poll(e)) {
+            if (const auto* sr = std::get_if<SnapshotReceived>(&e)) {
+                CHECK(sr->bytes == snap);
+                got = true;
+            } else if (std::holds_alternative<ControlReceived>(e)) {
+                marker_seen = true;
+            }
+        }
+        return marker_seen;
+    }));
+    CHECK(got);
+
+    // Envoi vers le pair : le datagramme arrive intact sur son socket.
+    CHECK(b.post(SendSnapshot{snap}));
+    Bytes buf(1300);
+    bool received = false;
+    CHECK(wait_until(std::chrono::milliseconds(2000), [&] {
+        std::size_t size = 0;
+        Endpoint from;
+        if (peer.recv_from(buf.data(), buf.size(), size, from) == RecvStatus::Ok) {
+            received = Bytes(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(size)) == snap;
+            return true;
+        }
+        return false;
+    }));
+    CHECK(received);
+    const Stats st = b.stats();
+    CHECK_EQ(st.snapshots_received, 1u);
+    CHECK_EQ(st.snapshots_sent, 1u);
+    CHECK_EQ(st.ignored_snapshot, 1u);
+}
+
 TEST("net : port occupé — false, message, pas de thread") {
     Transport a, b;
     if (!start_or_report(a, 0)) return;

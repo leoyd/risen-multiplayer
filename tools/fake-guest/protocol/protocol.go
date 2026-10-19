@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 3, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 4, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 3
+	ProtocolVersion   = 4
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -31,7 +31,7 @@ type Channel uint8
 
 const (
 	ChannelReliable Channel = 0 // segments KCP
-	ChannelSnapshot Channel = 1 // Epic 2, non défini en v3
+	ChannelSnapshot Channel = 1 // snapshots (v4, AD-7)
 	ChannelControl  Channel = 2 // Hello, Welcome, Reject
 )
 
@@ -89,6 +89,7 @@ var (
 	ErrUnsupportedVersion = errors.New("version du protocole non prise en charge")
 	ErrBadLength          = errors.New("longueur de texte hors bornes")
 	ErrTrailingBytes      = errors.New("octets en trop")
+	ErrBadValue           = errors.New("champ hors domaine") // snapshot de plus de 54 entités
 )
 
 // ErrOutOfBounds : refus de l'encodeur (texte hors bornes, version ≠ ProtocolVersion, > 1200 octets,
@@ -401,6 +402,76 @@ func DecodeReliable(b []byte) (Message, error) {
 		return m, nil
 	}
 	return nil, ErrUnknownType
+}
+
+// --- Snapshot (canal 1, v4) -----------------------------------------------------------
+
+const (
+	SnapshotTickMs      = 50 // 20 Hz
+	SnapshotEntitySize  = 22
+	MaxSnapshotEntities = 54 // (1200 − 6) / 22
+)
+
+// SnapshotEntity : une entité d'un snapshot (AD-7).
+type SnapshotEntity struct {
+	NetId   uint32
+	X, Y, Z float32
+	Yaw     float32
+	HP      uint16
+}
+
+// Snapshot : état complet, daté par le tick de l'émetteur (50 ms depuis son entrée en session).
+type Snapshot struct {
+	Tick     uint32
+	Entities []SnapshotEntity
+}
+
+// EncodeSnapshot rend le datagramme complet [canal=1][u32 tick][u8 nombre][entités].
+func EncodeSnapshot(s Snapshot) ([]byte, error) {
+	if len(s.Entities) > MaxSnapshotEntities {
+		return nil, ErrOutOfBounds
+	}
+	w := writer{b: make([]byte, 0, 6+SnapshotEntitySize*len(s.Entities))}
+	w.u8(uint8(ChannelSnapshot))
+	w.u32(s.Tick)
+	w.u8(uint8(len(s.Entities)))
+	for _, e := range s.Entities {
+		w.u32(e.NetId)
+		w.f32(e.X)
+		w.f32(e.Y)
+		w.f32(e.Z)
+		w.f32(e.Yaw)
+		w.u16(e.HP)
+	}
+	return w.b, nil
+}
+
+// DecodeSnapshot décode un datagramme de canal 1 complet.
+func DecodeSnapshot(b []byte) (Snapshot, error) {
+	r := reader{b: b}
+	ch := r.u8()
+	if r.err != nil {
+		return Snapshot{}, r.err
+	}
+	if Channel(ch) != ChannelSnapshot {
+		return Snapshot{}, ErrUnknownChannel
+	}
+	s := Snapshot{Tick: r.u32()}
+	n := int(r.u8())
+	if r.err != nil {
+		return Snapshot{}, r.err
+	}
+	if n > MaxSnapshotEntities {
+		return Snapshot{}, ErrBadValue
+	}
+	s.Entities = make([]SnapshotEntity, 0, n)
+	for i := 0; i < n; i++ {
+		s.Entities = append(s.Entities, SnapshotEntity{NetId: r.u32(), X: r.f32(), Y: r.f32(), Z: r.f32(), Yaw: r.f32(), HP: r.u16()})
+	}
+	if err := r.finish(); err != nil {
+		return Snapshot{}, err
+	}
+	return s, nil
 }
 
 // PeekHelloVersion lit la version d'un Hello de n'importe quelle version : seuls

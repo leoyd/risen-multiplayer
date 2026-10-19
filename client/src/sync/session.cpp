@@ -103,10 +103,8 @@ cs::World read_world(cs::State state) {
                    " dead=" + (now.dead ? "1" : "0") + " (état " + cs::state_name(state) + ")");
     }
 
-    // La pose ne sert qu'au Welcome de l'hôte et au Spawn de l'invité (repli si le Welcome
-    // porte une pose nulle) : lue seulement avant l'entrée en session.
-    if (w.loaded() && (state == cs::State::Inactive || state == cs::State::Hosting ||
-                       state == cs::State::Connecting)) {
+    // Pose du héros : Welcome, Spawn et snapshots (story 2.3), lue dans tout monde chargé.
+    if (w.loaded()) {
         game::Matrix m{};
         if (game::get_pose(player, m)) {
             w.pose_ok = true;
@@ -152,6 +150,10 @@ void execute(cs::Output out) {
                 avatar::despawn(da->net_id);
                 continue;
             }
+            if (const auto* ma = std::get_if<cs::MoveAvatar>(&cmd)) {
+                avatar::move(ma->net_id, ma->pose);
+                continue;
+            }
             if (g_transport == nullptr) continue;
             bool posted = true;
             if (auto* s = std::get_if<cs::Send>(&cmd)) {
@@ -160,6 +162,8 @@ void execute(cs::Output out) {
                 posted = g_transport->post(net::OpenReliable{o->conv, o->peer});
             } else if (auto* r = std::get_if<cs::SendReliable>(&cmd)) {
                 posted = g_transport->post(net::SendReliable{std::move(r->bytes)});
+            } else if (auto* sn = std::get_if<cs::SendSnapshot>(&cmd)) {
+                posted = g_transport->post(net::SendSnapshot{std::move(sn->bytes)});
             } else if (std::holds_alternative<cs::CloseReliable>(cmd)) {
                 posted = g_transport->post(net::CloseReliable{});
             } else if (std::holds_alternative<cs::Stop>(cmd)) {
@@ -180,8 +184,10 @@ void frame() {
         while (g_transport->poll(ev)) {
             if (auto* c = std::get_if<net::ControlReceived>(&ev)) {
                 g_inputs.push_back(cs::ControlIn{c->source, std::move(c->bytes)});
+            } else if (auto* r = std::get_if<net::ReliableReceived>(&ev)) {
+                g_inputs.push_back(cs::ReliableIn{std::move(r->bytes)});
             } else {
-                g_inputs.push_back(cs::ReliableIn{std::move(std::get<net::ReliableReceived>(ev).bytes)});
+                g_inputs.push_back(cs::SnapshotIn{std::move(std::get<net::SnapshotReceived>(ev).bytes)});
             }
         }
     }

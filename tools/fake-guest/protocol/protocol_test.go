@@ -35,7 +35,7 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		reliable bool
 		want     Message
 	}{
-		{"hello.bin", false, Hello{ProtocolVersion: 3, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
+		{"hello.bin", false, Hello{ProtocolVersion: ProtocolVersion, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
 			Nickname: "Leo", Equipment: "It_Sword_01"}},
 		{"welcome.bin", false, Welcome{Conv: 0x12345678, X: 100.0, Y: -50.5, Z: 2000.0, Yaw: 1.5}},
 		{"reject.bin", false, Reject{Reason: 2}},
@@ -96,7 +96,7 @@ func TestInvalidVectors(t *testing.T) {
 	if v, ok := PeekHelloVersion(vector(t, "hello_future.bin")); !ok || v != 0xffff {
 		t.Fatalf("peek hello_future = %d, %v", v, ok)
 	}
-	if v, ok := PeekHelloVersion(vector(t, "hello_truncated.bin")); !ok || v != 3 {
+	if v, ok := PeekHelloVersion(vector(t, "hello_truncated.bin")); !ok || v != ProtocolVersion {
 		t.Fatalf("peek hello_truncated = %d, %v", v, ok)
 	}
 }
@@ -109,6 +109,7 @@ func TestAllVectorsCovered(t *testing.T) {
 	known := map[string]bool{"hello.bin": true, "welcome.bin": true, "reject.bin": true, "heartbeat.bin": true,
 		"session_end.bin": true, "hello_future.bin": true, "hello_truncated.bin": true,
 		"hello_long_nickname.bin": true, "unknown_type.bin": true, "spawn.bin": true, "despawn.bin": true,
+		"snapshot.bin": true, "snapshot_truncated.bin": true,
 		// Motion (v2) : codec Go et vérification de ces vecteurs en story 2.4.
 		"motion.bin": true, "motion_bad_type.bin": true}
 	for _, e := range entries {
@@ -219,5 +220,46 @@ func TestPeekHelloVersion(t *testing.T) {
 		if _, ok := PeekHelloVersion(b); ok {
 			t.Errorf("peek % x accepté", b)
 		}
+	}
+}
+
+func TestSnapshotVectors(t *testing.T) {
+	raw := vector(t, "snapshot.bin")
+	want := Snapshot{Tick: 1234, Entities: []SnapshotEntity{{NetId: 2, X: 100, Y: -50.5, Z: 2000, Yaw: 1.5, HP: 75}}}
+	got, err := DecodeSnapshot(raw)
+	if err != nil || got.Tick != want.Tick || len(got.Entities) != 1 || got.Entities[0] != want.Entities[0] {
+		t.Fatalf("snapshot.bin : %+v, %v", got, err)
+	}
+	enc, err := EncodeSnapshot(want)
+	if err != nil || !bytes.Equal(enc, raw) {
+		t.Fatalf("réencodage différent :\n% x\n% x (%v)", enc, raw, err)
+	}
+	if _, err := DecodeSnapshot(vector(t, "snapshot_truncated.bin")); !errors.Is(err, ErrTruncated) {
+		t.Fatalf("snapshot_truncated.bin : %v", err)
+	}
+	for n := 0; n < len(raw); n++ {
+		if _, err := DecodeSnapshot(raw[:n]); !errors.Is(err, ErrTruncated) {
+			t.Fatalf("coupé à %d : %v", n, err)
+		}
+	}
+	if _, err := DecodeSnapshot(append(append([]byte{}, raw...), 0)); !errors.Is(err, ErrTrailingBytes) {
+		t.Fatalf("+1 octet : %v", err)
+	}
+	other := append([]byte{}, raw...)
+	other[0] = 2
+	if _, err := DecodeSnapshot(other); !errors.Is(err, ErrUnknownChannel) {
+		t.Fatalf("autre canal : %v", err)
+	}
+	if _, err := EncodeSnapshot(Snapshot{Entities: make([]SnapshotEntity, MaxSnapshotEntities+1)}); err == nil {
+		t.Fatal("55 entités encodées")
+	}
+	b, err := EncodeSnapshot(Snapshot{Entities: make([]SnapshotEntity, MaxSnapshotEntities)})
+	if err != nil || len(b) != 1194 {
+		t.Fatalf("54 entités : %d octets, %v", len(b), err)
+	}
+	b[5] = MaxSnapshotEntities + 1
+	b = append(b, make([]byte, SnapshotEntitySize)...)
+	if _, err := DecodeSnapshot(b); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("55 entités : %v", err)
 	}
 }

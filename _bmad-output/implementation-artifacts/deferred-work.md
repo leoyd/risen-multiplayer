@@ -99,3 +99,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-2-apparition-retrait-avatars.md`
   summary: Tester en jeu le chargement rapide en session (avatar « oublié : monde détruit », sans `Kill`).
   evidence: Étape 4 de la procédure du README, non faite le 2026-10-19.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-deplacements-fluides-avatar.md`
+  summary: Fondu de rattrapage (environ 100 ms) quand les snapshots reprennent après une extrapolation, pour éviter un retour en arrière jusqu'à 250 ms × vitesse.
+  evidence: maybe-false, medium si vrai. Il faut plus de 150 ms sans snapshot (trois pertes de suite). Simulation : 4 frames extrapolées sur 3 167 avec 10 % de pertes isolées ; à surveiller en jeu et sur Internet.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-deplacements-fluides-avatar.md`
+  summary: Tester automatiquement la glu `sync/session.cpp` des snapshots (pose lue en session, `SendSnapshot` et `SnapshotReceived` transmis), par exemple en extrayant le routage en code portable.
+  evidence: `session_host` en est une copie : supprimer la branche `SendSnapshot` de `sync/session.cpp` ne fait échouer aucun test.

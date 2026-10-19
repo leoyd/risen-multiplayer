@@ -1,0 +1,2 @@
+# Un tour de 3 m de rayon en 6 s (environ 3 m/s, une course), en boucle.
+cercle 300 6

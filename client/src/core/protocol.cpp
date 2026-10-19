@@ -327,6 +327,50 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
     }
 }
 
+bool encode_snapshot(const Snapshot& snapshot, std::vector<std::uint8_t>& out) {
+    if (snapshot.entities.size() > kMaxSnapshotEntities) return false;
+    std::vector<std::uint8_t> buf;
+    buf.reserve(6 + snapshot.entities.size() * kSnapshotEntitySize);
+    Writer w(buf);
+    w.u8(static_cast<std::uint8_t>(Channel::Snapshot));
+    w.u32(snapshot.tick);
+    w.u8(static_cast<std::uint8_t>(snapshot.entities.size()));
+    for (const SnapshotEntity& e : snapshot.entities) {
+        w.u32(e.net_id);
+        w.f32(e.x);
+        w.f32(e.y);
+        w.f32(e.z);
+        w.f32(e.yaw);
+        w.u16(e.hp);
+    }
+    out = std::move(buf);
+    return true;
+}
+
+Decoded<Snapshot> decode_snapshot(const std::uint8_t* data, std::size_t size) {
+    Reader r(data, size);
+    const std::uint8_t channel = r.u8();
+    if (r.truncated()) return {DecodeError::Truncated, {}};
+    if (channel != static_cast<std::uint8_t>(Channel::Snapshot)) return {DecodeError::UnknownChannel, {}};
+    Decoded<Snapshot> d;
+    d.message.tick = r.u32();
+    const std::size_t count = r.u8();
+    if (r.truncated()) return {DecodeError::Truncated, {}};
+    if (count > kMaxSnapshotEntities) return {DecodeError::BadValue, {}};
+    d.message.entities.resize(count);
+    for (SnapshotEntity& e : d.message.entities) {
+        e.net_id = r.u32();
+        e.x = r.f32();
+        e.y = r.f32();
+        e.z = r.f32();
+        e.yaw = r.f32();
+        e.hp = r.u16();
+    }
+    d.error = r.finish();
+    if (!d.ok()) d.message = Snapshot{};
+    return d;
+}
+
 bool peek_hello_version(const std::uint8_t* data, std::size_t size, std::uint16_t& version) {
     Reader r(data, size);
     const std::uint8_t channel = r.u8();

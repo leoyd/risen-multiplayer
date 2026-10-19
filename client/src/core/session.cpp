@@ -189,11 +189,18 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         if (state_ == State::Ended) break;
         if (const auto* c = std::get_if<ControlIn>(&in)) {
             on_control(now, *c, out);
+        } else if (const auto* r = std::get_if<ReliableIn>(&in)) {
+            on_reliable(now, *r, out);
         } else {
-            on_reliable(now, std::get<ReliableIn>(in), out);
+            on_snapshot(now, std::get<SnapshotIn>(in), out);
         }
     }
     if (state_ != State::Ended) timers(now, out);
+    if (state_ == State::InSession) {
+        send_snapshot(now, world, out);
+        place_avatar(now, out);
+        snapshot_stats(now, out);
+    }
     return out;
 }
 
@@ -462,6 +469,7 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
             return;
         }
         avatar_present_ = true;
+        interp_.reset();  // nouvel avatar : rien ne survit du précédent (AD-7)
         out.commands.push_back(SpawnAvatar{sp->net_id, Pose{sp->x, sp->y, sp->z, sp->yaw}});
         out.logs.push_back({Level::Info, "[sync] " + what + " : avatar créé"});
         return;
@@ -490,6 +498,14 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     last_peer_ = now;
     next_heartbeat_ = now;  // premier heartbeat dès l'entrée en session
     heartbeats_rx_ = 0;
+    t0_ = now;
+    // Pas de snapshot au tick 0 : chez l'invité, la Teleport de ce tick n'est pas encore
+    // exécutée, et la pose lue serait celle d'avant (l'avatar sauterait chez l'hôte).
+    last_tick_sent_ = 0;
+    clock_.reset();
+    interp_.reset();
+    next_stats_ = now + kSnapshotStatsMs;
+    snap_ = SnapshotCounters{};
     proto::Spawn spawn;
     spawn.net_id = own_net_id();
     spawn.x = own.x;
@@ -502,6 +518,72 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
         out.logs.push_back({Level::Info, "[sync] Spawn envoyé : NetId " + net_id_text(spawn.net_id) + ", " +
                                              pose_text(own.x, own.y, own.z, own.yaw)});
     }
+}
+
+void Session::on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& /*out*/) {
+    if (state_ != State::InSession) return;
+    last_peer_ = now;
+    const auto decoded = proto::decode_snapshot(in.bytes.data(), in.bytes.size());  // ≤ 54 entités
+    if (!decoded.ok()) {
+        ++snap_.unreadable;
+        return;
+    }
+    ++snap_.received;
+    clock_.observe(now, decoded.message.tick);
+    for (const proto::SnapshotEntity& e : decoded.message.entities) {
+        if (e.net_id != peer_net_id() || !std::isfinite(e.x) || !std::isfinite(e.y) || !std::isfinite(e.z) ||
+            !std::isfinite(e.yaw)) {
+            ++snap_.ignored;
+            continue;
+        }
+        interp_.push(decoded.message.tick, Pose{e.x, e.y, e.z, e.yaw});
+    }
+}
+
+void Session::send_snapshot(std::uint64_t now, const World& world, Output& out) {
+    const auto tick = static_cast<std::int64_t>((now - t0_) / proto::kSnapshotTickMs);
+    if (tick == last_tick_sent_) return;
+    last_tick_sent_ = tick;
+    if (!world.pose_ok) return;
+    proto::Snapshot snapshot;
+    snapshot.tick = static_cast<std::uint32_t>(tick);
+    proto::SnapshotEntity e;
+    e.net_id = own_net_id();
+    e.x = world.x;
+    e.y = world.y;
+    e.z = world.z;
+    e.yaw = world.yaw;
+    e.hp = 0;  // PV non lus avant J2
+    snapshot.entities.push_back(e);
+    Bytes bytes;
+    if (!proto::encode_snapshot(snapshot, bytes)) return;
+    out.commands.push_back(SendSnapshot{std::move(bytes)});
+    ++snap_.sent;
+}
+
+void Session::place_avatar(std::uint64_t now, Output& out) {
+    if (!avatar_present_ || !clock_.ready() || interp_.empty()) return;
+    const core::Sample s = interp_.sample(clock_.remote_ms(now) - core::kInterpolationDelayMs);
+    switch (s.mode) {
+        case core::SampleMode::Interpolated: ++snap_.interpolated; break;
+        case core::SampleMode::Extrapolated: ++snap_.extrapolated; break;
+        default: ++snap_.held; break;
+    }
+    out.commands.push_back(MoveAvatar{peer_net_id(), s.pose});
+}
+
+void Session::snapshot_stats(std::uint64_t now, Output& out) {
+    if (now < next_stats_) return;
+    next_stats_ = now + kSnapshotStatsMs;
+    char buf[256];
+    std::snprintf(buf, sizeof buf,
+                  "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
+                  "frames de l'avatar : interpolées %u, extrapolées %u, figées %u ; décalage horloge %.1f ms",
+                  snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
+                  snap_.extrapolated, snap_.held, clock_.offset_ms());
+    out.logs.push_back({Level::Debug, buf});
+    const SnapshotCounters zero{};
+    snap_ = zero;
 }
 
 void Session::send_hello(Output& out) {

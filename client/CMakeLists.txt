@@ -15,6 +15,7 @@ add_library(mp_core STATIC
     src/core/config.cpp
     src/core/protocol.cpp
     src/core/session.cpp
+    src/core/interpolation.cpp
     src/core/version.cpp)
 target_include_directories(mp_core PUBLIC src)
 
@@ -109,6 +110,7 @@ else()
         tests/test_main.cpp
         tests/test_anim_filter.cpp
         tests/test_config.cpp
+        tests/test_interpolation.cpp
         tests/test_motion_desc.cpp
         tests/test_net.cpp
         tests/test_protocol.cpp

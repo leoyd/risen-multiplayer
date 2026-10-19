@@ -22,6 +22,9 @@ namespace mp::sync::avatar {
 void spawn(std::uint32_t net_id, const core::session::Pose& pose);
 // Retire puis détruit l'avatar `net_id` (sans effet s'il n'existe pas).
 void despawn(std::uint32_t net_id);
+// Place l'avatar `net_id` (Entity::MoveTo), à chaque frame, en silence. Après une première
+// erreur (SEH, journalisée), l'avatar n'est plus déplacé.
+void move(std::uint32_t net_id, const core::session::Pose& pose);
 // Un avatar existe-t-il ? (sentinelle de diagnostic)
 bool present();
 // Déplace le héros local (invité, à l'entrée en session) par Entity::MoveTo.

@@ -1,6 +1,6 @@
 // Transport UDP + KCP (story 1.2). Un socket UDP, octet 0 = canal (protocol/PROTOCOL.md §2) :
 // - canal 0 : segments KCP (`conv` = identifiant de session), KCP 2.1.1 vendorisé ;
-// - canal 1 : snapshots (Epic 2) — ignorés et comptés pour l'instant ;
+// - canal 1 : snapshots (story 2.3) — datagrammes transmis tels quels, échangés avec le pair du KCP ;
 // - canal 2 : contrôle (Hello/Welcome/Reject), datagrammes transmis tels quels.
 //
 // Threads : le thread réseau possède seul le socket et le KCP (qui n'est pas thread-safe).
@@ -52,7 +52,12 @@ struct SendReliable {
 // Détruit le KCP (les segments non acquittés sont perdus).
 struct CloseReliable {};
 
-using Command = std::variant<SendControl, OpenReliable, SendReliable, CloseReliable>;
+// Snapshot : datagramme complet (octet de canal 1 compris), envoyé au pair du KCP.
+struct SendSnapshot {
+    Bytes bytes;
+};
+
+using Command = std::variant<SendControl, OpenReliable, SendReliable, CloseReliable, SendSnapshot>;
 
 // --- Événements (thread réseau → frame) --------------------------------------------
 
@@ -66,7 +71,12 @@ struct ReliableReceived {
     Bytes bytes;
 };
 
-using Event = std::variant<ControlReceived, ReliableReceived>;
+// Datagramme de canal 1 venu du pair du KCP, octets complets (octet de canal compris).
+struct SnapshotReceived {
+    Bytes bytes;
+};
+
+using Event = std::variant<ControlReceived, ReliableReceived, SnapshotReceived>;
 
 // --- Options et compteurs ----------------------------------------------------------
 
@@ -86,7 +96,10 @@ struct Stats {
     std::uint64_t recv_errors = 0;         // échecs de recvfrom (datagramme perdu)
     std::uint64_t rx_too_big = 0;          // datagrammes reçus de plus de 1200 octets (jetés)
     std::uint64_t ignored_empty = 0;       // datagramme vide
-    std::uint64_t ignored_snapshot = 0;    // canal 1 (Epic 2)
+    std::uint64_t ignored_snapshot = 0;    // canal 1 sans KCP ouvert ou venant d'une autre adresse
+    std::uint64_t snapshots_sent = 0;      // SendSnapshot remis au socket
+    std::uint64_t snapshots_received = 0;  // canal 1 venant du pair, rendus à la frame
+    std::uint64_t snapshot_without_peer = 0;  // SendSnapshot sans KCP ouvert
     std::uint64_t ignored_unknown_channel = 0;
     std::uint64_t ignored_no_reliable = 0;  // canal 0 sans KCP ouvert
     std::uint64_t ignored_wrong_peer = 0;   // canal 0 venant d'une autre adresse que le pair

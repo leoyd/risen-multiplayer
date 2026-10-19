@@ -122,7 +122,7 @@ func TestNominal(t *testing.T) {
 	cfg.Duration = 1300 * time.Millisecond
 	r := runGuest(t, context.Background(), cfg)
 	expectCode(t, r, exitOK)
-	expectLog(t, r, "Connecting host=", "-> Hello version_protocole=3", "<- Welcome conv=", "InSession conv=0x",
+	expectLog(t, r, "Connecting host=", fmt.Sprintf("-> Hello version_protocole=%d", protocol.ProtocolVersion), "<- Welcome conv=", "InSession conv=0x",
 		"-> Spawn netid=2 type=0", "<- Spawn netid=1 type=0 pos=(1, 2, 3) lacet=0.5", "Heartbeat envoyés=",
 		"-> Despawn netid=2", "-> SessionEnd raison=1", "Ended raison=départ du joueur")
 	if r.res.SpawnsRx != 1 {

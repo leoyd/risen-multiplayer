@@ -30,7 +30,8 @@ Options :
 `
 
 const exitCodesText = `
-Fautes : --drop, --quit, --kill, --dup-hello, --bad-version (cumulables, sauf --quit/--kill).
+Fautes : --drop, --delay, --jitter, --quit, --kill, --dup-hello, --bad-version (cumulables, sauf --quit/--kill).
+Trajectoire : --scenario <fichier> (snapshots à 20 Hz ; sans lui, pose fixe).
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :
@@ -78,6 +79,9 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	quit := fs.Bool("quit", false, "à la fin de --duration, envoie SessionEnd{1} puis sort (défaut)")
 	kill := fs.Bool("kill", false, "à la fin de --duration, sort sans rien envoyer")
 	dupHello := fs.Bool("dup-hello", false, "chaque Hello part deux fois, et un Hello de plus part en session, après le premier heartbeat acquitté")
+	scenarioPath := fs.String("scenario", "", "fichier de trajectoire des snapshots (cercle, aller-retour, pause ; voir scenarios/)")
+	delay := fs.Duration("delay", 0, "latence ajoutée à chaque datagramme sortant, ex. 100ms")
+	jitter := fs.Duration("jitter", 0, "gigue ± ajoutée à --delay, ex. 20ms")
 	badVersion := fs.Bool("bad-version", false, "envoie le Hello de hello_future.bin (version 0xFFFF) au lieu du Hello v3")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
@@ -118,6 +122,16 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	if (*quit || *kill) && *duration == 0 {
 		return usageError("--quit et --kill demandent --duration > 0")
 	}
+	if *delay < 0 || *jitter < 0 {
+		return usageError("--delay et --jitter doivent être positifs")
+	}
+	var sc *scenario
+	if *scenarioPath != "" {
+		var err error
+		if sc, err = loadScenario(*scenarioPath); err != nil {
+			return usageError("--scenario %s : %v", *scenarioPath, err)
+		}
+	}
 	hello := protocol.Hello{
 		ProtocolVersion: protocol.ProtocolVersion,
 		ModVersion:      *modVersion,
@@ -137,6 +151,9 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 		Kill:       *kill,
 		Drop:       *drop,
 		Seed:       *seed,
+		Scenario:   sc,
+		Delay:      *delay,
+		Jitter:     *jitter,
 	}
 	defaultTimings(&cfg)
 	return cfg, parseOK

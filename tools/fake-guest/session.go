@@ -56,6 +56,9 @@ type sessionConfig struct {
 	Kill       bool          // à la fin : sortie sans rien envoyer (sinon SessionEnd{1})
 	Drop       int           // pourcentage de datagrammes sortants jetés
 	Seed       int64
+	Scenario   *scenario     // trajectoire des snapshots (nil : pose fixe du Spawn)
+	Delay      time.Duration // retard ajouté à chaque datagramme sortant
+	Jitter     time.Duration // ± gigue ajoutée au retard (tirage uniforme)
 
 	HelloInterval     time.Duration
 	ConnectTimeout    time.Duration
@@ -81,6 +84,9 @@ type sessionResult struct {
 	HeartbeatsRx int
 	Dropped      int
 	SpawnsRx     int // Spawn reçus de l'hôte (v3)
+	SnapshotsTx  int // snapshots envoyés (v4)
+	SnapshotsRx  int // snapshots de l'hôte reçus et lisibles
+	SnapshotsBad int // snapshots illisibles
 	DespawnsRx   int // Despawn reçus de l'hôte (v3)
 	EndReason    string
 }
@@ -124,9 +130,16 @@ type guest struct {
 	nextHBLog  time.Time
 	hbTxPeriod int
 	hbRxPeriod int
-	endAt      time.Time // fin de --duration (zéro = aucune)
-	extraHello bool      // --dup-hello : Hello supplémentaire encore à envoyer
-	incoming   chan datagram
+
+	// Snapshots (v4) : pose d'ancrage (Spawn), base du tick, compteurs de la ligne de bilan.
+	spawn        protocol.Spawn
+	sessionStart time.Time
+	lastSnapTick int64
+	snapTxPeriod int
+	snapRxPeriod int
+	endAt        time.Time // fin de --duration (zéro = aucune)
+	extraHello   bool      // --dup-hello : Hello supplémentaire encore à envoyer
+	incoming     chan datagram
 }
 
 // runSession joue l'invité sur `conn` jusqu'à la fin de session et rend le bilan.
@@ -184,10 +197,12 @@ func (g *guest) run(ctx context.Context) sessionResult {
 				g.sendReliable(protocol.Heartbeat{})
 				g.nextHB = now.Add(g.cfg.HeartbeatInterval)
 			}
+			g.sendSnapshot(now)
 			if !now.Before(g.nextHBLog) {
-				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d)", g.hbTxPeriod, g.hbRxPeriod,
-					g.res.HeartbeatsTx, g.res.HeartbeatsRx)
+				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d", g.hbTxPeriod,
+					g.hbRxPeriod, g.res.HeartbeatsTx, g.res.HeartbeatsRx, g.snapTxPeriod, g.snapRxPeriod)
 				g.hbTxPeriod, g.hbRxPeriod = 0, 0
+				g.snapTxPeriod, g.snapRxPeriod = 0, 0
 				g.nextHBLog = now.Add(time.Second)
 			}
 			g.kcp.Update(g.nowMs())
@@ -236,7 +251,52 @@ func (g *guest) send(b []byte) {
 		g.res.Dropped++
 		return
 	}
-	_, _ = g.conn.WriteToUDPAddrPort(b, g.cfg.Host)
+	if g.cfg.Delay <= 0 && g.cfg.Jitter <= 0 {
+		_, _ = g.conn.WriteToUDPAddrPort(b, g.cfg.Host)
+		return
+	}
+	// Latence simulée : le datagramme part plus tard, copié (KCP réutilise son tampon).
+	d := g.cfg.Delay
+	if g.cfg.Jitter > 0 {
+		d += time.Duration(g.rng.Int63n(int64(2*g.cfg.Jitter)+1)) - g.cfg.Jitter
+	}
+	if d < 0 {
+		d = 0
+	}
+	c := append([]byte(nil), b...)
+	time.AfterFunc(d, func() { _, _ = g.conn.WriteToUDPAddrPort(c, g.cfg.Host) })
+}
+
+func finite(v ...float32) bool {
+	for _, x := range v {
+		if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// sendSnapshot : à la première itération de chaque tick (50 ms depuis l'entrée en session),
+// la pose du scénario (ou celle du Spawn), sous le NetId de l'invité (PROTOCOL.md §8).
+func (g *guest) sendSnapshot(now time.Time) {
+	elapsed := now.Sub(g.sessionStart)
+	tick := int64(elapsed / (protocol.SnapshotTickMs * time.Millisecond))
+	if tick == g.lastSnapTick {
+		return
+	}
+	g.lastSnapTick = tick
+	p := g.spawn
+	if g.cfg.Scenario != nil {
+		p = g.cfg.Scenario.poseAt(g.spawn, float64(elapsed)/float64(time.Millisecond))
+	}
+	b, err := protocol.EncodeSnapshot(protocol.Snapshot{Tick: uint32(tick),
+		Entities: []protocol.SnapshotEntity{{NetId: protocol.GuestNetId, X: p.X, Y: p.Y, Z: p.Z, Yaw: p.Yaw}}})
+	if err != nil {
+		return
+	}
+	g.send(b)
+	g.res.SnapshotsTx++
+	g.snapTxPeriod++
 }
 
 func (g *guest) helloCopies() int {
@@ -314,6 +374,25 @@ func (g *guest) handle(d datagram) (sessionResult, bool) {
 	switch protocol.Channel(d.b[0]) {
 	case protocol.ChannelControl:
 		return g.handleControl(d.b)
+	case protocol.ChannelSnapshot:
+		if g.st != inSession {
+			return sessionResult{}, false
+		}
+		// Mêmes règles que la DLL (§8) : l'adresse de l'hôte est déjà vérifiée ; seule compte
+		// une entité de NetId 1 à champs finis.
+		s, err := protocol.DecodeSnapshot(d.b)
+		if err != nil {
+			g.res.SnapshotsBad++
+			return sessionResult{}, false
+		}
+		for _, e := range s.Entities {
+			if e.NetId == protocol.HostNetId && finite(e.X, e.Y, e.Z, e.Yaw) {
+				g.res.SnapshotsRx++
+				g.snapRxPeriod++
+				break
+			}
+		}
+		return sessionResult{}, false
 	case protocol.ChannelReliable:
 		if g.st != inSession || !g.acceptSegment(d) {
 			return sessionResult{}, false // pas de KCP avant le Welcome ; autre conv
@@ -403,7 +482,10 @@ func (g *guest) enterSession(w protocol.Welcome) {
 	}
 	g.log.printf("InSession conv=0x%08x", conv)
 	g.extraHello = g.cfg.DupHello
-	g.sendReliable(guestPoseNear(w)) // avatar de l'invité chez l'hôte (v3)
+	g.spawn = guestPoseNear(w)
+	g.sessionStart = now
+	g.lastSnapTick = -1
+	g.sendReliable(g.spawn) // avatar de l'invité chez l'hôte (v3) ; le scénario part de cette pose
 }
 
 // drain lit les messages complets rendus par KCP.

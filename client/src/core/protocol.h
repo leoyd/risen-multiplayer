@@ -1,7 +1,8 @@
-// Codec du contrat binaire hôte ⇄ invité, version 3 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 4 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
+// - snapshot (datagramme UDP complet, v4)        = [u8 canal=1][u32 tick][u8 nombre][entités] ;
 // - message de contrôle (datagramme UDP complet) = [u8 canal=2][u8 MsgType][charge] ;
 // - message fiable (unité confiée à KCP)        = [u8 MsgType][charge], sans octet de canal.
 // Tout est little-endian, sérialisé champ par champ. Un texte `str8` = u8 longueur + octets UTF-8.
@@ -21,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 3;
+inline constexpr std::uint16_t kProtocolVersion = 4;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -32,7 +33,7 @@ inline constexpr std::size_t kFingerprintModules = 4;  // Game, Engine, Script, 
 // Octet 0 de chaque datagramme UDP.
 enum class Channel : std::uint8_t {
     Reliable = 0,  // segments KCP
-    Snapshot = 1,  // non fiable, 20 Hz (Epic 2)
+    Snapshot = 1,  // non fiable, 20 Hz (v4, AD-7)
     Control = 2,   // hors KCP : Hello, Welcome, Reject
 };
 
@@ -134,6 +135,23 @@ struct Despawn {
     std::uint32_t net_id = 0;
 };
 
+// Snapshot (AD-7, v4) : état complet des entités dont l'émetteur a l'autorité.
+inline constexpr std::uint32_t kSnapshotTickMs = 50;      // 20 Hz
+inline constexpr std::size_t kSnapshotEntitySize = 22;    // octets par entité
+inline constexpr std::size_t kMaxSnapshotEntities = 54;   // (1200 − 6) / 22
+
+struct SnapshotEntity {
+    std::uint32_t net_id = 0;
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    float yaw = 0.0f;  // radians, atan2(m[8], m[10])
+    std::uint16_t hp = 0;
+};
+
+struct Snapshot {
+    std::uint32_t tick = 0;  // floor((QPC − t0) / 50 ms), t0 = entrée en InSession de l'émetteur
+    std::vector<SnapshotEntity> entities;
+};
+
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
 using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn>;
 
@@ -162,6 +180,12 @@ struct Decoded {
 // > 1200 octets).
 bool encode_control(const ControlMessage& message, std::vector<std::uint8_t>& out);
 bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& out);
+
+// Snapshot : datagramme complet (octet de canal 1 compris). L'encodeur refuse plus de
+// kMaxSnapshotEntities entités ; le décodeur rend Truncated, UnknownChannel, TrailingBytes,
+// ou BadValue pour un `nombre` > 54.
+bool encode_snapshot(const Snapshot& snapshot, std::vector<std::uint8_t>& out);
+Decoded<Snapshot> decode_snapshot(const std::uint8_t* data, std::size_t size);
 
 // Décodage d'un datagramme de contrôle complet (octet de canal compris).
 Decoded<ControlMessage> decode_control(const std::uint8_t* data, std::size_t size);

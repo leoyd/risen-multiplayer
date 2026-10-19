@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4, 1.5 et 2.2 : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5, 2.2 et 2.3 : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -215,6 +215,26 @@ if start_host avatars $p 30000 2; then
         ok "avatars : Despawn avant SessionEnd"
     else
         ko "avatars : Despawn avant SessionEnd (lignes ${l_despawn:-?} et ${l_end:-?})"; sed 's/^/    /' "$work/avatars.b.log"
+    fi
+fi
+
+# --- Story 2.3 : cercle avec 100 ms ± 20 ms de latence et 10 % de pertes : pas de saut ----
+p=$((base_port + 11))
+if start_host fluid $p 30000; then
+    h=$work/fluid.host.log
+    "$guest" --host 127.0.0.1 --port $p --duration 6s --quit --scenario "$guest_src/scenarios/cercle.txt" \
+        --delay 100ms --jitter 20ms --drop 10 > "$work/fluid.guest.log" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "fluidité : invité" 0 $rc "$work/fluid.guest.log"
+    expect_log "fluidité : snapshots de l'hôte reçus par l'invité" "$work/fluid.guest.log" "snapshots envoyés=[0-9]* reçus=[1-9]"
+    line=$(grep -- "\[test\] avatar (retrait)" "$h" | tail -1)
+    jump=$(sed -E 's/.*saut max ([0-9.]+) cm.*/\1/' <<< "$line")
+    travelled=$(sed -E 's/.*parcouru ([0-9.]+) cm.*/\1/' <<< "$line")
+    if [[ -n $line ]] && awk -v j="$jump" -v t="$travelled" 'BEGIN { exit !(j < 10 && t > 800) }'; then
+        ok "fluidité : avatar déplacé sans saut ($line)"
+    else
+        ko "fluidité : saut max ${jump:-?} cm (< 10 attendu), parcouru ${travelled:-?} cm (> 800 attendu)"
+        sed 's/^/    /' "$h" | grep -E "avatar|snapshots|Spawn" | head -20
     fi
 fi
 

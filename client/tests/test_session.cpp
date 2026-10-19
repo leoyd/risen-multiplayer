@@ -3,6 +3,7 @@
 #include "core/protocol.h"
 #include "test.h"
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -560,7 +561,8 @@ TEST("session invité : en session, Welcome ou Reject → ignorés ; heartbeat ;
     CHECK_EQ(heartbeats_sent(out), 1u);
     out = s.tick(200, loaded_world(), control_from(kHost, encode(proto::Reject{4})));
     CHECK(s.state() == State::InSession);
-    CHECK(out.commands.empty());
+    CHECK_EQ(out.commands.size(), 1u);  // le snapshot du tick, rien d'autre
+    CHECK_EQ(commands_of<SendSnapshot>(out).size(), 1u);
     out = s.tick(1100, loaded_world(), {});
     CHECK_EQ(heartbeats_sent(out), 1u);
     s.tick(5199, loaded_world(), {});
@@ -1391,4 +1393,144 @@ TEST("avatars : côté invité, Despawn{1} reçu, fin locale et SessionEnd reçu
     out = g.tick(300, loaded_world(), reliable(encode_r(proto::SessionEnd{2})));
     CHECK(reliables_sent(out).empty());
     CHECK_EQ(commands_of<DespawnAvatar>(out).size(), 1u);
+}
+
+// --- Snapshots (story 2.3) -------------------------------------------------------------
+
+namespace {
+
+std::vector<proto::Snapshot> snapshots_sent(const Output& out) {
+    std::vector<proto::Snapshot> v;
+    for (const auto* s : commands_of<SendSnapshot>(out)) {
+        const auto d = proto::decode_snapshot(s->bytes.data(), s->bytes.size());
+        CHECK(d.ok());
+        if (d.ok()) v.push_back(d.message);
+    }
+    return v;
+}
+
+Bytes snapshot_bytes(std::uint32_t tick, std::uint32_t net_id, float x, float yaw = 0.0f) {
+    proto::Snapshot s;
+    s.tick = tick;
+    proto::SnapshotEntity e;
+    e.net_id = net_id;
+    e.x = x;
+    e.yaw = yaw;
+    s.entities.push_back(e);
+    Bytes b;
+    CHECK(proto::encode_snapshot(s, b));
+    return b;
+}
+
+std::vector<Input> snapshot_in(Bytes b) { return {SnapshotIn{std::move(b)}}; }
+
+}  // namespace
+
+TEST("snapshots : 20 Hz à l'horloge, tick depuis l'entrée en session, pose et NetId propres") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {});
+    s.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())));  // t0 = 1000
+    std::vector<proto::Snapshot> all;
+    for (std::uint64_t t = 1001; t < 2000; t += 7) {  // frames de 7 ms pendant 1 s
+        for (const auto& sn : snapshots_sent(s.tick(t, loaded_world(), {}))) all.push_back(sn);
+    }
+    CHECK(all.size() >= 19 && all.size() <= 20);
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        CHECK_EQ(all[i].tick, static_cast<std::uint32_t>(i + 1));  // pas de tick 0 (voir enter_session)
+        CHECK_EQ(all[i].entities.size(), 1u);
+        if (all[i].entities.size() == 1) {
+            CHECK_EQ(all[i].entities[0].net_id, proto::kHostNetId);
+            CHECK(all[i].entities[0].x == 100.0f && all[i].entities[0].yaw == 1.5f);
+            CHECK_EQ(all[i].entities[0].hp, 0);
+        }
+    }
+}
+
+TEST("snapshots : pose illisible → rien n'est envoyé ; hors session → rien") {
+    Session s(host_settings());
+    World w = loaded_world();
+    s.tick(0, w, {});
+    CHECK(commands_of<SendSnapshot>(s.tick(500, w, {})).empty());  // Hosting
+    s.tick(1000, w, control_from(kGuestA, encode(make_hello())));
+    w.pose_ok = false;
+    CHECK(commands_of<SendSnapshot>(s.tick(1100, w, {})).empty());
+}
+
+TEST("snapshots : reçus du pair → MoveAvatar interpolé avec 150 ms de retard") {
+    Session s = host_with_avatar();  // avatar créé à 1100
+    // Snapshots du pair : x = 3 × (tick × 50), soit 0,3 cm/ms ; reçus 20 ms après leur tick.
+    Output out;
+    for (std::uint32_t tick = 0; tick <= 10; ++tick) {
+        out = s.tick(1200 + tick * 50, loaded_world(), snapshot_in(snapshot_bytes(tick, proto::kGuestNetId, tick * 15.0f)));
+    }
+    // Horloge : décalage = 1200 ; temps distant à 1700 = 500 ; affiché = 350 → x = 105.
+    const auto moves = commands_of<MoveAvatar>(out);
+    CHECK_EQ(moves.size(), 1u);
+    if (!moves.empty()) {
+        CHECK_EQ(moves[0]->net_id, proto::kGuestNetId);
+        CHECK(std::fabs(moves[0]->pose.x - 105.0f) < 0.05f);
+    }
+}
+
+TEST("snapshots : pas d'avatar → pas de MoveAvatar ; nouveau Spawn → interpolation remise à zéro") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    Output out = s.tick(1100, loaded_world(), snapshot_in(snapshot_bytes(0, proto::kGuestNetId, 50.0f)));
+    CHECK(commands_of<MoveAvatar>(out).empty());
+    out = s.tick(1150, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK(commands_of<MoveAvatar>(out).empty());  // l'échantillon d'avant le Spawn est oublié
+    out = s.tick(1200, loaded_world(), snapshot_in(snapshot_bytes(2, proto::kGuestNetId, 70.0f)));
+    const auto moves = commands_of<MoveAvatar>(out);
+    CHECK_EQ(moves.size(), 1u);
+    if (!moves.empty()) CHECK(moves[0]->pose.x == 70.0f);  // un seul échantillon : figé dessus
+}
+
+TEST("snapshots : illisible, autre NetId, NaN → ignorés, comptés au bilan debug") {
+    Session s = host_with_avatar();
+    s.tick(1200, loaded_world(), snapshot_in(Bytes{1, 0, 0}));
+    s.tick(1250, loaded_world(), snapshot_in(snapshot_bytes(3, proto::kHostNetId, 10.0f)));
+    s.tick(1300, loaded_world(), snapshot_in(snapshot_bytes(4, proto::kGuestNetId, std::nanf(""))));
+    s.tick(1320, loaded_world(),
+           snapshot_in(snapshot_bytes(5, proto::kGuestNetId, 1.0f, std::numeric_limits<float>::infinity())));
+    Output out = s.tick(1350, loaded_world(), {});
+    CHECK(commands_of<MoveAvatar>(out).empty());  // aucun échantillon valable
+    CHECK(s.state() == State::InSession);
+    // Bilan à t0 + 5 s (t0 = 1000).
+    for (std::uint64_t t = 1400; t < 6000; t += 500) s.tick(t, loaded_world(), {});
+    out = s.tick(6000, loaded_world(), {});
+    CHECK(has_log(out, "reçus 3 (illisibles 1, entités ignorées 3)"));
+}
+
+TEST("snapshots : un snapshot du pair compte comme activité (pas de timeout)") {
+    Session s = host_with_avatar();
+    for (std::uint32_t i = 1; i <= 12; ++i) {
+        s.tick(1100 + i * 1000, loaded_world(), snapshot_in(snapshot_bytes(i, proto::kGuestNetId, 1.0f)));
+    }
+    CHECK(s.state() == State::InSession);
+}
+
+TEST("snapshots côté invité : NetId 2, pas de tick 0, rien avant la Teleport ; avatar de l'hôte déplacé") {
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), {});
+    Output out = g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));  // t0 = 100
+    CHECK_EQ(commands_of<Teleport>(out).size(), 1u);
+    CHECK(commands_of<SendSnapshot>(out).empty());  // la pose lue est celle d'avant la Teleport
+    World moved = loaded_world();
+    moved.x = 1.0f;  // pose après la Teleport
+    out = g.tick(160, moved, {});
+    const auto sent = snapshots_sent(out);
+    CHECK_EQ(sent.size(), 1u);
+    if (!sent.empty()) {
+        CHECK_EQ(sent[0].tick, 1u);
+        CHECK(!sent[0].entities.empty() && sent[0].entities[0].net_id == proto::kGuestNetId &&
+              sent[0].entities[0].x == 1.0f);
+    }
+    // Spawn de l'hôte, puis ses snapshots : MoveAvatar{1} ; ceux de NetId 2 sont ignorés.
+    g.tick(170, moved, reliable(encode_r(spawn_of(proto::kHostNetId))));
+    out = g.tick(180, moved, snapshot_in(snapshot_bytes(1, proto::kGuestNetId, 99.0f)));
+    CHECK(commands_of<MoveAvatar>(out).empty());
+    out = g.tick(190, moved, snapshot_in(snapshot_bytes(2, proto::kHostNetId, 42.0f)));
+    const auto moves = commands_of<MoveAvatar>(out);
+    CHECK_EQ(moves.size(), 1u);
+    if (!moves.empty()) CHECK(moves[0]->net_id == proto::kHostNetId && moves[0]->pose.x == 42.0f);
 }

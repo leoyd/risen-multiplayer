@@ -26,6 +26,7 @@ struct Entry {
     game::Entity entity;
     void* animation_ps = nullptr;  // réplique dans l'AnimFilter (nul : pas de PS trouvé)
     void* player = nullptr;        // héros local à la création : le monde de l'avatar
+    bool move_error_logged = false;
 };
 std::vector<Entry> g_table;
 
@@ -127,6 +128,19 @@ void despawn(std::uint32_t net_id) {
         return;
     }
     log::debug("[sync] avatar " + std::to_string(net_id) + " absent : rien à retirer");
+}
+
+void move(std::uint32_t net_id, const Pose& pose) {
+    for (Entry& e : g_table) {
+        if (e.net_id != net_id) continue;
+        if (e.move_error_logged) return;  // après une SEH, plus d'appel au jeu pour cet avatar
+        if (!game::move_to(e.entity, matrix_of(pose))) {
+            e.move_error_logged = true;
+            log::error("[sync] avatar " + std::to_string(net_id) +
+                       " : Entity::MoveTo a levé une exception (SEH) : avatar plus déplacé");
+        }
+        return;
+    }
 }
 
 bool present() { return !g_table.empty(); }
