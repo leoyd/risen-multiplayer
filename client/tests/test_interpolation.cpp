@@ -255,3 +255,23 @@ TEST("fluidité : allers-retours avec demi-tours secs → ni saut ni dépassemen
     CHECK(r.max_step < 3 * 300.0 * 0.006 + 2.0);
     CHECK(r.min_x > -8.0 && r.max_x < 608.0);  // Catmull-Rom : léger dépassement au plus
 }
+
+// --- Matrice d'une pose (AD-7) ------------------------------------------------------------
+
+TEST("pose_matrix : lacet relu par atan2(m[8], m[10]), axes orthonormés, translation") {
+    for (float yaw : {0.0f, 0.5f, 1.5707963f, -2.6f, 3.1f}) {
+        float m[16];
+        pose_matrix(Pose{10.0f, 20.0f, 30.0f, yaw}, m);
+        CHECK(near(std::atan2(m[8], m[10]), yaw, 1e-5));
+        // droite × haut = avant (repère direct du jeu) ; lignes unitaires et orthogonales.
+        const double cx = m[1] * m[6] - m[2] * m[5], cy = m[2] * m[4] - m[0] * m[6], cz = m[0] * m[5] - m[1] * m[4];
+        CHECK(near(cx, m[8], 1e-6) && near(cy, m[9], 1e-6) && near(cz, m[10], 1e-6));
+        CHECK(near(m[0] * m[8] + m[2] * m[10], 0.0, 1e-6));
+        CHECK(near(m[0] * m[0] + m[2] * m[2], 1.0, 1e-6));
+        CHECK(m[5] == 1.0f && m[1] == 0.0f && m[9] == 0.0f);
+        CHECK(m[12] == 10.0f && m[13] == 20.0f && m[14] == 30.0f && m[15] == 1.0f);
+    }
+    float m[16];
+    pose_matrix(Pose{0, 0, 0, 0}, m);
+    CHECK(m[0] == 1.0f && m[10] == 1.0f && m[2] == 0.0f && m[8] == 0.0f);  // identité au lacet 0
+}

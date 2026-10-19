@@ -93,7 +93,8 @@ rejoint le même monde) et la mort de l'hôte (`SessionEnd{3}`), puis (story 2.2
 `--kill`, rejoindre, quitter » : un `SpawnAvatar` et un `DespawnAvatar` par session, jamais
 deux avatars (`avatars présents=2` absent du log), `Despawn` avant `SessionEnd`, enfin (story 2.3)
 un cercle avec 100 ms ± 20 ms de latence et 10 % de pertes : l'avatar parcourt plus de 8 m, avec
-un saut max (du `Spawn` au dernier `MoveAvatar`) de moins de 10 cm. Le test CTest
+un saut max (du `Spawn` au dernier `MoveAvatar`) de moins de 10 cm ; (story 2.4) des gestes
+horodatés et une mort rejoués dans l'ordre (`PlayAvatarMotion`, `AvatarDeath`), et `--echo`. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
 55 s. Lancement à la main :
 
@@ -244,6 +245,31 @@ Prérequis : `role = host`, `probe = 0`, `log_level = debug`, overlay Steam dés
 5. Fournir `Script_Multiplayer.log` : toutes les 5 s, une ligne `[sync] snapshots (5 s) :
    envoyés …, reçus …` (≈ 100 de chaque) donne les frames interpolées, extrapolées et figées, et
    le décalage d'horloge.
+
+### Animations de l'avatar en jeu (story 2.4, une machine)
+
+Chaque `PlayMotion` du héros local part en `Motion` (le nom en `AniName` la première fois) ;
+chez le pair, il est rejoué sur l'avatar au même retard que les déplacements (150 ms). La mort
+(`Entity::IsDead` du héros) part en `Death`, une fois par mort : l'avatar s'effondre en ragdoll et
+ne bouge plus jusqu'à son retrait. Un ragdoll sans mort (chute, renversement) n'envoie rien.
+
+Prérequis : `role = host`, `probe = 0`, `log_level = debug`, overlay Steam désactivé.
+
+1. **Écho** : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s --echo`. Le faux
+   invité renvoie tes déplacements et tes gestes comme les siens : l'avatar, 2 m devant toi au
+   départ, **t'imite avec un léger retard** (150 ms d'affichage, plus l'aller-retour vers le faux
+   invité ; il ne renvoie pas la mort, puisque celle de l'hôte termine la session). Marcher, courir, sauter, dégainer (l'arme reste au
+   fourreau : J2), frapper à vide, parer. Attendu : mêmes gestes, calés sur le déplacement, plus
+   de T-pose.
+2. **Scénario** : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 60s --scenario
+   tools/fake-guest/scenarios/gestes.txt`. L'avatar court sur un cercle de 3 m, saute à 2 s,
+   s'arrête, puis frappe deux fois ; puis tout recommence.
+3. **Mort** : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 20s --scenario
+   tools/fake-guest/scenarios/mort.txt` : à 2 s (plus 150 ms), l'avatar s'effondre en ragdoll et
+   ne bouge plus (`[sync] avatar 2 en ragdoll (mort)` au log).
+4. Fournir `Script_Multiplayer.log` : le bilan `[sync] snapshots (5 s)` se termine par
+   `Motion : envoyés …, rejoués …, écrasés …, ignorés …, jetés …` ; une ligne `« … » non rejoué`
+   signale un nom que `GetMotion` ne trouve pas.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

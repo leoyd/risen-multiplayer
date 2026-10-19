@@ -43,13 +43,15 @@ void detour_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vec
     }
 }
 
-// Session (story 2.2) : seuls les avatars sont filtrés ; tout le reste passe.
+// Session : capture du héros local (story 2.4), blocage du moteur sur les avatars (2.2).
 void detour_play_motion_session(void* animation_ps, int type, void* desc, bool flag) {
-    if (sync::avatar::on_play_motion(animation_ps)) g_original_play_motion(animation_ps, type, desc, flag);
+    if (sync::avatar::on_play_motion(animation_ps, type, desc, flag)) {
+        g_original_play_motion(animation_ps, type, desc, flag);
+    }
 }
 
 void detour_set_ragdoll_session(void* animation_ps, bool on, bool flag, const float* vector) {
-    if (sync::avatar::on_set_ragdoll(animation_ps, on)) g_original_set_ragdoll(animation_ps, on, flag, vector);
+    if (sync::avatar::on_set_ragdoll(animation_ps, on, flag, vector)) g_original_set_ragdoll(animation_ps, on, flag, vector);
 }
 
 bool create(void* target, void* detour, void** original, const char* name) {

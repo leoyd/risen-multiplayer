@@ -7,6 +7,10 @@ package main
 //	cercle <rayon cm> <durée d'un tour s>    tour complet, en tournant vers la droite
 //	aller-retour <longueur cm> <vitesse cm/s> tout droit, demi-tour sec, retour
 //	pause <durée s>                          immobile
+//	anim <instant s> <type> <nom> [d00 d04 d08 d0C d10 d14 d18]
+//	                                         Motion à cet instant de la boucle (story 2.4) ;
+//	                                         scalaires par défaut : 0.2 0 0 1 1 1 1 (d10 = -1 : 0xFFFFFFFF)
+//	mort <instant s>                         Death à cet instant (une seule fois)
 //	# commentaire (ligne entière)
 //
 // Axes : avant = (sin lacet, 0, cos lacet), droite = (cos lacet, 0, −sin lacet), comme la
@@ -18,6 +22,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -41,6 +46,15 @@ type step struct {
 type scenario struct {
 	steps  []step
 	period float64 // ms, somme des durées
+	events []event // anim et mort, triés par instant (ordre du fichier à instant égal)
+}
+
+// event : un geste horodaté (ms depuis le début de la boucle).
+type event struct {
+	at     float64
+	death  bool
+	name   string
+	motion protocol.Motion // Kind, Flags et scalaires ; NetId, AniId et Ms posés à l'envoi
 }
 
 func loadScenario(path string) (*scenario, error) {
@@ -61,6 +75,14 @@ func parseScenario(r io.Reader) (*scenario, error) {
 			continue
 		}
 		f := strings.Fields(line)
+		if f[0] == "anim" || f[0] == "mort" {
+			ev, err := parseEvent(f)
+			if err != nil {
+				return nil, fmt.Errorf("ligne %d : %v", n, err)
+			}
+			sc.events = append(sc.events, ev)
+			continue
+		}
 		args := make([]float64, 0, len(f)-1)
 		for _, a := range f[1:] {
 			v, err := strconv.ParseFloat(a, 64)
@@ -87,9 +109,82 @@ func parseScenario(r io.Reader) (*scenario, error) {
 		return nil, err
 	}
 	if len(sc.steps) == 0 {
-		return nil, fmt.Errorf("scénario vide")
+		return nil, fmt.Errorf("scénario sans trajectoire (au moins un cercle, aller-retour ou pause)")
+	}
+	sort.SliceStable(sc.events, func(i, j int) bool { return sc.events[i].at < sc.events[j].at })
+	for _, ev := range sc.events {
+		if ev.at >= sc.period {
+			return nil, fmt.Errorf("geste à %g s au-delà de la boucle (%g s)", ev.at/1000, sc.period/1000)
+		}
 	}
 	return sc, nil
+}
+
+func parseEvent(f []string) (event, error) {
+	num := func(s string) (float64, error) {
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, fmt.Errorf("%q n'est pas un nombre", s)
+		}
+		return v, nil
+	}
+	if len(f) < 2 {
+		return event{}, fmt.Errorf("instant manquant")
+	}
+	at, err := num(f[1])
+	if err != nil || at < 0 {
+		return event{}, fmt.Errorf("instant %q invalide", f[1])
+	}
+	if f[0] == "mort" {
+		if len(f) != 2 {
+			return event{}, fmt.Errorf("« mort <instant s> » attendu")
+		}
+		return event{at: at * 1000, death: true}, nil
+	}
+	if len(f) != 4 && len(f) != 11 {
+		return event{}, fmt.Errorf("« anim <instant s> <type> <nom> [d00 d04 d08 d0C d10 d14 d18] » attendu")
+	}
+	typ, err := strconv.Atoi(f[2])
+	if err != nil || typ < 0 || typ >= protocol.MotionTypeCount {
+		return event{}, fmt.Errorf("type %q hors de 0..7", f[2])
+	}
+	if len(f[3]) > protocol.MaxAniName {
+		return event{}, fmt.Errorf("nom de plus de 255 octets")
+	}
+	vals := []float64{0.2, 0, 0, 1, 1, 1, 1}
+	if len(f) == 11 {
+		for i := range vals {
+			if vals[i], err = num(f[4+i]); err != nil {
+				return event{}, err
+			}
+			// d08, d10 et d18 sont des u32 : entiers de -1 (0xFFFFFFFF) à 4294967295.
+			if (i == 2 || i == 4 || i == 6) && (vals[i] != math.Trunc(vals[i]) || vals[i] < -1 || vals[i] > math.MaxUint32) {
+				return event{}, fmt.Errorf("%q : entier attendu (-1 à 4294967295)", f[4+i])
+			}
+		}
+	}
+	u32 := func(v float64) uint32 { return uint32(int64(v)) } // -1 → 0xFFFFFFFF
+	m := protocol.Motion{Kind: uint8(typ), Flags: protocol.MotionFlagPlay | protocol.MotionFlagDesc,
+		D00: float32(vals[0]), D04: float32(vals[1]), D08: u32(vals[2]), D0C: float32(vals[3]), D10: u32(vals[4]),
+		D14: float32(vals[5]), D18: u32(vals[6])}
+	return event{at: at * 1000, name: f[3], motion: m}, nil
+}
+
+// due rend les gestes dont l'instant (répété à chaque boucle) tombe dans ]prev, now] (ms depuis
+// l'entrée en session) ; une mort ne part qu'à la première boucle.
+func (sc *scenario) due(prev, now float64) []event {
+	var out []event
+	for _, ev := range sc.events {
+		k := math.Floor((now - ev.at) / sc.period)
+		if k < 0 {
+			continue
+		}
+		at := ev.at + k*sc.period
+		if at > prev && at <= now && !(ev.death && k > 0) {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 func wrapAngle(a float64) float64 {

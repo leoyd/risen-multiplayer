@@ -126,7 +126,7 @@ Bytes enc(const ReliableMessage& m) {
 
 const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
 const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin", "spawn.bin",
-                                      "despawn.bin"};
+                                      "despawn.bin",   "aniname.bin",     "death.bin"};
 
 }  // namespace
 
@@ -341,14 +341,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v4 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v5 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 4);
+    CHECK_EQ(version, 5);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 4);
+    CHECK_EQ(version, 5);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -359,12 +359,12 @@ TEST("protocole : peek_hello_version sur v4 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 4") {
+TEST("protocole : l'encodeur refuse une version autre que 5") {
     Hello h = sample_hello();
-    h.protocol_version = 3;
+    h.protocol_version = 4;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 5;
+    h.protocol_version = 6;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -425,9 +425,9 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(Bytes{0, 16}).error == DecodeError::UnknownChannel);  // segment KCP, pas du contrôle
     CHECK(dc(load_vector("unknown_type.bin")).error == DecodeError::UnknownType);
     CHECK(dr(Bytes{99}).error == DecodeError::UnknownType);
-    // Types réservés (18, 22 à 25) et types hors de leur canal.
-    for (std::uint8_t t = 18; t <= 25; ++t) {
-        if (t < 19 || t > 21) CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
+    // Types réservés (22, 23, 25) et types hors de leur canal.
+    for (std::uint8_t t : {std::uint8_t{22}, std::uint8_t{23}, std::uint8_t{25}}) {
+        CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
     }
     CHECK(dc(Bytes{2, 19}).error == DecodeError::UnknownType);  // Motion en contrôle
     CHECK(dc(Bytes{2, 20}).error == DecodeError::UnknownType);  // Spawn en contrôle
@@ -490,7 +490,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 4);
+    CHECK_EQ(kProtocolVersion, 5);
     CHECK_EQ(static_cast<int>(Channel::Reliable), 0);
     CHECK_EQ(static_cast<int>(Channel::Snapshot), 1);
     CHECK_EQ(static_cast<int>(Channel::Control), 2);
@@ -502,6 +502,8 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::Motion), 19);
     CHECK_EQ(static_cast<int>(MsgType::Spawn), 20);
     CHECK_EQ(static_cast<int>(MsgType::Despawn), 21);
+    CHECK_EQ(static_cast<int>(MsgType::AniName), 18);
+    CHECK_EQ(static_cast<int>(MsgType::Death), 24);
     CHECK_EQ(kHostNetId, 1u);
     CHECK_EQ(kGuestNetId, 2u);
     CHECK_EQ(static_cast<int>(RejectReason::Protocol), 1);
@@ -594,4 +596,36 @@ TEST("protocole : snapshot annonçant 55 entités → BadValue au décodage") {
     b[5] = static_cast<std::uint8_t>(kMaxSnapshotEntities + 1);
     b.insert(b.end(), kSnapshotEntitySize, 0);
     CHECK(ds(b).error == DecodeError::BadValue);
+}
+
+// --- AniName et Death (story 2.4) ------------------------------------------------------
+
+TEST("protocole : vecteurs aniname.bin, death.bin, aniname_empty.bin") {
+    const Bytes a = load_vector("aniname.bin");
+    const auto da = dr(a);
+    const AniName* got = std::get_if<AniName>(&da.message);
+    CHECK(da.ok() && got != nullptr && got->ani_id == 7 &&
+          got->name == "Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400");
+    if (got != nullptr) CHECK(enc(*got) == a);
+    const Bytes d = load_vector("death.bin");
+    const auto dd = dr(d);
+    const Death* gd = std::get_if<Death>(&dd.message);
+    CHECK(dd.ok() && gd != nullptr && gd->net_id == 2);
+    CHECK(enc(Death{2}) == d);
+    CHECK(dr(load_vector("aniname_empty.bin")).error == DecodeError::BadLength);
+}
+
+TEST("protocole : AniName — 255 octets acceptés, vide ou 256 refusés à l'encodage") {
+    AniName m;
+    m.ani_id = 0xFFFF;
+    m.name.assign(kMaxAniName, 'a');
+    const auto d = dr(enc(m));
+    const AniName* got = std::get_if<AniName>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->ani_id == 0xFFFF && got->name == m.name);
+    Bytes out = {0xAA};
+    m.name.clear();
+    CHECK(!encode_reliable(m, out));
+    m.name.assign(kMaxAniName + 1, 'a');
+    CHECK(!encode_reliable(m, out));
+    CHECK(out == Bytes{0xAA});
 }

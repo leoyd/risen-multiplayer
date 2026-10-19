@@ -105,3 +105,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-3-deplacements-fluides-avatar.md`
   summary: Tester automatiquement la glu `sync/session.cpp` des snapshots (pose lue en session, `SendSnapshot` et `SnapshotReceived` transmis), par exemple en extrayant le routage en code portable.
   evidence: `session_host` en est une copie : supprimer la branche `SendSnapshot` de `sync/session.cpp` ne fait échouer aucun test.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4-animations-avatar.md`
+  summary: Tester les compteurs `Motion` (et snapshots) du bilan `debug` de 5 s.
+  evidence: Inverser deux compteurs dans le `snprintf` ne fait échouer aucun test ; le README demande pourtant de lire cette ligne.

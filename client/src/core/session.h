@@ -21,17 +21,27 @@
 // Snapshots (story 2.3, AD-7) : en session, la pose du héros part à 20 Hz (à l'horloge) ; ceux
 // du pair alimentent l'horloge distante et l'interpolateur, qui donnent à chaque tick la pose
 // de l'avatar (MoveAvatar), affichée avec 150 ms de retard.
+//
+// Animations (story 2.4, AD-8) : chaque PlayMotion du héros local (LocalMotion) est interné
+// (AniName la première fois) et part en Motion daté ; ceux du pair attendent le même instant
+// d'affichage que les snapshots, puis deviennent PlayAvatarMotion. Le ragdoll du héros
+// (IsDead passe à 1) envoie Death, une fois par mort ; celle du pair met l'avatar en ragdoll
+// (AvatarDeath), au même instant d'affichage que la pose.
 #pragma once
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
 #include "core/config.h"
 #include "core/interpolation.h"
 #include "core/pose.h"
+#include "core/protocol.h"
 #include "core/version.h"
 #include "net/udp_socket.h"  // Endpoint, parse_ipv4 (en-tête seul, aucun socket utilisé ici)
 
@@ -84,7 +94,13 @@ struct ReliableIn {
 struct SnapshotIn {
     Bytes bytes;  // datagramme de canal 1 complet, venu du pair
 };
-using Input = std::variant<ControlIn, ReliableIn, SnapshotIn>;
+// Un PlayMotion du héros local (capturé par le hook) : nom lisible et Motion sans net_id,
+// ani_id ni ms (renseignés par la session).
+struct LocalMotion {
+    std::string name;
+    protocol::Motion motion;
+};
+using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion>;
 
 using core::Pose;
 
@@ -126,8 +142,20 @@ struct MoveAvatar {  // placer l'avatar (Entity::MoveTo), à chaque tick
     std::uint32_t net_id = 0;
     Pose pose;
 };
+struct PlayAvatarMotion {  // rejouer un Motion du pair sur l'avatar (nom → GetMotion → PlayMotion)
+    std::uint32_t net_id = 0;
+    std::string name;
+    protocol::Motion motion;
+};
+struct AvatarDeath {  // mettre l'avatar en ragdoll
+    std::uint32_t net_id = 0;
+};
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
-                             DespawnAvatar, SendSnapshot, MoveAvatar>;
+                             DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath>;
+
+inline constexpr std::size_t kMaxPendingMotions = 256;  // Motion du pair en attente d'affichage
+inline constexpr double kMaxMotionLeadMs = 1000.0;      // au-delà, un Motion « du futur » part aussitôt
+inline constexpr std::uint32_t kAniIdCount = 0x10000;   // AniId u16
 
 inline constexpr std::uint64_t kSnapshotStatsMs = 5000;  // bilan debug des snapshots
 
@@ -156,6 +184,7 @@ public:
 
     State state() const { return state_; }
     bool avatar_present() const { return avatar_present_; }
+    bool avatar_dead() const { return avatar_dead_; }
     std::uint32_t conv() const { return conv_; }
     const Endpoint& peer() const { return peer_; }
 
@@ -164,6 +193,11 @@ private:
     void on_control(std::uint64_t now, const ControlIn& in, Output& out);
     void on_reliable(std::uint64_t now, const ReliableIn& in, Output& out);
     void on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& out);
+    void on_local_motion(std::uint64_t now, const LocalMotion& in, Output& out);
+    void send_death(const World& world, Output& out);
+    void on_peer_motion(const protocol::Motion& m, Output& out);
+    void play_due_motions(std::uint64_t now, Output& out);
+    void clear_peer_avatar_state();
     void send_snapshot(std::uint64_t now, const World& world, Output& out);
     void place_avatar(std::uint64_t now, Output& out);
     void snapshot_stats(std::uint64_t now, Output& out);
@@ -221,6 +255,25 @@ private:
         unsigned sent = 0, received = 0, unreadable = 0, ignored = 0;
         unsigned interpolated = 0, extrapolated = 0, held = 0;
     } snap_;
+
+    // Animations (story 2.4), remises à zéro à chaque entrée en session.
+    std::unordered_map<std::string, std::uint16_t> ani_ids_;   // émetteur : nom → AniId
+    std::uint32_t next_ani_id_ = 0;
+    bool ani_full_logged_ = false;
+    bool death_sent_ = false;  // Death envoyé pour la mort en cours (remis à faux au retour à la vie)
+    std::unordered_map<std::uint16_t, std::string> peer_names_;  // récepteur : AniId → nom
+    std::unordered_set<std::uint16_t> warned_ani_ids_;            // une ligne de log par AniId
+    struct PendingMotion {
+        protocol::Motion motion;
+        std::string name;
+    };
+    std::deque<PendingMotion> pending_;
+    bool avatar_dead_ = false;   // Death appliqué (AvatarDeath émis)
+    bool death_pending_ = false; // Death reçu, appliqué quand le temps affiché atteint death_at_
+    double death_at_ = 0.0;      // dernier temps distant connu à la réception (dernier snapshot)
+    struct MotionCounters {
+        unsigned sent = 0, played = 0, ignored = 0, superseded = 0, dropped = 0;
+    } anim_;
 
     std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)
     std::uint64_t linger_until_ = 0;   // Ended : fin du maintien du KCP

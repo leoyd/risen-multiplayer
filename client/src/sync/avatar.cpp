@@ -2,6 +2,7 @@
 
 #include "common/log.h"
 #include "game/entity.h"
+#include "game/motion_desc.h"
 #include "sync/anim_filter.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -12,6 +13,8 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mp::sync::avatar {
@@ -27,8 +30,14 @@ struct Entry {
     void* animation_ps = nullptr;  // réplique dans l'AnimFilter (nul : pas de PS trouvé)
     void* player = nullptr;        // héros local à la création : le monde de l'avatar
     bool move_error_logged = false;
+    bool dead = false;  // en ragdoll (Death) : plus de pose ni d'animation imposées
 };
 std::vector<Entry> g_table;
+
+// Rejeu par nom : ressource de chaque nom (nul : introuvable), vidée au retrait d'un avatar ;
+// noms déjà signalés en échec (une ligne chacun).
+std::unordered_map<std::string, void*> g_resources;
+std::unordered_set<std::string> g_failed_names;
 
 std::string hex_ptr(const void* p) {
     char buf[24];
@@ -43,19 +52,9 @@ std::string pose_text(const Pose& p) {
     return buf;
 }
 
-// bCMatrix en lignes : 0 = droite, 1 = haut (Y), 2 = avant, translation m[12..14] (AD-7).
 game::Matrix matrix_of(const Pose& p) {
-    const float c = std::cos(p.yaw), s = std::sin(p.yaw);
     game::Matrix m{};
-    m.m[0] = c;
-    m.m[2] = -s;
-    m.m[5] = 1.0f;
-    m.m[8] = s;
-    m.m[10] = c;
-    m.m[12] = p.x;
-    m.m[13] = p.y;
-    m.m[14] = p.z;
-    m.m[15] = 1.0f;
+    core::pose_matrix(p, m.m);  // AD-7, testé sous Linux
     return m;
 }
 
@@ -113,6 +112,8 @@ void despawn(std::uint32_t net_id) {
         // AD-11 : d'abord l'AnimFilter et la table, ensuite seulement la destruction.
         if (e.animation_ps != nullptr) anim_filter().remove_replica(e.animation_ps);
         g_table.erase(it);
+        g_resources.clear();
+        g_failed_names.clear();
         const std::string blocked = std::to_string(anim_filter().take_blocked());
         if (!same_world(e)) {
             log::info("[sync] avatar " + std::to_string(net_id) + " oublié : monde détruit, avatar avec lui (" +
@@ -133,11 +134,70 @@ void despawn(std::uint32_t net_id) {
 void move(std::uint32_t net_id, const Pose& pose) {
     for (Entry& e : g_table) {
         if (e.net_id != net_id) continue;
-        if (e.move_error_logged) return;  // après une SEH, plus d'appel au jeu pour cet avatar
+        if (e.move_error_logged || e.dead) return;  // après une SEH, ou mort : plus de pose imposée
         if (!game::move_to(e.entity, matrix_of(pose))) {
             e.move_error_logged = true;
             log::error("[sync] avatar " + std::to_string(net_id) +
                        " : Entity::MoveTo a levé une exception (SEH) : avatar plus déplacé");
+        }
+        return;
+    }
+}
+
+void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion) {
+    for (Entry& e : g_table) {
+        if (e.net_id != net_id) continue;
+        if (e.dead || e.animation_ps == nullptr) return;
+        auto failed = [&](const char* why) {
+            if (g_failed_names.insert(name).second) {
+                log::warn("[sync] avatar " + std::to_string(net_id) + " : « " + name + " » non rejoué (" + why + ")");
+            }
+        };
+        auto it = g_resources.find(name);
+        if (it == g_resources.end()) {
+            void* resource = nullptr;
+            if (!game::get_motion(name, resource)) {
+                failed("GetMotion a levé une exception (SEH)");
+                return;  // pas mis en cache : on réessaiera
+            }
+            it = g_resources.emplace(name, resource).first;
+        }
+        if (it->second == nullptr) {
+            failed("ressource introuvable");
+            return;
+        }
+        static std::uint8_t desc[game::kPlayDescSize];
+        const void* desc_arg = game::replay_desc(motion, desc);
+        if (!game::set_motion(e.animation_ps, motion.type, it->second)) {
+            failed("SetMotion a levé une exception (SEH)");
+            return;
+        }
+        AnimFilter::ReplayGuard guard;  // le hook laisse passer ce PlayMotion
+        if (!game::play_motion(e.animation_ps, motion.type, const_cast<void*>(desc_arg), game::replay_flag(motion))) {
+            failed("PlayMotion a levé une exception (SEH)");
+        }
+        return;
+    }
+}
+
+void die(std::uint32_t net_id) {
+    for (Entry& e : g_table) {
+        if (e.net_id != net_id || e.dead) continue;
+        if (e.animation_ps == nullptr) {
+            log::warn("[sync] avatar " + std::to_string(net_id) + " mort, mais sans eCAnimation_PS : pas de ragdoll");
+            return;
+        }
+        bool ok = false;
+        {
+            AnimFilter::ReplayGuard guard;
+            ok = game::set_ragdoll(e.animation_ps, true, false, nullptr);
+        }
+        // En cas d'échec, l'avatar garde pose et animations plutôt que de rester figé debout.
+        e.dead = ok;
+        if (ok) {
+            log::info("[sync] avatar " + std::to_string(net_id) + " en ragdoll (mort)");
+        } else {
+            log::error("[sync] avatar " + std::to_string(net_id) + " : SetRagDollEnabled a levé une exception (SEH)");
         }
         return;
     }
@@ -158,15 +218,28 @@ void teleport_player(const Pose& pose) {
     log::info("[sync] héros local placé devant l'hôte : " + pose_text(pose));
 }
 
-bool on_play_motion(void* animation_ps) noexcept {
-    return anim_filter().classify(animation_ps, GetCurrentThreadId()) != AnimFilter::Verdict::Block;
+bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept {
+    AnimFilter& filter = anim_filter();
+    switch (filter.classify(animation_ps, GetCurrentThreadId())) {
+        case AnimFilter::Verdict::Pass: return true;
+        case AnimFilter::Verdict::Block: return false;  // le moteur n'anime jamais un avatar (AD-8)
+        case AnimFilter::Verdict::Capture: break;
+    }
+    Capture c;
+    c.type = type;
+    c.flag = flag;
+    c.desc_present = desc != nullptr && game::copy_bytes(desc, c.desc, sizeof c.desc);
+    game::read_motion_resource(animation_ps, type, c.resource);
+    filter.push(c);
+    return true;
 }
 
-bool on_set_ragdoll(void* animation_ps, bool on) noexcept {
-    // Une désactivation (nettoyage par le moteur) passe toujours (décision du 2026-10-17),
-    // sans être comptée parmi les appels bloqués.
-    if (!on) return true;
-    return anim_filter().classify(animation_ps, GetCurrentThreadId()) != AnimFilter::Verdict::Block;
+bool on_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) noexcept {
+    AnimFilter& filter = anim_filter();
+    // Le ragdoll du héros local n'est pas capturé : la mort part sur Entity::IsDead.
+    (void)flag;
+    (void)vector;
+    return filter.classify_ragdoll(animation_ps, on, GetCurrentThreadId()) != AnimFilter::Verdict::Block;
 }
 
 }  // namespace mp::sync::avatar

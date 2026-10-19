@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 #include "core/session.h"
 
@@ -25,14 +26,20 @@ void despawn(std::uint32_t net_id);
 // Place l'avatar `net_id` (Entity::MoveTo), à chaque frame, en silence. Après une première
 // erreur (SEH, journalisée), l'avatar n'est plus déplacé.
 void move(std::uint32_t net_id, const core::session::Pose& pose);
+// Rejoue un Motion du pair (AD-8) : GetMotion(nom) → SetMotion → PlayMotion avec le
+// descripteur reconstruit, sous ReplayGuard. Un échec est journalisé une fois par nom.
+void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion);
+// Met l'avatar en ragdoll (Death du pair) : il n'est plus déplacé ni animé jusqu'au retrait.
+void die(std::uint32_t net_id);
 // Un avatar existe-t-il ? (sentinelle de diagnostic)
 bool present();
 // Déplace le héros local (invité, à l'entrée en session) par Entity::MoveTo.
 void teleport_player(const core::session::Pose& pose);
 
-// Hooks eCAnimation_PS::PlayMotion et SetRagDollEnabled en session : retournent false pour
-// bloquer l'appel du moteur sur un avatar. N'appellent jamais le jeu.
-bool on_play_motion(void* animation_ps) noexcept;
-bool on_set_ragdoll(void* animation_ps, bool on) noexcept;
+// Hooks eCAnimation_PS::PlayMotion et SetRagDollEnabled en session : capturent les appels sur
+// le PS du héros local (AnimFilter), retournent false pour bloquer ceux du moteur sur un avatar.
+// N'appellent jamais le jeu, hormis les lectures mémoire protégées de game/.
+bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept;
+bool on_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) noexcept;
 
 }  // namespace mp::sync::avatar

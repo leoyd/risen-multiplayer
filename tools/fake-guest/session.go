@@ -59,6 +59,7 @@ type sessionConfig struct {
 	Scenario   *scenario     // trajectoire des snapshots (nil : pose fixe du Spawn)
 	Delay      time.Duration // retard ajouté à chaque datagramme sortant
 	Jitter     time.Duration // ± gigue ajoutée au retard (tirage uniforme)
+	Echo       bool          // renvoie les snapshots et les Motion de l'hôte comme les siens (story 2.4)
 
 	HelloInterval     time.Duration
 	ConnectTimeout    time.Duration
@@ -87,6 +88,10 @@ type sessionResult struct {
 	SnapshotsTx  int // snapshots envoyés (v4)
 	SnapshotsRx  int // snapshots de l'hôte reçus et lisibles
 	SnapshotsBad int // snapshots illisibles
+	MotionsTx    int // Motion envoyés (scénario ou écho, v5)
+	MotionsRx    int // Motion reçus de l'hôte
+	AniNamesRx   int // AniName reçus de l'hôte
+	DeathsRx     int // Death reçus de l'hôte
 	DespawnsRx   int // Despawn reçus de l'hôte (v3)
 	EndReason    string
 }
@@ -137,9 +142,17 @@ type guest struct {
 	lastSnapTick int64
 	snapTxPeriod int
 	snapRxPeriod int
-	endAt        time.Time // fin de --duration (zéro = aucune)
-	extraHello   bool      // --dup-hello : Hello supplémentaire encore à envoyer
-	incoming     chan datagram
+
+	// Animations (v5) : internement des noms envoyés, noms de l'hôte, gestes du scénario.
+	welcome        protocol.Welcome
+	aniIds         map[string]uint16
+	hostNames      map[uint16]string
+	lastEventMs    float64
+	deathSent      bool
+	motionRxPeriod int
+	endAt          time.Time // fin de --duration (zéro = aucune)
+	extraHello     bool      // --dup-hello : Hello supplémentaire encore à envoyer
+	incoming       chan datagram
 }
 
 // runSession joue l'invité sur `conn` jusqu'à la fin de session et rend le bilan.
@@ -198,11 +211,14 @@ func (g *guest) run(ctx context.Context) sessionResult {
 				g.nextHB = now.Add(g.cfg.HeartbeatInterval)
 			}
 			g.sendSnapshot(now)
+			g.playEvents(now)
 			if !now.Before(g.nextHBLog) {
-				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d", g.hbTxPeriod,
-					g.hbRxPeriod, g.res.HeartbeatsTx, g.res.HeartbeatsRx, g.snapTxPeriod, g.snapRxPeriod)
+				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d",
+					g.hbTxPeriod, g.hbRxPeriod, g.res.HeartbeatsTx, g.res.HeartbeatsRx, g.snapTxPeriod, g.snapRxPeriod,
+					g.motionRxPeriod)
 				g.hbTxPeriod, g.hbRxPeriod = 0, 0
 				g.snapTxPeriod, g.snapRxPeriod = 0, 0
+				g.motionRxPeriod = 0
 				g.nextHBLog = now.Add(time.Second)
 			}
 			g.kcp.Update(g.nowMs())
@@ -276,9 +292,72 @@ func finite(v ...float32) bool {
 	return true
 }
 
+// sendMotion interne le nom (AniName la première fois) puis envoie le Motion, daté depuis
+// l'entrée en session, sous le NetId de l'invité.
+func (g *guest) sendMotion(now time.Time, name string, m protocol.Motion) {
+	id, ok := g.aniIds[name]
+	if !ok {
+		if len(g.aniIds) >= 0x10000 {
+			return
+		}
+		id = uint16(len(g.aniIds))
+		g.aniIds[name] = id
+		g.sendReliable(protocol.AniName{AniId: id, Name: name})
+	}
+	m.NetId = protocol.GuestNetId
+	m.AniId = id
+	m.Ms = uint32(now.Sub(g.sessionStart).Milliseconds())
+	g.sendReliable(m)
+	g.res.MotionsTx++
+}
+
+// playEvents envoie les gestes du scénario dont l'instant est passé depuis l'itération précédente.
+func (g *guest) playEvents(now time.Time) {
+	if g.cfg.Scenario == nil {
+		return
+	}
+	ms := float64(now.Sub(g.sessionStart)) / float64(time.Millisecond)
+	for _, ev := range g.cfg.Scenario.due(g.lastEventMs, ms) {
+		if ev.death {
+			if !g.deathSent {
+				g.deathSent = true
+				g.sendReliable(protocol.Death{NetId: protocol.GuestNetId})
+			}
+			continue
+		}
+		g.sendMotion(now, ev.name, ev.motion)
+	}
+	g.lastEventMs = ms
+}
+
+// echoSnapshot renvoie la pose de l'hôte comme celle de l'invité, décalée de son Spawn.
+func (g *guest) echoSnapshot(now time.Time, e protocol.SnapshotEntity) {
+	tick := int64(now.Sub(g.sessionStart) / (protocol.SnapshotTickMs * time.Millisecond))
+	if tick == g.lastSnapTick {
+		return // rafale de snapshots de l'hôte : un seul par tick, comme l'émetteur de la DLL
+	}
+	g.lastSnapTick = tick
+	b, err := protocol.EncodeSnapshot(protocol.Snapshot{Tick: uint32(tick), Entities: []protocol.SnapshotEntity{{
+		NetId: protocol.GuestNetId,
+		X:     e.X + g.spawn.X - g.welcome.X,
+		Y:     e.Y + g.spawn.Y - g.welcome.Y,
+		Z:     e.Z + g.spawn.Z - g.welcome.Z,
+		Yaw:   e.Yaw,
+	}}})
+	if err != nil {
+		return
+	}
+	g.send(b)
+	g.res.SnapshotsTx++
+	g.snapTxPeriod++
+}
+
 // sendSnapshot : à la première itération de chaque tick (50 ms depuis l'entrée en session),
 // la pose du scénario (ou celle du Spawn), sous le NetId de l'invité (PROTOCOL.md §8).
 func (g *guest) sendSnapshot(now time.Time) {
+	if g.cfg.Echo {
+		return // en écho, les snapshots partent à la réception de ceux de l'hôte
+	}
 	elapsed := now.Sub(g.sessionStart)
 	tick := int64(elapsed / (protocol.SnapshotTickMs * time.Millisecond))
 	if tick == g.lastSnapTick {
@@ -357,6 +436,10 @@ func (g *guest) sendReliable(m protocol.Message) {
 		g.log.printf("-> Spawn netid=%d type=%d pos=(%g, %g, %g) lacet=%g", m.NetId, m.Kind, m.X, m.Y, m.Z, m.Yaw)
 	case protocol.Despawn:
 		g.log.printf("-> Despawn netid=%d", m.NetId)
+	case protocol.AniName:
+		g.log.printf("-> AniName id=%d nom=%s", m.AniId, m.Name)
+	case protocol.Death:
+		g.log.printf("-> Death netid=%d", m.NetId)
 	}
 }
 
@@ -389,6 +472,9 @@ func (g *guest) handle(d datagram) (sessionResult, bool) {
 			if e.NetId == protocol.HostNetId && finite(e.X, e.Y, e.Z, e.Yaw) {
 				g.res.SnapshotsRx++
 				g.snapRxPeriod++
+				if g.cfg.Echo {
+					g.echoSnapshot(time.Now(), e)
+				}
 				break
 			}
 		}
@@ -485,6 +571,11 @@ func (g *guest) enterSession(w protocol.Welcome) {
 	g.spawn = guestPoseNear(w)
 	g.sessionStart = now
 	g.lastSnapTick = -1
+	g.welcome = w
+	g.aniIds = map[string]uint16{}
+	g.hostNames = map[uint16]string{}
+	g.lastEventMs = -1
+	g.deathSent = false
 	g.sendReliable(g.spawn) // avatar de l'invité chez l'hôte (v3) ; le scénario part de cette pose
 }
 
@@ -510,6 +601,19 @@ func (g *guest) drain() (sessionResult, bool) {
 		case protocol.Despawn:
 			g.res.DespawnsRx++
 			g.log.printf("<- Despawn netid=%d", m.NetId)
+		case protocol.AniName:
+			g.res.AniNamesRx++
+			g.hostNames[m.AniId] = m.Name
+			g.log.printf("<- AniName id=%d nom=%s", m.AniId, m.Name)
+		case protocol.Motion:
+			g.res.MotionsRx++
+			g.motionRxPeriod++
+			if name, ok := g.hostNames[m.AniId]; ok && g.cfg.Echo && m.NetId == protocol.HostNetId {
+				g.sendMotion(time.Now(), name, m)
+			}
+		case protocol.Death:
+			g.res.DeathsRx++
+			g.log.printf("<- Death netid=%d", m.NetId)
 		case protocol.SessionEnd:
 			g.log.printf("<- SessionEnd raison=%d (%s)", m.Reason, protocol.EndReasonName(m.Reason))
 			g.kcp.Flush() // acquitte le SessionEnd avant de fermer

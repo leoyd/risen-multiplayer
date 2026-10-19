@@ -387,14 +387,14 @@ TEST("session hôte : SessionEnd reçu → Ended avec la raison") {
     CHECK(s.state() == State::Hosting);  // l'hôte se réarme aussitôt
 }
 
-TEST("session hôte : Motion reçu en session → ignoré, la session continue") {
+TEST("session hôte : Motion reçu sans avatar → ignoré, la session continue") {
     std::uint32_t conv = 0;
     Session s = hosting_with_a(conv);
     proto::Motion m;
     m.net_id = 2;
     const Output out = s.tick(2000, loaded_world(), reliable(encode_r(m)));
     CHECK(s.state() == State::InSession);
-    CHECK(has_log(out, "Motion reçu, ignoré"));
+    CHECK(commands_of<PlayAvatarMotion>(out).empty());
 }
 
 TEST("session hôte : SessionEnd de raison inconnue → code brut au log") {
@@ -1533,4 +1533,276 @@ TEST("snapshots côté invité : NetId 2, pas de tick 0, rien avant la Teleport 
     const auto moves = commands_of<MoveAvatar>(out);
     CHECK_EQ(moves.size(), 1u);
     if (!moves.empty()) CHECK(moves[0]->net_id == proto::kHostNetId && moves[0]->pose.x == 42.0f);
+}
+
+// --- Animations et mort (story 2.4) -------------------------------------------------------
+
+namespace {
+
+proto::Motion local_motion_of(std::uint8_t type = 0, float d0c = 1.0f) {
+    proto::Motion m;
+    m.type = type;
+    m.flags = proto::kMotionFlagPlay | proto::kMotionFlagDesc;
+    m.d00 = 0.2f;
+    m.d0c = d0c;
+    m.d10 = 1;
+    m.d14 = 1.0f;
+    m.d18 = 1;
+    return m;
+}
+
+std::vector<Input> local(const std::string& name, std::uint8_t type = 0) {
+    return {LocalMotion{name, local_motion_of(type)}};
+}
+
+proto::Motion peer_motion(std::uint16_t ani_id, std::uint32_t ms, std::uint8_t type = 0, float d0c = 1.0f) {
+    proto::Motion m = local_motion_of(type, d0c);
+    m.net_id = proto::kGuestNetId;
+    m.ani_id = ani_id;
+    m.ms = ms;
+    return m;
+}
+
+// Hôte avec avatar dont l'horloge est calée : snapshots du pair reçus 20 ms après leur tick,
+// décalage 1200 ms (tick 0 à 1200). Temps affiché à `now` = now − 1200 − 150.
+Session host_with_clock() {
+    Session s = host_with_avatar();
+    for (std::uint32_t tick = 0; tick < 4; ++tick) {
+        s.tick(1200 + tick * 50, loaded_world(), snapshot_in(snapshot_bytes(tick, proto::kGuestNetId, 0.0f)));
+    }
+    return s;
+}
+
+std::vector<Input> reliable2(const proto::ReliableMessage& a, const proto::ReliableMessage& b) {
+    return {ReliableIn{encode_r(a)}, ReliableIn{encode_r(b)}};
+}
+
+}  // namespace
+
+TEST("animations : premier geste → AniName{0} puis Motion{ani 0, NetId, ms} ; répété → Motion seul") {
+    Session s = host_with_avatar();  // t0 = 1000
+    Output out = s.tick(1300, loaded_world(), local("Hero_Run"));
+    auto sent = reliables_sent(out);
+    CHECK_EQ(sent.size(), 2u);
+    if (sent.size() == 2) {
+        const auto* an = std::get_if<proto::AniName>(&sent[0]);
+        const auto* m = std::get_if<proto::Motion>(&sent[1]);
+        CHECK(an != nullptr && an->ani_id == 0 && an->name == "Hero_Run");
+        CHECK(m != nullptr && m->ani_id == 0 && m->net_id == proto::kHostNetId && m->ms == 300 && m->d00 == 0.2f);
+    }
+    out = s.tick(1400, loaded_world(), local("Hero_Jump"));
+    CHECK(!sent_of<proto::AniName>(out).empty() && sent_of<proto::AniName>(out)[0].ani_id == 1);
+    out = s.tick(1500, loaded_world(), local("Hero_Run"));
+    CHECK(sent_of<proto::AniName>(out).empty());
+    CHECK(!sent_of<proto::Motion>(out).empty() && sent_of<proto::Motion>(out)[0].ani_id == 0);
+}
+
+TEST("animations : hors session rien ne part ; nouvelle session → AniId repart de 0") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {});
+    CHECK(reliables_sent(s.tick(100, loaded_world(), local("Hero_Run"))).empty());  // Hosting
+    s.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    s.tick(1100, loaded_world(), local("A"));
+    s.tick(1200, loaded_world(), local("B"));
+    s.tick(1300, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));  // fin, réarmement immédiat
+    s.tick(2400, loaded_world(), {});
+    s.tick(2500, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    const Output out = s.tick(2600, loaded_world(), local("B"));
+    const auto an = sent_of<proto::AniName>(out);
+    CHECK(an.size() == 1 && an[0].ani_id == 0 && an[0].name == "B");
+}
+
+TEST("animations : Motion à l'heure attend l'instant d'affichage ; en retard → aussitôt") {
+    Session s = host_with_clock();
+    s.tick(1360, loaded_world(), reliable(encode_r(proto::AniName{3, "Hero_Attack"})));
+    // ms = 400 : affiché à now − 1350 ≥ 400, soit now ≥ 1750.
+    Output out = s.tick(1370, loaded_world(), reliable(encode_r(peer_motion(3, 400, 2))));
+    CHECK(commands_of<PlayAvatarMotion>(out).empty());
+    CHECK(commands_of<PlayAvatarMotion>(s.tick(1749, loaded_world(), {})).empty());
+    out = s.tick(1750, loaded_world(), {});
+    const auto p = commands_of<PlayAvatarMotion>(out);
+    CHECK_EQ(p.size(), 1u);
+    if (!p.empty()) CHECK(p[0]->net_id == proto::kGuestNetId && p[0]->name == "Hero_Attack" && p[0]->motion.type == 2);
+    // En retard (ms = 100, déjà affiché) : rejoué dans le tick de réception.
+    out = s.tick(1800, loaded_world(), reliable(encode_r(peer_motion(3, 100, 2))));
+    CHECK_EQ(commands_of<PlayAvatarMotion>(out).size(), 1u);
+}
+
+TEST("animations : types 0/1 dus au même tick → seul le plus récent de chacun ; type 2 tous") {
+    Session s = host_with_clock();
+    s.tick(1360, loaded_world(), reliable2(proto::AniName{0, "Run"}, proto::AniName{1, "Side"}));
+    std::vector<Input> in;
+    in.push_back(ReliableIn{encode_r(peer_motion(0, 10, 0, 0.1f))});
+    in.push_back(ReliableIn{encode_r(peer_motion(1, 20, 1, 0.2f))});
+    in.push_back(ReliableIn{encode_r(peer_motion(0, 30, 0, 0.3f))});
+    in.push_back(ReliableIn{encode_r(peer_motion(0, 40, 2, 0.4f))});
+    in.push_back(ReliableIn{encode_r(peer_motion(0, 50, 0, 0.5f))});
+    in.push_back(ReliableIn{encode_r(peer_motion(0, 60, 2, 0.6f))});
+    const Output out = s.tick(1500, loaded_world(), in);  // affiché : 150 ms, tout est dû
+    const auto p = commands_of<PlayAvatarMotion>(out);
+    CHECK_EQ(p.size(), 4u);  // type 1 (0.2), type 2 (0.4), type 0 (0.5), type 2 (0.6), dans l'ordre
+    if (p.size() == 4) {
+        CHECK(p[0]->motion.d0c == 0.2f && p[1]->motion.d0c == 0.4f && p[2]->motion.d0c == 0.5f &&
+              p[3]->motion.d0c == 0.6f);
+    }
+}
+
+TEST("animations : AniId inconnu, NaN, autre NetId, sans avatar → ignorés ; une ligne par AniId") {
+    Session s = host_with_clock();
+    Output out = s.tick(1400, loaded_world(), reliable(encode_r(peer_motion(9, 0))));
+    CHECK(commands_of<PlayAvatarMotion>(out).empty());
+    CHECK(has_log(out, "AniId 9 ignoré : AniId inconnu"));
+    out = s.tick(1410, loaded_world(), reliable(encode_r(peer_motion(9, 0))));
+    CHECK(!has_log(out, "AniId 9"));  // déjà signalé
+    s.tick(1420, loaded_world(), reliable(encode_r(proto::AniName{4, "X"})));
+    proto::Motion nan = peer_motion(4, 0);
+    nan.d0c = std::nanf("");
+    out = s.tick(1430, loaded_world(), reliable(encode_r(nan)));
+    CHECK(commands_of<PlayAvatarMotion>(out).empty());
+    CHECK(has_log(out, "scalaire non fini"));
+    proto::Motion other = peer_motion(4, 0);
+    other.net_id = proto::kHostNetId;
+    CHECK(commands_of<PlayAvatarMotion>(s.tick(1440, loaded_world(), reliable(encode_r(other)))).empty());
+    CHECK_EQ(commands_of<PlayAvatarMotion>(s.tick(1450, loaded_world(), reliable(encode_r(peer_motion(4, 0))))).size(), 1u);
+}
+
+TEST("animations : avant tout snapshot, un Motion part aussitôt") {
+    Session s = host_with_avatar();
+    const Output out = s.tick(1200, loaded_world(),
+                              reliable2(proto::AniName{0, "Run"}, peer_motion(0, 999999)));
+    CHECK_EQ(commands_of<PlayAvatarMotion>(out).size(), 1u);
+}
+
+TEST("animations : file de 256 au plus, le plus ancien est jeté") {
+    Session s = host_with_clock();
+    s.tick(1360, loaded_world(), reliable(encode_r(proto::AniName{0, "A"})));
+    // À 1370, affiché 20 : ms 500 à 799 attendent (moins d'1 s d'avance).
+    for (std::uint32_t i = 0; i < 300; ++i) s.tick(1370, loaded_world(), reliable(encode_r(peer_motion(0, 500 + i, 2))));
+    // À 3000, affiché 1650 : tout est dû ; 256 rejoués, les 44 plus anciens jetés.
+    const auto p = commands_of<PlayAvatarMotion>(s.tick(3000, loaded_world(), {}));
+    CHECK_EQ(p.size(), kMaxPendingMotions);
+    if (!p.empty()) CHECK_EQ(p[0]->motion.ms, 544u);
+}
+
+TEST("animations : un Motion à plus d'1 s d'avance part aussitôt, sans bloquer les suivants") {
+    Session s = host_with_clock();  // affiché à 1400 : 50 ms
+    s.tick(1360, loaded_world(), reliable(encode_r(proto::AniName{0, "A"})));
+    Output out = s.tick(1400, loaded_world(), reliable2(peer_motion(0, 999999, 2), peer_motion(0, 40, 2)));
+    CHECK_EQ(commands_of<PlayAvatarMotion>(out).size(), 2u);
+}
+
+TEST("mort : IsDead passe à 1 en session → Death une fois par mort ; hors session → rien") {
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), {});
+    g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    World dead = loaded_world();
+    dead.dead = true;
+    Output out = g.tick(200, dead, {});
+    const auto d = sent_of<proto::Death>(out);
+    CHECK(d.size() == 1 && d[0].net_id == proto::kGuestNetId);
+    CHECK(sent_of<proto::Death>(g.tick(300, dead, {})).empty());  // même mort
+    CHECK(g.state() == State::InSession);                         // l'invité mort reste en session
+    CHECK(sent_of<proto::Death>(g.tick(400, loaded_world(), {})).empty());  // retour à la vie
+    CHECK_EQ(sent_of<proto::Death>(g.tick(500, dead, {})).size(), 1u);      // nouvelle mort
+    Session idle(guest_settings());
+    idle.tick(0, loaded_world(), {});
+    CHECK(sent_of<proto::Death>(idle.tick(100, dead, {})).empty());  // Connecting
+}
+
+TEST("mort : un ragdoll sans mort n'envoie rien (aucune entrée ragdoll) ; mort de l'hôte → SessionEnd{3}") {
+    Session s = host_with_avatar();
+    for (std::uint64_t t = 1200; t < 2000; t += 100) CHECK(sent_of<proto::Death>(s.tick(t, loaded_world(), {})).empty());
+    World dead = loaded_world();
+    dead.dead = true;
+    const Output out = s.tick(2000, dead, {});
+    CHECK(sent_of<proto::Death>(out).empty());
+    CHECK(sent_session_end(out, 3));
+}
+
+TEST("mort : Death du pair → AvatarDeath à l'instant d'affichage, puis plus de MoveAvatar ni d'animation") {
+    Session s = host_with_clock();  // dernier snapshot : tick 3 (150 ms) ; affiché = now − 1350
+    s.tick(1360, loaded_world(), reliable2(proto::AniName{0, "A"}, peer_motion(0, 400, 2)));  // en attente
+    Output out = s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    CHECK(commands_of<AvatarDeath>(out).empty());  // affiché 50 < 150 : pas encore
+    CHECK(!commands_of<MoveAvatar>(out).empty());
+    CHECK(!s.avatar_dead());
+    CHECK(commands_of<AvatarDeath>(s.tick(1499, loaded_world(), {})).empty());
+    out = s.tick(1500, loaded_world(), {});
+    CHECK_EQ(commands_of<AvatarDeath>(out).size(), 1u);
+    CHECK(commands_of<MoveAvatar>(out).empty());
+    CHECK(s.avatar_dead());
+    out = s.tick(1510, loaded_world(), reliable2(peer_motion(0, 0, 2), proto::Death{proto::kGuestNetId}));
+    CHECK(commands_of<PlayAvatarMotion>(out).empty() && commands_of<AvatarDeath>(out).empty());
+    CHECK(has_log(out, "avatar déjà mort"));
+    for (std::uint64_t t = 1500; t < 4000; t += 250) CHECK(commands_of<PlayAvatarMotion>(s.tick(t, loaded_world(), {})).empty());
+    // Despawn puis Spawn : vivant à nouveau.
+    s = host_with_clock();
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    s.tick(1410, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
+    CHECK(!s.avatar_dead());
+    CHECK(has_log(s.tick(1420, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId}))), "pas l'avatar du pair"));
+}
+
+TEST("animations côté invité : Motion envoyé sous NetId 2, Motion de l'hôte rejoué sur l'avatar 1") {
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), {});
+    g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    Output out = g.tick(150, loaded_world(), local("G"));
+    const auto m = sent_of<proto::Motion>(out);
+    CHECK(m.size() == 1 && m[0].net_id == proto::kGuestNetId && m[0].ms == 50);
+    g.tick(160, loaded_world(), reliable(encode_r(spawn_of(proto::kHostNetId))));
+    proto::Motion hm = peer_motion(5, 0, 2);
+    hm.net_id = proto::kHostNetId;
+    out = g.tick(170, loaded_world(), reliable2(proto::AniName{5, "H"}, hm));
+    const auto p = commands_of<PlayAvatarMotion>(out);
+    CHECK(p.size() == 1 && p[0]->net_id == proto::kHostNetId && p[0]->name == "H");
+}
+
+TEST("animations : nouvelle session → table des noms du pair vidée (AniId d'avant inconnu)") {
+    Session s = host_with_avatar();
+    s.tick(1200, loaded_world(), reliable2(proto::AniName{0, "Vieux"}, peer_motion(0, 0, 2)));
+    s.tick(1300, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));  // fin, réarmement immédiat
+    s.tick(2400, loaded_world(), {});
+    s.tick(2500, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    s.tick(2600, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    const Output out = s.tick(2700, loaded_world(), reliable(encode_r(peer_motion(0, 0, 2))));
+    CHECK(commands_of<PlayAvatarMotion>(out).empty());
+    CHECK(has_log(out, "AniId 0 ignoré : AniId inconnu"));
+}
+
+TEST("animations : AniName redéfini → Warn et nouveau nom ; retrait de l'avatar → file vidée") {
+    Session s = host_with_clock();
+    s.tick(1360, loaded_world(), reliable(encode_r(proto::AniName{0, "A"})));
+    Output out = s.tick(1370, loaded_world(), reliable(encode_r(proto::AniName{0, "B"})));
+    CHECK(has_log(out, "AniName 0 redéfini : « A » → « B »"));
+    s.tick(1380, loaded_world(), reliable(encode_r(peer_motion(0, 900, 2))));  // en attente
+    s.tick(1390, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
+    for (std::uint64_t t = 1400; t < 3000; t += 100) CHECK(commands_of<PlayAvatarMotion>(s.tick(t, loaded_world(), {})).empty());
+}
+
+TEST("animations : 65 536 noms internés au plus, puis une seule ligne et plus rien") {
+    Session s = host_with_avatar();
+    std::vector<Input> in;
+    for (std::uint32_t i = 0; i < kAniIdCount; ++i) in.push_back(LocalMotion{"n" + std::to_string(i), local_motion_of()});
+    Output out = s.tick(1200, loaded_world(), in);
+    CHECK_EQ(sent_of<proto::AniName>(out).size(), static_cast<std::size_t>(kAniIdCount));
+    out = s.tick(1300, loaded_world(), {LocalMotion{"encore", local_motion_of()}, LocalMotion{"et_encore", local_motion_of()}});
+    CHECK(reliables_sent(out).empty() || sent_of<proto::Heartbeat>(out).size() == reliables_sent(out).size());
+    CHECK(has_log(out, "65536 noms d'animation"));
+    out = s.tick(1400, loaded_world(), {LocalMotion{"n5", local_motion_of()}});  // nom déjà interné : part
+    CHECK_EQ(sent_of<proto::Motion>(out).size(), 1u);
+}
+
+TEST("animations : Motion local à scalaire non fini ou hors domaine → rien, pas même l'AniName") {
+    Session s = host_with_avatar();
+    proto::Motion bad = local_motion_of();
+    bad.d14 = std::numeric_limits<float>::infinity();
+    Output out = s.tick(1200, loaded_world(), {LocalMotion{"X", bad}});
+    CHECK(sent_of<proto::AniName>(out).empty() && sent_of<proto::Motion>(out).empty());
+    bad = local_motion_of(9);
+    out = s.tick(1300, loaded_world(), {LocalMotion{"Y", bad}});
+    CHECK(sent_of<proto::AniName>(out).empty() && sent_of<proto::Motion>(out).empty());
+    out = s.tick(1400, loaded_world(), {LocalMotion{"X", local_motion_of()}});
+    const auto an = sent_of<proto::AniName>(out);
+    CHECK(an.size() == 1 && an[0].ani_id == 0);  // X n'avait pas été interné
 }

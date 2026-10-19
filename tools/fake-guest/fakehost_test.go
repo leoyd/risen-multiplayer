@@ -28,6 +28,7 @@ type hostConfig struct {
 	SessionEndReason   uint8
 	HeartbeatInterval  time.Duration
 	PeerTimeout        time.Duration
+	SendMotions        bool // AniName{0,"Host_Run"} puis un Motion toutes les 100 ms (story 2.4)
 }
 
 func defaultHost() hostConfig {
@@ -57,9 +58,12 @@ type hostRecord struct {
 	despawns     []uint32            // NetId des Despawn reçus
 	order        []protocol.MsgType  // Spawn, Despawn et SessionEnd, dans l'ordre de réception
 	snapshots    []protocol.Snapshot // snapshots reçus de l'invité (v4)
-	snapshotAt   []time.Time         // heure de réception de chacun
-	lastDatagram time.Time           // dernier datagramme du pair de session
-	timeoutAt    time.Time           // fin « timeout » constatée
+	aniNames     []protocol.AniName  // reçus de l'invité (v5)
+	motions      []protocol.Motion
+	deaths       []uint32
+	snapshotAt   []time.Time // heure de réception de chacun
+	lastDatagram time.Time   // dernier datagramme du pair de session
+	timeoutAt    time.Time   // fin « timeout » constatée
 	ended        string
 }
 
@@ -88,6 +92,7 @@ type simHost struct {
 
 	sessionStart time.Time // base du tick des snapshots de l'hôte
 	lastSnapTick int64
+	aniNameSent  bool
 }
 
 func startHost(t *testing.T, cfg hostConfig) *simHost {
@@ -308,7 +313,7 @@ func (h *simHost) openSession(peer netip.AddrPort) {
 	if h.cfg.SessionEndAfter > 0 {
 		h.endAt = now.Add(h.cfg.SessionEndAfter)
 	}
-	h.sessionStart, h.lastSnapTick = now, -1
+	h.sessionStart, h.lastSnapTick, h.aniNameSent = now, -1, false
 	h.welcome = protocol.Welcome{Conv: conv, X: 1, Y: 2, Z: 3, Yaw: 0.5}
 	h.sendControl(peer, h.welcome)
 	h.sendReliable(protocol.Spawn{NetId: protocol.HostNetId, Kind: protocol.SpawnTypeHero, X: 1, Y: 2, Z: 3, Yaw: 0.5})
@@ -336,6 +341,18 @@ func (h *simHost) drain() {
 			h.mu.Lock()
 			h.rec.spawns = append(h.rec.spawns, m)
 			h.rec.order = append(h.rec.order, protocol.TypeSpawn)
+			h.mu.Unlock()
+		case protocol.AniName:
+			h.mu.Lock()
+			h.rec.aniNames = append(h.rec.aniNames, m)
+			h.mu.Unlock()
+		case protocol.Motion:
+			h.mu.Lock()
+			h.rec.motions = append(h.rec.motions, m)
+			h.mu.Unlock()
+		case protocol.Death:
+			h.mu.Lock()
+			h.rec.deaths = append(h.rec.deaths, m.NetId)
 			h.mu.Unlock()
 		case protocol.Despawn:
 			h.mu.Lock()
@@ -394,11 +411,19 @@ func (h *simHost) tick() {
 		h.sendReliable(protocol.Heartbeat{})
 		h.nextHB = now.Add(h.cfg.HeartbeatInterval)
 	}
-	// Snapshot de l'hôte à 20 Hz (pose fixe du Welcome).
+	// Snapshot de l'hôte à 20 Hz (pose du Welcome, x croissant de 1 cm par tick).
 	if tick := int64(now.Sub(h.sessionStart) / (50 * time.Millisecond)); tick != h.lastSnapTick {
 		h.lastSnapTick = tick
 		b, _ := protocol.EncodeSnapshot(protocol.Snapshot{Tick: uint32(tick),
-			Entities: []protocol.SnapshotEntity{{NetId: protocol.HostNetId, X: 1, Y: 2, Z: 3, Yaw: 0.5}}})
+			Entities: []protocol.SnapshotEntity{{NetId: protocol.HostNetId, X: 1 + float32(tick), Y: 2, Z: 3, Yaw: 0.5}}})
 		h.send(h.peer, b)
+		if h.cfg.SendMotions && tick%2 == 0 {
+			if !h.aniNameSent {
+				h.aniNameSent = true
+				h.sendReliable(protocol.AniName{AniId: 0, Name: "Host_Run"})
+			}
+			h.sendReliable(protocol.Motion{NetId: protocol.HostNetId, Ms: uint32(tick * 50), Kind: 0,
+				Flags: protocol.MotionFlagPlay | protocol.MotionFlagDesc, D00: 0.2, D0C: float32(tick), D10: 1, D14: 1, D18: 1})
+		}
 	}
 }

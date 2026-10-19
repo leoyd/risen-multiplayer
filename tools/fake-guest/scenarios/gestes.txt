@@ -1,0 +1,12 @@
+# Gestes relevés par la sonde (docs/re/spike-j1.md) sur un cercle de 3 m à la course, puis un
+# arrêt : course répétée, saut, attaque à une main.
+cercle 300 6
+pause 3
+anim 0 0 Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400
+anim 1 0 Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400
+anim 2 0 Hero_Stand_None_None_P0_Jump_Run_N_Fwd_00_%_00_P0_0
+anim 3 0 Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400
+anim 4 0 Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400
+anim 5 0 Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400
+anim 6.5 0 Hero_Stand_None_1H_S1_Attack_00_N_Fwd_00_%_00_P0_0 0.2 0 0 1 1 1 1
+anim 7.8 0 Hero_Stand_None_1H_S1_Attack_00_N_Fwd_00_%_00_P0_0 0.2 0 0 1 1 1 1

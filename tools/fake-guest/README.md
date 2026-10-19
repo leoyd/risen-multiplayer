@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v4 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v5 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -78,10 +78,23 @@ ligne, jouées dans l'ordre puis en boucle ; chacune part de la pose du `Spawn` 
 | `cercle <rayon cm> <durée d'un tour s>` | tour complet en tournant vers la droite |
 | `aller-retour <longueur cm> <vitesse cm/s>` | tout droit, **demi-tour sec**, retour |
 | `pause <durée s>` | immobile |
+| `anim <instant s> <type> <nom> [d00 d04 d08 d0C d10 d14 d18]` | `Motion` (et `AniName` la première fois) à cet instant de chaque boucle ; scalaires par défaut `0.2 0 0 1 1 1 1` (`d10 = -1` → `0xFFFFFFFF`) |
+| `mort <instant s>` | `Death{2}`, une seule fois |
 | `# …` | commentaire (ligne entière) |
 
 Exemples dans `scenarios/` : `cercle.txt`, `aller-retour.txt`, `mixte.txt` (tout à la fois, à deux
-vitesses). La ligne de bilan donne chaque seconde les snapshots envoyés et reçus de l'hôte.
+vitesses), `gestes.txt` (noms d'animation relevés par la sonde : course, saut, attaque),
+`mort.txt` (debout 2 s, puis `Death`). La ligne
+de bilan donne chaque seconde les snapshots envoyés et reçus, et les `Motion` reçus de l'hôte ;
+chaque `AniName` reçu est journalisé (`<- AniName id=… nom=…`).
+
+### Écho (`--echo`, story 2.4)
+
+Exclusif avec `--scenario`. Le faux invité renvoie chaque snapshot de l'hôte comme le sien
+(décalé de son `Spawn`, 2 m devant l'hôte), et chaque `Motion` de l'hôte, nom réinterné, comme
+le sien : chez l'hôte, l'avatar imite le joueur avec un léger retard (150 ms d'affichage, plus
+l'aller-retour vers le faux invité). La mort de l'hôte n'est pas renvoyée : elle termine la session. C'est l'essai à une
+machine de « l'autre voit les mêmes gestes, synchronisés avec le déplacement ».
 
 ### Comportement (PROTOCOL.md §8)
 

@@ -1,0 +1,3 @@
+# Debout 2 s, puis mort (Death) : l'avatar s'effondre en ragdoll et ne bouge plus.
+pause 30
+mort 2

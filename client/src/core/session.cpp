@@ -110,6 +110,7 @@ void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t loc
 void Session::remove_avatar(const std::string& why, Output& out) {
     if (!avatar_present_) return;
     avatar_present_ = false;
+    clear_peer_avatar_state();
     out.commands.push_back(DespawnAvatar{peer_net_id()});
     out.logs.push_back({Level::Info, "[sync] avatar " + net_id_text(peer_net_id()) + " retiré : " + why});
 }
@@ -191,12 +192,15 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_control(now, *c, out);
         } else if (const auto* r = std::get_if<ReliableIn>(&in)) {
             on_reliable(now, *r, out);
+        } else if (const auto* sn = std::get_if<SnapshotIn>(&in)) {
+            on_snapshot(now, *sn, out);
         } else {
-            on_snapshot(now, std::get<SnapshotIn>(in), out);
+            on_local_motion(now, std::get<LocalMotion>(in), out);
         }
     }
     if (state_ != State::Ended) timers(now, out);
     if (state_ == State::InSession) {
+        send_death(world, out);
         send_snapshot(now, world, out);
         place_avatar(now, out);
         snapshot_stats(now, out);
@@ -447,9 +451,36 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         out.logs.push_back({Level::Debug, "[sync] Heartbeat reçu (" + std::to_string(heartbeats_rx_) + ")"});
         return;
     }
-    if (std::holds_alternative<proto::Motion>(decoded.message)) {
-        // Avatar : story 2.4. En attendant, ignoré sans bruit hors debug.
-        out.logs.push_back({Level::Debug, "[sync] Motion reçu, ignoré (pas encore d'animation de l'avatar)"});
+    if (const auto* m = std::get_if<proto::Motion>(&decoded.message)) {
+        on_peer_motion(*m, out);
+        return;
+    }
+    if (const auto* an = std::get_if<proto::AniName>(&decoded.message)) {
+        auto it = peer_names_.find(an->ani_id);
+        if (it != peer_names_.end() && it->second != an->name) {
+            out.logs.push_back({Level::Warn, "[sync] AniName " + std::to_string(an->ani_id) + " redéfini : « " +
+                                                 it->second + " » → « " + an->name + " »"});
+        }
+        peer_names_[an->ani_id] = an->name;
+        out.logs.push_back({Level::Debug, "[sync] AniName reçu : " + std::to_string(an->ani_id) + " = « " +
+                                              an->name + " »"});
+        return;
+    }
+    if (const auto* de = std::get_if<proto::Death>(&decoded.message)) {
+        if (de->net_id != peer_net_id() || !avatar_present_ || avatar_dead_ || death_pending_) {
+            out.logs.push_back({Level::Warn, "[sync] Death reçu (NetId " + net_id_text(de->net_id) + ") : ignoré (" +
+                                                 (de->net_id != peer_net_id() ? "pas l'avatar du pair"
+                                                  : !avatar_present_          ? "pas d'avatar"
+                                                                              : "avatar déjà mort") +
+                                                 ")"});
+            return;
+        }
+        // Même retard d'affichage que le reste : la mort tombe après les gestes et la pose
+        // déjà reçus (dernier snapshot), le coup fatal compris.
+        death_pending_ = true;
+        death_at_ = interp_.empty() ? 0.0 : interp_.last_time();
+        out.logs.push_back({Level::Info, "[sync] Death reçu : avatar " + net_id_text(de->net_id) +
+                                             " en ragdoll à l'instant d'affichage"});
         return;
     }
     if (const auto* sp = std::get_if<proto::Spawn>(&decoded.message)) {
@@ -470,6 +501,7 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         }
         avatar_present_ = true;
         interp_.reset();  // nouvel avatar : rien ne survit du précédent (AD-7)
+        clear_peer_avatar_state();
         out.commands.push_back(SpawnAvatar{sp->net_id, Pose{sp->x, sp->y, sp->z, sp->yaw}});
         out.logs.push_back({Level::Info, "[sync] " + what + " : avatar créé"});
         return;
@@ -506,6 +538,14 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     interp_.reset();
     next_stats_ = now + kSnapshotStatsMs;
     snap_ = SnapshotCounters{};
+    ani_ids_.clear();
+    next_ani_id_ = 0;
+    ani_full_logged_ = false;
+    death_sent_ = false;
+    peer_names_.clear();
+    warned_ani_ids_.clear();
+    clear_peer_avatar_state();
+    anim_ = MotionCounters{};
     proto::Spawn spawn;
     spawn.net_id = own_net_id();
     spawn.x = own.x;
@@ -561,8 +601,133 @@ void Session::send_snapshot(std::uint64_t now, const World& world, Output& out) 
     ++snap_.sent;
 }
 
+void Session::clear_peer_avatar_state() {
+    pending_.clear();
+    avatar_dead_ = false;
+    death_pending_ = false;
+    death_at_ = 0.0;
+}
+
+void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& out) {
+    if (state_ != State::InSession) return;
+    // Un Motion que le pair refuserait (champ hors domaine, scalaire non fini) ne part pas, et
+    // son nom n'est pas interné : jamais d'AniName sans Motion.
+    const proto::Motion& lm = in.motion;
+    Bytes probe;
+    if (!std::isfinite(lm.d00) || !std::isfinite(lm.d04) || !std::isfinite(lm.d0c) || !std::isfinite(lm.d14) ||
+        !proto::encode_reliable(lm, probe)) {
+        return;
+    }
+    auto it = ani_ids_.find(in.name);
+    std::uint16_t id = 0;
+    if (it != ani_ids_.end()) {
+        id = it->second;
+    } else {
+        if (next_ani_id_ >= kAniIdCount) {
+            if (!ani_full_logged_) {
+                ani_full_logged_ = true;
+                out.logs.push_back({Level::Warn, "[sync] 65536 noms d'animation internés : les nouveaux ne partent plus"});
+            }
+            return;
+        }
+        proto::AniName an;
+        an.ani_id = static_cast<std::uint16_t>(next_ani_id_);
+        an.name = in.name;
+        Bytes bytes;
+        if (!proto::encode_reliable(an, bytes)) return;  // nom vide ou de plus de 255 octets
+        ++next_ani_id_;
+        id = an.ani_id;
+        ani_ids_.emplace(in.name, id);
+        out.commands.push_back(SendReliable{std::move(bytes)});
+    }
+    proto::Motion m = in.motion;
+    m.net_id = own_net_id();
+    m.ani_id = id;
+    m.ms = static_cast<std::uint32_t>(now - t0_);
+    Bytes bytes;
+    if (!proto::encode_reliable(m, bytes)) return;  // validé avant l'internement : ne peut échouer
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    ++anim_.sent;
+}
+
+void Session::send_death(const World& world, Output& out) {
+    // Une fois par mort (Entity::IsDead). Chez l'hôte, la mort termine la session avant d'arriver
+    // ici (raison 3) : seul l'invité envoie Death.
+    if (!world.dead) {
+        death_sent_ = false;
+        return;
+    }
+    if (death_sent_) return;
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::Death{own_net_id()}, bytes)) return;
+    death_sent_ = true;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    out.logs.push_back({Level::Info, "[sync] Death envoyé : NetId " + net_id_text(own_net_id())});
+}
+
+void Session::on_peer_motion(const proto::Motion& m, Output& out) {
+    if (m.net_id != peer_net_id() || !avatar_present_ || avatar_dead_) {
+        ++anim_.ignored;
+        return;
+    }
+    auto name = peer_names_.find(m.ani_id);
+    const bool finite = std::isfinite(m.d00) && std::isfinite(m.d04) && std::isfinite(m.d0c) && std::isfinite(m.d14);
+    if (name == peer_names_.end() || !finite) {
+        ++anim_.ignored;
+        if (warned_ani_ids_.insert(m.ani_id).second) {
+            out.logs.push_back({Level::Warn, "[sync] Motion d'AniId " + std::to_string(m.ani_id) + " ignoré : " +
+                                                 (name == peer_names_.end() ? "AniId inconnu" : "scalaire non fini")});
+        }
+        return;
+    }
+    if (pending_.size() >= kMaxPendingMotions) {
+        pending_.pop_front();
+        ++anim_.dropped;
+    }
+    pending_.push_back(PendingMotion{m, name->second});
+}
+
+void Session::play_due_motions(std::uint64_t now, Output& out) {
+    if (pending_.empty()) return;
+    // Même instant d'affichage que les snapshots ; avant tout snapshot, aussitôt.
+    const double shown = clock_.ready() ? clock_.remote_ms(now) - core::kInterpolationDelayMs : 1e300;
+    // Un Motion daté de plus de kMaxMotionLeadMs dans le futur (horloge mal recalée, pair
+    // fautif) part aussitôt : il ne bloque pas ceux qui le suivent.
+    std::size_t due = 0;
+    while (due < pending_.size() && (static_cast<double>(pending_[due].motion.ms) <= shown ||
+                                     static_cast<double>(pending_[due].motion.ms) > shown + kMaxMotionLeadMs)) {
+        ++due;
+    }
+    if (due == 0) return;
+    // Types 0 et 1 (locomotion) : seul le plus récent de chacun part.
+    std::size_t last_of_type[2] = {due, due};
+    for (std::size_t i = 0; i < due; ++i) {
+        const std::uint8_t type = pending_[i].motion.type;
+        if (type <= 1) last_of_type[type] = i;
+    }
+    for (std::size_t i = 0; i < due; ++i) {
+        PendingMotion& p = pending_[i];
+        if (p.motion.type <= 1 && last_of_type[p.motion.type] != i) {
+            ++anim_.superseded;
+            continue;
+        }
+        out.commands.push_back(PlayAvatarMotion{peer_net_id(), std::move(p.name), p.motion});
+        ++anim_.played;
+    }
+    pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(due));
+}
+
 void Session::place_avatar(std::uint64_t now, Output& out) {
-    if (!avatar_present_ || !clock_.ready() || interp_.empty()) return;
+    if (!avatar_present_ || avatar_dead_) return;  // un avatar mort reste en ragdoll, sans pose imposée
+    play_due_motions(now, out);
+    if (death_pending_ && (!clock_.ready() || clock_.remote_ms(now) - core::kInterpolationDelayMs >= death_at_)) {
+        death_pending_ = false;
+        avatar_dead_ = true;
+        pending_.clear();
+        out.commands.push_back(AvatarDeath{peer_net_id()});
+        return;
+    }
+    if (!clock_.ready() || interp_.empty()) return;
     const core::Sample s = interp_.sample(clock_.remote_ms(now) - core::kInterpolationDelayMs);
     switch (s.mode) {
         case core::SampleMode::Interpolated: ++snap_.interpolated; break;
@@ -575,15 +740,18 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
 void Session::snapshot_stats(std::uint64_t now, Output& out) {
     if (now < next_stats_) return;
     next_stats_ = now + kSnapshotStatsMs;
-    char buf[256];
+    char buf[384];
     std::snprintf(buf, sizeof buf,
                   "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
-                  "frames de l'avatar : interpolées %u, extrapolées %u, figées %u ; décalage horloge %.1f ms",
+                  "frames de l'avatar : interpolées %u, extrapolées %u, figées %u ; décalage horloge %.1f ms ; "
+                  "Motion : envoyés %u, rejoués %u, écrasés %u, ignorés %u, jetés %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
-                  snap_.extrapolated, snap_.held, clock_.offset_ms());
+                  snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
+                  anim_.ignored, anim_.dropped);
     out.logs.push_back({Level::Debug, buf});
     const SnapshotCounters zero{};
     snap_ = zero;
+    anim_ = MotionCounters{};
 }
 
 void Session::send_hello(Output& out) {

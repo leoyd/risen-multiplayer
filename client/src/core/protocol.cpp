@@ -122,6 +122,17 @@ void write(Writer& w, const Spawn& m) {
     w.f32(m.yaw);
 }
 
+void write(Writer& w, const AniName& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::AniName));
+    w.u16(m.ani_id);
+    w.str8(m.name);
+}
+
+void write(Writer& w, const Death& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::Death));
+    w.u32(m.net_id);
+}
+
 void write(Writer& w, const Despawn& m) {
     w.u8(static_cast<std::uint8_t>(MsgType::Despawn));
     w.u32(m.net_id);
@@ -261,6 +272,17 @@ DecodeError read(Reader& r, Spawn& m) {
     return r.finish();
 }
 
+DecodeError read(Reader& r, AniName& m) {
+    m.ani_id = r.u16();
+    r.str8(m.name, kMinAniName, kMaxAniName);
+    return r.finish();
+}
+
+DecodeError read(Reader& r, Death& m) {
+    m.net_id = r.u32();
+    return r.finish();
+}
+
 DecodeError read(Reader& r, Despawn& m) {
     m.net_id = r.u32();
     return r.finish();
@@ -290,6 +312,10 @@ bool encode_control(const ControlMessage& message, std::vector<std::uint8_t>& ou
 
 bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& out) {
     if (const Motion* motion = std::get_if<Motion>(&message); motion != nullptr && !valid(*motion)) return false;
+    if (const AniName* a = std::get_if<AniName>(&message);
+        a != nullptr && !in_bounds(a->name, kMinAniName, kMaxAniName)) {
+        return false;
+    }
     std::vector<std::uint8_t> buf;
     Writer w(buf);
     std::visit([&w](const auto& m) { write(w, m); }, message);
@@ -323,6 +349,8 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
         case MsgType::Motion: return decode_as<Motion, ReliableMessage>(r);
         case MsgType::Spawn: return decode_as<Spawn, ReliableMessage>(r);
         case MsgType::Despawn: return decode_as<Despawn, ReliableMessage>(r);
+        case MsgType::AniName: return decode_as<AniName, ReliableMessage>(r);
+        case MsgType::Death: return decode_as<Death, ReliableMessage>(r);
         default: return {DecodeError::UnknownType, {}};
     }
 }

@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 4, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 5, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 4
+	ProtocolVersion   = 5
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -35,8 +35,7 @@ const (
 	ChannelControl  Channel = 2 // Hello, Welcome, Reject
 )
 
-// MsgType : 18 et 22 à 25 sont réservés et se décodent en ErrUnknownType. Motion (19, v2)
-// n'est pas encore décodé ici : son codec Go arrive avec la story 2.4.
+// MsgType : 22, 23 et 25 sont réservés et se décodent en ErrUnknownType.
 type MsgType uint8
 
 const (
@@ -47,6 +46,9 @@ const (
 	TypeSessionEnd MsgType = 17
 	TypeSpawn      MsgType = 20 // v3
 	TypeDespawn    MsgType = 21 // v3
+	TypeAniName    MsgType = 18 // v5
+	TypeMotion     MsgType = 19 // v2
+	TypeDeath      MsgType = 24 // v5
 )
 
 // NetId (AD-6) et type de Spawn.
@@ -138,6 +140,47 @@ type Spawn struct {
 
 type Despawn struct{ NetId uint32 }
 
+// AniName : nom d'animation interné (1 à 255 octets), avant son premier Motion.
+type AniName struct {
+	AniId uint16
+	Name  string
+}
+
+// Motion : un PlayMotion (AD-8). Les 7 scalaires sont les octets du descripteur lus par le
+// moteur ; sans MotionFlagDesc ils valent 0.
+type Motion struct {
+	NetId uint32
+	Ms    uint32
+	Kind  uint8 // eEMotionType, 0 à 7 (champ `type` du §4)
+	AniId uint16
+	Flags uint8
+	D00   float32
+	D04   float32
+	D08   uint32
+	D0C   float32
+	D10   uint32
+	D14   float32
+	D18   uint32
+}
+
+type Death struct{ NetId uint32 }
+
+const (
+	MinAniName      = 1
+	MaxAniName      = 255
+	MotionTypeCount = 8
+	MotionFlagPlay  = 0x01
+	MotionFlagDesc  = 0x02
+)
+
+func validMotion(m Motion) bool {
+	if m.Kind >= MotionTypeCount || m.Flags&^(MotionFlagPlay|MotionFlagDesc) != 0 {
+		return false
+	}
+	return m.Flags&MotionFlagDesc != 0 || (math.Float32bits(m.D00)|math.Float32bits(m.D04)|m.D08|
+		math.Float32bits(m.D0C)|m.D10|math.Float32bits(m.D14)|m.D18) == 0
+}
+
 func (Hello) Type() MsgType      { return TypeHello }
 func (Welcome) Type() MsgType    { return TypeWelcome }
 func (Reject) Type() MsgType     { return TypeReject }
@@ -145,6 +188,9 @@ func (Heartbeat) Type() MsgType  { return TypeHeartbeat }
 func (SessionEnd) Type() MsgType { return TypeSessionEnd }
 func (Spawn) Type() MsgType      { return TypeSpawn }
 func (Despawn) Type() MsgType    { return TypeDespawn }
+func (AniName) Type() MsgType    { return TypeAniName }
+func (Motion) Type() MsgType     { return TypeMotion }
+func (Death) Type() MsgType      { return TypeDeath }
 
 // --- Encodage ------------------------------------------------------------------------
 
@@ -200,6 +246,24 @@ func (w *writer) message(m Message) {
 		w.f32(m.Yaw)
 	case Despawn:
 		w.u32(m.NetId)
+	case AniName:
+		w.u16(m.AniId)
+		w.str8(m.Name)
+	case Motion:
+		w.u32(m.NetId)
+		w.u32(m.Ms)
+		w.u8(m.Kind)
+		w.u16(m.AniId)
+		w.u8(m.Flags)
+		w.f32(m.D00)
+		w.f32(m.D04)
+		w.u32(m.D08)
+		w.f32(m.D0C)
+		w.u32(m.D10)
+		w.f32(m.D14)
+		w.u32(m.D18)
+	case Death:
+		w.u32(m.NetId)
 	}
 }
 
@@ -223,11 +287,19 @@ func EncodeControl(m Message) ([]byte, error) {
 	return w.b, nil
 }
 
-// EncodeReliable rend le message [MsgType][charge] d'un Heartbeat, SessionEnd, Spawn ou
-// Despawn (sans canal).
+// EncodeReliable rend le message [MsgType][charge] d'un message fiable (Heartbeat, SessionEnd,
+// Spawn, Despawn, AniName, Motion, Death), sans octet de canal.
 func EncodeReliable(m Message) ([]byte, error) {
-	switch m.(type) {
-	case Heartbeat, SessionEnd, Spawn, Despawn:
+	switch m := m.(type) {
+	case AniName:
+		if !inBounds(m.Name, MinAniName, MaxAniName) {
+			return nil, ErrOutOfBounds
+		}
+	case Motion:
+		if !validMotion(m) {
+			return nil, ErrOutOfBounds
+		}
+	case Heartbeat, SessionEnd, Spawn, Despawn, Death:
 	default:
 		return nil, ErrOutOfBounds
 	}
@@ -396,6 +468,29 @@ func DecodeReliable(b []byte) (Message, error) {
 		return m, nil
 	case TypeDespawn:
 		m := Despawn{NetId: r.u32()}
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case TypeAniName:
+		m := AniName{AniId: r.u16()}
+		m.Name = r.str8(MinAniName, MaxAniName)
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case TypeMotion:
+		m := Motion{NetId: r.u32(), Ms: r.u32(), Kind: r.u8(), AniId: r.u16(), Flags: r.u8(), D00: r.f32(), D04: r.f32(),
+			D08: r.u32(), D0C: r.f32(), D10: r.u32(), D14: r.f32(), D18: r.u32()}
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		if !validMotion(m) {
+			return nil, ErrBadValue
+		}
+		return m, nil
+	case TypeDeath:
+		m := Death{NetId: r.u32()}
 		if err := r.finish(); err != nil {
 			return nil, err
 		}

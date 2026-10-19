@@ -31,7 +31,8 @@ Options :
 
 const exitCodesText = `
 Fautes : --drop, --delay, --jitter, --quit, --kill, --dup-hello, --bad-version (cumulables, sauf --quit/--kill).
-Trajectoire : --scenario <fichier> (snapshots à 20 Hz ; sans lui, pose fixe).
+Trajectoire : --scenario <fichier> (snapshots à 20 Hz, gestes horodatés ; sans lui, pose fixe),
+ou --echo (l'avatar refait les gestes et les déplacements du joueur hôte, 150 ms plus tard).
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :
@@ -80,9 +81,10 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	kill := fs.Bool("kill", false, "à la fin de --duration, sort sans rien envoyer")
 	dupHello := fs.Bool("dup-hello", false, "chaque Hello part deux fois, et un Hello de plus part en session, après le premier heartbeat acquitté")
 	scenarioPath := fs.String("scenario", "", "fichier de trajectoire des snapshots (cercle, aller-retour, pause ; voir scenarios/)")
+	echo := fs.Bool("echo", false, "renvoie les snapshots et les Motion de l'hôte comme les siens (l'avatar imite le joueur)")
 	delay := fs.Duration("delay", 0, "latence ajoutée à chaque datagramme sortant, ex. 100ms")
 	jitter := fs.Duration("jitter", 0, "gigue ± ajoutée à --delay, ex. 20ms")
-	badVersion := fs.Bool("bad-version", false, "envoie le Hello de hello_future.bin (version 0xFFFF) au lieu du Hello v3")
+	badVersion := fs.Bool("bad-version", false, "envoie le Hello de hello_future.bin (version 0xFFFF) au lieu du Hello courant")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
 		fs.PrintDefaults()
@@ -125,6 +127,9 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	if *delay < 0 || *jitter < 0 {
 		return usageError("--delay et --jitter doivent être positifs")
 	}
+	if *echo && *scenarioPath != "" {
+		return usageError("--echo et --scenario sont exclusifs")
+	}
 	var sc *scenario
 	if *scenarioPath != "" {
 		var err error
@@ -154,6 +159,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 		Scenario:   sc,
 		Delay:      *delay,
 		Jitter:     *jitter,
+		Echo:       *echo,
 	}
 	defaultTimings(&cfg)
 	return cfg, parseOK

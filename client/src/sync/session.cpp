@@ -4,7 +4,9 @@
 #include "core/session.h"
 #include "game/entity.h"
 #include "net/transport.h"
+#include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/local_capture.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -16,6 +18,7 @@
 #include <cstdint>
 #include <new>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -34,6 +37,12 @@ bool g_running_error_logged = false;
 bool g_dead_error_logged = false;
 LARGE_INTEGER g_qpc_frequency{};
 std::vector<cs::Input> g_inputs;  // réutilisé d'une frame à l'autre
+
+// Captures du héros local (story 2.4) : PS suivi par l'AnimFilter, noms des ressources (vidés
+// au changement de joueur : les pointeurs d'un autre monde ne valent plus rien).
+void* g_local_player = nullptr;
+std::unordered_map<const void*, std::string> g_motion_names;
+sync::Capture g_captures[sync::kCaptureRing];
 
 std::uint64_t now_ms() {
     LARGE_INTEGER t{};
@@ -154,6 +163,14 @@ void execute(cs::Output out) {
                 avatar::move(ma->net_id, ma->pose);
                 continue;
             }
+            if (const auto* pm = std::get_if<cs::PlayAvatarMotion>(&cmd)) {
+                avatar::play(pm->net_id, pm->name, pm->motion);
+                continue;
+            }
+            if (const auto* ad = std::get_if<cs::AvatarDeath>(&cmd)) {
+                avatar::die(ad->net_id);
+                continue;
+            }
             if (g_transport == nullptr) continue;
             bool posted = true;
             if (auto* s = std::get_if<cs::Send>(&cmd)) {
@@ -175,6 +192,49 @@ void execute(cs::Output out) {
     }
 }
 
+constexpr std::size_t kMaxMotionNames = 4096;  // borne du cache (vidé au-delà)
+
+// Nom de la ressource, mis en cache s'il a pu être lu (un échec n'est pas retenu : la capture
+// suivante réessaie). Vide : illisible.
+std::string motion_name(const void* resource) {
+    auto it = g_motion_names.find(resource);
+    if (it != g_motion_names.end()) return it->second;
+    std::string name;
+    if (resource == nullptr || !game::get_resource_name(resource, name) || name.empty()) return {};
+    if (g_motion_names.size() >= kMaxMotionNames) g_motion_names.clear();
+    g_motion_names.emplace(resource, name);
+    return name;
+}
+
+// PS du héros local dans l'AnimFilter (capturé par les hooks), puis captures de la frame →
+// entrées de la session. Hors monde chargé, plus rien n'est capturé.
+void local_captures(const cs::World& world) {
+    sync::AnimFilter& filter = sync::anim_filter();
+    void* player = reinterpret_cast<void*>(world.player);
+    unsigned dropped = 0;
+    if (player != g_local_player) {
+        // Autre héros (autre monde) : les captures en attente et les noms en cache désignent
+        // des ressources de l'ancien monde, peut-être libérées.
+        g_local_player = player;
+        g_motion_names.clear();
+        filter.drain(g_captures, sync::kCaptureRing, dropped);
+    }
+    void* ps = nullptr;
+    if (world.loaded()) {
+        game::Entity e;
+        e.ptr = player;
+        if (!game::get_animation_ps(e, ps)) ps = nullptr;
+    }
+    filter.set_local(ps);
+    const std::size_t n = filter.drain(g_captures, sync::kCaptureRing, dropped);
+    if (dropped != 0) log::debug("[sync] captures perdues (anneau plein) : " + std::to_string(dropped));
+    for (std::size_t i = 0; i < n; ++i) {
+        const sync::Capture& c = g_captures[i];
+        auto in = sync::local_input(c, c.kind == sync::CaptureKind::Motion ? motion_name(c.resource) : std::string());
+        if (in) g_inputs.push_back(std::move(*in));
+    }
+}
+
 void frame() {
     const cs::State state = g_session->state();
     const cs::World world = read_world(state);
@@ -191,6 +251,7 @@ void frame() {
             }
         }
     }
+    local_captures(world);
     execute(g_session->tick(now_ms(), world, g_inputs));
 }
 

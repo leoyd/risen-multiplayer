@@ -152,3 +152,34 @@ TEST("filtre : thread du hook retenu au premier appel, changement signalé") {
     CHECK_EQ(f.hook_thread(), 42u);
     CHECK(f.hook_thread_varied());
 }
+
+TEST("anim_filter : is_local ne compte rien") {
+    AnimFilter f;
+    int local = 0, replica = 0;
+    f.set_local(&local);
+    f.add_replica(&replica);
+    CHECK(f.is_local(&local));
+    CHECK(!f.is_local(&replica));
+    CHECK(!f.is_local(nullptr));
+    CHECK_EQ(f.take_blocked(), 0u);
+}
+
+TEST("anim_filter : classify_ragdoll — désactivation d'un avatar passe sans compter, activation bloquée sauf rejeu") {
+    AnimFilter f;
+    int local = 0, replica = 0, other = 0;
+    f.set_local(&local);
+    f.add_replica(&replica);
+    CHECK(f.classify_ragdoll(&replica, false, 1) == Verdict::Pass);  // nettoyage par le moteur
+    CHECK_EQ(f.take_blocked(), 0u);
+    CHECK(f.classify_ragdoll(&replica, true, 1) == Verdict::Block);
+    CHECK_EQ(f.take_blocked(), 1u);
+    {
+        AnimFilter::ReplayGuard guard;  // avatar::die
+        CHECK(f.classify_ragdoll(&replica, true, 1) == Verdict::Pass);
+    }
+    CHECK(f.classify_ragdoll(&local, true, 1) == Verdict::Capture);
+    CHECK(f.classify_ragdoll(&local, false, 1) == Verdict::Capture);  // capturé aussi (fin du ragdoll)
+    CHECK(f.classify_ragdoll(&other, true, 1) == Verdict::Pass);
+    CHECK(f.classify_ragdoll(&other, false, 1) == Verdict::Pass);
+    CHECK_EQ(f.take_blocked(), 0u);
+}

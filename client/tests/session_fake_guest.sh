@@ -238,6 +238,42 @@ if start_host fluid $p 30000; then
     fi
 fi
 
+# --- Story 2.4 : gestes horodatés et mort du scénario, rejoués par l'hôte dans l'ordre -----
+p=$((base_port + 12))
+cat > "$work/gestes.txt" <<'EOS'
+pause 3
+anim 0.2 0 Hero_Run
+anim 0.6 0 Hero_Jump
+anim 1.0 2 Hero_Attack 0.1 0 0 1 -1 1 1
+mort 2.0
+EOS
+if start_host gestes $p 30000; then
+    h=$work/gestes.host.log
+    "$guest" --host 127.0.0.1 --port $p --duration 3s --quit --scenario "$work/gestes.txt" --delay 50ms \
+        > "$work/gestes.guest.log" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "gestes : invité" 0 $rc "$work/gestes.guest.log"
+    expect_count "gestes : course rejouée" "$h" "PlayAvatarMotion NetId 2 « Hero_Run » type 0" 1
+    expect_count "gestes : saut rejoué" "$h" "PlayAvatarMotion NetId 2 « Hero_Jump » type 0" 1
+    expect_count "gestes : attaque rejouée" "$h" "PlayAvatarMotion NetId 2 « Hero_Attack » type 2" 1
+    order=$(grep -- "PlayAvatarMotion" "$h" | grep -oE "« Hero_(Run|Jump|Attack) »" | tr -d '«» ' | tr '\n' ,)
+    if [[ $order == "Hero_Run,Hero_Jump,Hero_Attack," ]]; then ok "gestes : dans l'ordre"; else ko "gestes : ordre $order"; fi
+    expect_log "gestes : mort de l'avatar" "$h" "AvatarDeath NetId 2"
+    expect_log "gestes : Death reçu" "$h" "Death reçu : avatar 2 (invité) en ragdoll"
+    expect_count "gestes : rien d'ignoré" "$h" "Motion d'AniId" 0
+fi
+
+# --- Story 2.4 : --echo, l'invité renvoie les snapshots de l'hôte comme les siens -----------
+p=$((base_port + 13))
+if start_host echo $p 30000; then
+    h=$work/echo.host.log
+    "$guest" --host 127.0.0.1 --port $p --duration 3s --quit --echo > "$work/echo.guest.log" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "écho : invité" 0 $rc "$work/echo.guest.log"
+    expect_log "écho : snapshots renvoyés" "$work/echo.guest.log" "snapshots envoyés=[1-9][0-9]* reçus=[1-9]"
+    expect_log "écho : avatar déplacé" "$h" "\[test\] avatar (retrait) : [1-9][0-9]* déplacements"
+fi
+
 # --- Story 1.5 : mort de l'hôte en session → SessionEnd{3} ----------------------------
 p=$((base_port + 9))
 if start_host death $p 20000; then

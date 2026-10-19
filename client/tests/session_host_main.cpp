@@ -190,6 +190,12 @@ int main(int argc, char** argv) {
                     track.have = true;
                     track.last = ma->pose;
                     ++track.moves;
+                } else if (const auto* pm = std::get_if<PlayAvatarMotion>(&cmd)) {
+                    print("INFO", "[test] PlayAvatarMotion NetId " + std::to_string(pm->net_id) + " « " + pm->name +
+                                      " » type " + std::to_string(pm->motion.type) + " ms " +
+                                      std::to_string(pm->motion.ms));
+                } else if (const auto* ad = std::get_if<AvatarDeath>(&cmd)) {
+                    print("INFO", "[test] AvatarDeath NetId " + std::to_string(ad->net_id));
                 } else if (const auto* sa = std::get_if<SpawnAvatar>(&cmd)) {
                     track = Track{};
                     track.have = true;  // le premier pas (Spawn → premier MoveAvatar) compte aussi

@@ -65,6 +65,11 @@ public:
 
     // --- Hook ---
     Verdict classify(void* animation_ps, std::uint32_t thread_id);
+    // PS du héros local ? (sans effet sur les compteurs)
+    bool is_local(const void* animation_ps) const;
+    // Hook SetRagDollEnabled : une désactivation qui ne vient pas du héros local passe toujours,
+    // sans être comptée (le moteur nettoie un avatar : décision du 2026-10-17) ; sinon classify.
+    Verdict classify_ragdoll(void* animation_ps, bool on, std::uint32_t thread_id);
     void push(const Capture& capture);
 
     // Garde de rejeu, propre au thread courant : pendant sa durée, les appels de ce

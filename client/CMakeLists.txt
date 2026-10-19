@@ -66,6 +66,7 @@ if(WIN32)
         src/game/motion_desc.cpp
         src/sync/anim_filter.cpp
         src/sync/avatar.cpp
+        src/sync/local_capture.cpp
         src/sync/probe.cpp
         src/sync/session.cpp
         src/win/watchdog.cpp
@@ -111,6 +112,7 @@ else()
         tests/test_anim_filter.cpp
         tests/test_config.cpp
         tests/test_interpolation.cpp
+        tests/test_local_capture.cpp
         tests/test_motion_desc.cpp
         tests/test_net.cpp
         tests/test_protocol.cpp
@@ -118,7 +120,8 @@ else()
         tests/test_version.cpp
         # Code portable de game/ et sync/ (sans appel au jeu), compilé aussi dans la DLL.
         src/game/motion_desc.cpp
-        src/sync/anim_filter.cpp)
+        src/sync/anim_filter.cpp
+        src/sync/local_capture.cpp)
     target_link_libraries(client_tests PRIVATE mp_core mp_net)
     # Vecteurs binaires de référence partagés C++/Go (protocol/vectors/).
     target_compile_definitions(client_tests PRIVATE

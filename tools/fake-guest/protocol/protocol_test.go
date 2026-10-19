@@ -43,6 +43,10 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"session_end.bin", true, SessionEnd{Reason: 1}},
 		{"spawn.bin", true, Spawn{NetId: 2, Kind: SpawnTypeHero, X: 100.0, Y: -50.5, Z: 2000.0, Yaw: 1.5}},
 		{"despawn.bin", true, Despawn{NetId: 2}},
+		{"aniname.bin", true, AniName{AniId: 7, Name: "Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400"}},
+		{"death.bin", true, Death{NetId: 2}},
+		{"motion.bin", true, Motion{NetId: 2, Ms: 1234, Kind: 0, AniId: 7, Flags: 3, D00: 0.25, D04: 0.5, D08: 1, D0C: 1.0,
+			D10: 0, D14: 0.75, D18: 2}},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
@@ -110,8 +114,8 @@ func TestAllVectorsCovered(t *testing.T) {
 		"session_end.bin": true, "hello_future.bin": true, "hello_truncated.bin": true,
 		"hello_long_nickname.bin": true, "unknown_type.bin": true, "spawn.bin": true, "despawn.bin": true,
 		"snapshot.bin": true, "snapshot_truncated.bin": true,
-		// Motion (v2) : codec Go et vérification de ces vecteurs en story 2.4.
-		"motion.bin": true, "motion_bad_type.bin": true}
+		"motion.bin": true, "motion_bad_type.bin": true, "aniname.bin": true, "death.bin": true,
+		"aniname_empty.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -134,7 +138,7 @@ func TestDecodeErrors(t *testing.T) {
 		{"canal snapshot", []byte{1, 1}, false, ErrUnknownChannel},
 		{"heartbeat en contrôle", []byte{2, 16}, false, ErrUnknownType},
 		{"hello en fiable", []byte{1, 1, 0}, true, ErrUnknownType},
-		{"réservé", []byte{18}, true, ErrUnknownType},
+		{"réservé", []byte{25}, true, ErrUnknownType},
 		{"réservé 22", []byte{22}, true, ErrUnknownType},
 		{"spawn en contrôle", []byte{2, 20}, false, ErrUnknownType},
 		{"spawn tronqué", []byte{20, 2, 0, 0, 0, 0}, true, ErrTruncated},
@@ -261,5 +265,37 @@ func TestSnapshotVectors(t *testing.T) {
 	b = append(b, make([]byte, SnapshotEntitySize)...)
 	if _, err := DecodeSnapshot(b); !errors.Is(err, ErrBadValue) {
 		t.Fatalf("55 entités : %v", err)
+	}
+}
+
+func TestMotionAndAniNameErrors(t *testing.T) {
+	if _, err := DecodeReliable(vector(t, "motion_bad_type.bin")); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("motion_bad_type.bin : %v", err)
+	}
+	if _, err := DecodeReliable(vector(t, "aniname_empty.bin")); !errors.Is(err, ErrBadLength) {
+		t.Fatalf("aniname_empty.bin : %v", err)
+	}
+	bad := vector(t, "motion.bin")
+	bad = append([]byte{}, bad...)
+	bad[12] |= 0x04 // bit de flags inconnu
+	if _, err := DecodeReliable(bad); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("bit de flags inconnu : %v", err)
+	}
+	if _, err := EncodeReliable(Motion{Kind: 8}); err == nil {
+		t.Fatal("Motion de type 8 encodé")
+	}
+	if _, err := EncodeReliable(Motion{Flags: MotionFlagPlay, D0C: 1}); err == nil {
+		t.Fatal("scalaire non nul sans descripteur encodé")
+	}
+	if _, err := EncodeReliable(AniName{Name: ""}); err == nil {
+		t.Fatal("AniName vide encodé")
+	}
+	if _, err := EncodeReliable(AniName{Name: strings.Repeat("a", 256)}); err == nil {
+		t.Fatal("AniName de 256 octets encodé")
+	}
+	for _, typ := range []byte{22, 23, 25} {
+		if _, err := DecodeReliable([]byte{typ}); !errors.Is(err, ErrUnknownType) {
+			t.Fatalf("type réservé %d : %v", typ, err)
+		}
 	}
 }

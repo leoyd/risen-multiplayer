@@ -61,6 +61,8 @@ public:
     bool push(std::uint32_t tick, const Pose& pose);
     bool empty() const { return points_.empty(); }
     std::size_t size() const { return points_.size(); }
+    // Temps (ms distants) du dernier échantillon ; 0 si vide.
+    double last_time() const { return points_.empty() ? 0.0 : points_.back().t; }
     Sample sample(double remote_ms) const;
 
 private:

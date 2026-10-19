@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 4 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 5 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 4;
+inline constexpr std::uint16_t kProtocolVersion = 5;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -37,17 +37,19 @@ enum class Channel : std::uint8_t {
     Control = 2,   // hors KCP : Hello, Welcome, Reject
 };
 
-// 18 et 22 à 25 sont réservés (AniName, HitRequest, HitOnGuest, Death, Respawn) et ne sont
-// pas encore définis : ils se décodent en `UnknownType`.
+// 22, 23 et 25 sont réservés (HitRequest, HitOnGuest, Respawn) et ne sont pas encore
+// définis : ils se décodent en `UnknownType`.
 enum class MsgType : std::uint8_t {
     Hello = 1,
     Welcome = 2,
     Reject = 3,
     Heartbeat = 16,
     SessionEnd = 17,
+    AniName = 18,  // v5 (story 2.4)
     Motion = 19,   // v2 (story 2.1)
     Spawn = 20,    // v3 (story 2.2)
     Despawn = 21,  // v3 (story 2.2)
+    Death = 24,    // v5 (story 2.4)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -152,8 +154,22 @@ struct Snapshot {
     std::vector<SnapshotEntity> entities;
 };
 
+// Nom d'animation interné (AD-8) : précède le premier Motion qui porte cet ani_id. L'espace
+// d'ani_id est propre à l'émetteur et repart de zéro à chaque session.
+inline constexpr std::size_t kMinAniName = 1;
+inline constexpr std::size_t kMaxAniName = 255;
+struct AniName {
+    std::uint16_t ani_id = 0;
+    std::string name;  // 1 à 255 octets (titre de la ressource de motion)
+};
+
+// Mort d'une entité dont l'émetteur a l'autorité (ragdoll, story 2.1b).
+struct Death {
+    std::uint32_t net_id = 0;
+};
+
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
-using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn>;
+using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,
