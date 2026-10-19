@@ -23,6 +23,9 @@ using IsProcessingRangeEnteredFn = bool (*)(const Entity* self);
 using IsDeadFn = bool (*)(const Entity* self);
 // Saute vers eCEntity::Kill (Engine.dll) : destruction différée (liste du moteur, bit 0x8 de +0x28).
 using KillFn = void (*)(const Entity* self);
+// gCCharacterMovement_PS::SetCurrentVelocity(bCVector const&) (Game.dll, protégée mais exportée) :
+// écrit +0x1A0 après un appel virtuel sur l'objet de +0x1E0 (contrôleur physique ?).
+using SetCurrentVelocityFn = void (*)(void* movement_ps, const float* velocity);
 // Game.dll
 using SessionGetInstanceFn = void* (*)();             // gCSession& (pointeur global, nul possible)
 using SessionIsGameRunningFn = bool (*)(const void* session);  // octet à +0x110
@@ -55,6 +58,7 @@ constexpr const char* kTemplateDtor = "??1Template@@QEAA@XZ";
 constexpr const char* kIsProcessingRangeEntered = "?IsProcessingRangeEntered@Entity@@QEBA_NXZ";
 constexpr const char* kIsDead = "?IsDead@Entity@@QEBA_NXZ";
 constexpr const char* kKill = "?Kill@Entity@@QEAAXXZ";
+constexpr const char* kSetCurrentVelocity = "?SetCurrentVelocity@gCCharacterMovement_PS@@IEAAXAEBVbCVector@@@Z";
 constexpr const char* kSessionGetInstance = "?GetInstance@gCSession@@SAAEAV1@XZ";
 constexpr const char* kSessionIsGameRunning = "?IsGameRunning@gCSession@@QEBA_NXZ";
 constexpr const char* kGetNPCs = "?GetNPCs@Entity@@SA?AV?$bTObjArray@VEntity@@@@XZ";
@@ -86,6 +90,7 @@ struct EntityAbi {
     IsProcessingRangeEnteredFn is_processing_range_entered = nullptr;
     IsDeadFn is_dead = nullptr;
     KillFn kill = nullptr;
+    SetCurrentVelocityFn set_current_velocity = nullptr;
     SessionGetInstanceFn session_get_instance = nullptr;
     SessionIsGameRunningFn session_is_game_running = nullptr;
     GetNPCsFn get_npcs = nullptr;
@@ -150,6 +155,7 @@ bool resolve_entities(const char*& missing) {
                     lookup(script, kGetNPCs, a.get_npcs, missing) &&
                     lookup(script, kIsDead, a.is_dead, missing) &&
                     lookup(script, kKill, a.kill, missing) &&
+                    lookup(game, kSetCurrentVelocity, a.set_current_velocity, missing) &&
                     lookup(game, kSessionGetInstance, a.session_get_instance, missing) &&
                     lookup(game, kSessionIsGameRunning, a.session_is_game_running, missing) &&
                     lookup(engine, kGetPropertySet, a.get_property_set, missing) &&
@@ -296,6 +302,37 @@ bool is_dead(const Entity& e, bool& out) {
         out = false;
         return false;
     }
+}
+
+bool get_movement_ps(const Entity& e, void*& out) {
+    out = nullptr;
+    if (!g_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_abi.get_property_set(e.ptr, kCharacterMovementPropertySet);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
+
+bool set_current_velocity(void* movement_ps, const float (&velocity)[3]) {
+    if (!g_resolved || movement_ps == nullptr) return false;
+    __try {
+        g_abi.set_current_velocity(movement_ps, velocity);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool read_movement_state(const void* movement_ps, MovementState& out) {
+    out = MovementState{};
+    if (movement_ps == nullptr) return false;
+    const auto* base = static_cast<const std::uint8_t*>(movement_ps);
+    return copy_bytes(base + 0x1A0, out.velocity, sizeof out.velocity) &&
+           copy_bytes(base + 0x1B8, out.local_ani_velocity, sizeof out.local_ani_velocity) &&
+           copy_bytes(base + 0x1D0, &out.speed, sizeof out.speed);
 }
 
 bool kill(const Entity& e) {
