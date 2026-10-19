@@ -129,6 +129,8 @@ void despawn(std::uint32_t net_id) {
     log::debug("[sync] avatar " + std::to_string(net_id) + " absent : rien à retirer");
 }
 
+bool present() { return !g_table.empty(); }
+
 void teleport_player(const Pose& pose) {
     game::Entity player;
     if (!game::get_player(player) || player.ptr == nullptr) {

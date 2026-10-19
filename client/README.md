@@ -107,7 +107,10 @@ Avec les deux builds faits dans l'ordre ci‑dessus, `ctest --test-dir client/bu
 
 1. Copier `client/build/Script_Multiplayer.dll` dans `<Steam>/steamapps/common/Risen/bin/scripts/`.
 2. Copier `client/multiplayer.example.ini` au même endroit sous le nom `multiplayer.ini`, puis l'adapter.
-3. Lancer Risen normalement (Windows ou Proton).
+3. Lancer Risen normalement (Windows ou Proton). **Sous Proton, désactiver l'overlay Steam** pour
+   Risen (Propriétés → Général → « Activer l'overlay Steam en jeu ») : constaté le 2026-10-19,
+   `gameoverlayui` cesse d'accepter les connexions du jeu, et DXVK reste bloqué dans `connect()`
+   sur `/tmp/steam_chrome_overlay_uid…`, ce qui fige le jeu (voir la sentinelle ci-dessous).
 4. Lire `bin/scripts/Script_Multiplayer.log` (réécrit à chaque lancement).
 
 Désinstallation : supprimer ces fichiers.
@@ -196,7 +199,7 @@ l'avatar est une copie temporaire du héros **local** (`Entity::Spawn`, même mo
 T-pose) jusqu'à la story 2.4. Toute fin de session le retire : `Entity::Kill` si le monde est
 toujours là, sinon il est seulement oublié (détruit avec le monde).
 
-Prérequis : `role = host`, `probe = 0`. Le faux invité place son avatar comme le ferait un vrai
+Prérequis : `role = host`, `probe = 0`, overlay Steam désactivé (voir « Installation »). Le faux invité place son avatar comme le ferait un vrai
 invité : 2 m devant le héros de l'hôte, tourné vers lui.
 
 1. Charger une partie, puis `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 20s --kill`.
@@ -211,6 +214,11 @@ invité : 2 m devant le héros de l'hôte, tourné vers lui.
 4. Variante : relancer le faux invité, puis faire un chargement rapide en session. Attendu :
    `avatar 2 oublié : monde détruit`, et aucun crash.
 5. Fournir `Script_Multiplayer.log`, et noter l'allure de l'avatar (figé, T-pose, au sol…).
+
+**Sentinelle de gel** (`src/win/watchdog`) : si `OnProcess` ne revient plus pendant 4 s alors qu'un
+avatar existe, un thread à part suspend le thread principal, déroule sa pile (`RtlVirtualUnwind`) et
+l'écrit au log trois fois, à 1 s d'intervalle (`[watchdog] pile N du thread principal`, une ligne
+`module+offset` par frame). Elle ne touche jamais au jeu.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

@@ -96,6 +96,13 @@ context:
 - **Hooks** : le libellé du log devient `hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled)`, pour rester distinct de celui de la sonde. Le banc Wine a été adapté, et il confirme que `?Kill@Entity@@QEAAXXZ` est résolu dans les vraies DLL.
 - **Tests** : `ctest` passe 6/6, avec le nouveau scénario `avatars` de `session_fake_guest`. `go test ./...` est OK, la DLL compile sans avertissement, et ses imports sont KERNEL32, USER32 et WS2_32.
 
+### Test en jeu (2026-10-19)
+
+- **Apparition** : OK. L'avatar apparaît à 2 m devant le héros, tourné vers lui, en T-pose (attendu avant la 2.4). Un second invité reçoit `Reject{4}` (session pleine), comme prévu.
+- **Retrait** : OK. `avatar 2 détruit (Entity::Kill, N appels moteur bloqués)`, avec 1 400 à 4 500 appels moteur bloqués par session.
+- **Gel après plusieurs reconnexions** : reproduit 3 fois, puis diagnostiqué avec gdb et une sentinelle ajoutée pour l'occasion (`win/watchdog`). Le jeu boucle dans `eCDX9Device::BeginScene` (Engine `+0x740948`), sur `IDirect3DQuery9::GetData(FLUSH)`, en attendant la fin de l'image. Le GPU est au repos. Le thread `dxvk-submit` est bloqué dans `connect()` sur `/tmp/steam_chrome_overlay_uid1000_spid<pid>`, dont `gameoverlayui` n'accepte plus les connexions (file pleine, 11 pour 10). **Overlay Steam désactivé : 5 cycles « rejoindre, `--kill` », sans gel ni erreur.** Cause hors du mod ; la consigne est dans le README.
+- Non testé en jeu : l'étape 4 (chargement rapide en session → avatar oublié sans `Kill`).
+
 ## Spec Change Log
 
 ## Review Triage Log

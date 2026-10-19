@@ -93,3 +93,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-2-apparition-retrait-avatars.md`
   summary: Rendre portables et tester sous Linux `matrix_of` (convention du lacet, AD-7) et les prédicats des hooks de l'avatar (`on_set_ragdoll` laisse passer `on=false`), en story 2.4.
   evidence: `sync/avatar.cpp` n'est compilé que pour Windows : inverser le signe de `m[2]`/`m[8]` ou retirer la règle `!on` ne fait échouer aucun test automatique.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-apparition-retrait-avatars.md`
+  summary: Comprendre pourquoi l'overlay Steam (`gameoverlayui`) cesse d'accepter les connexions du jeu, quelques secondes après la création d'un avatar, après plusieurs sessions ; ou documenter durablement l'overlay désactivé comme prérequis.
+  evidence: 3 gels sur 3 avec l'overlay, 0 sur 5 cycles sans. La coïncidence avec les créations d'avatar n'est pas expliquée ; aucun appel du mod ne passe par l'overlay.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-apparition-retrait-avatars.md`
+  summary: Tester en jeu le chargement rapide en session (avatar « oublié : monde détruit », sans `Kill`).
+  evidence: Étape 4 de la procédure du README, non faite le 2026-10-19.

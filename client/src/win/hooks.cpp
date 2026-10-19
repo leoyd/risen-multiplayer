@@ -5,6 +5,7 @@
 #include "sync/avatar.h"
 #include "sync/probe.h"
 #include "sync/session.h"
+#include "win/watchdog.h"
 
 #include <MinHook.h>
 
@@ -27,6 +28,7 @@ void detour_on_process(void* application) {
 void detour_on_process_session(void* application) {
     g_original_on_process(application);
     sync::session::on_frame();  // noexcept
+    watchdog::beat(sync::avatar::present());
 }
 
 void detour_play_motion(void* animation_ps, int type, void* desc, bool flag) {
@@ -124,6 +126,7 @@ bool install_session() {
         return false;
     }
     log::info("[hooks] hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled)");
+    watchdog::start();
     return true;
 }
 

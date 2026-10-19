@@ -67,6 +67,7 @@ if(WIN32)
         src/sync/avatar.cpp
         src/sync/probe.cpp
         src/sync/session.cpp
+        src/win/watchdog.cpp
         ${MINHOOK_SOURCES})
     target_include_directories(Script_Multiplayer PRIVATE third_party/minhook/include)
     # USER32 : GetAsyncKeyState / GetForegroundWindow (touches F9/F10 de la sonde).
