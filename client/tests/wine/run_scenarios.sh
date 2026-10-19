@@ -58,21 +58,21 @@ expect_log "champ inconnu : avertissement" "$d" "couleur"
 expect_log "nominal : log_level=info par défaut" "$d" "config OK (.*log_level=info)"
 
 expect_log "nominal : sonde désactivée par défaut" "$d" "sonde désactivée"
-# Story 1.4 : sans sonde, la session pose le seul hook OnProcess. Le banc n'appelle jamais
-# OnProcess : aucun tick, aucune transition.
-expect_log "nominal : hook de session installé" "$d" "hooks installés (OnProcess)"
-expect_no_log "nominal : pas de PlayMotion" "$d" "PlayMotion"
+# Story 1.4 : sans sonde, la session pose ses hooks (OnProcess ; PlayMotion et SetRagDollEnabled
+# pour les avatars depuis la story 2.2). Le banc n'appelle jamais OnProcess : aucun tick.
+expect_log "nominal : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled)"
+expect_no_log "nominal : pas de hooks de la sonde" "$d" "hooks installés (OnProcess, PlayMotion"
 expect_log "nominal : session prête" "$d" "\[sync\] session prête (rôle invité)"
 expect_no_log "nominal : log_level=info, aucune ligne DEBUG" "$d" "DEBUG"
 
-# Spike J1 : sonde explicitement désactivée (hook de session seul), puis activée (hooks posés sur les vraies
+# Spike J1 : sonde explicitement désactivée (hooks de session), puis activée (hooks posés sur les vraies
 # DLL du jeu ; le banc n'appelle jamais OnProcess, donc aucun tick).
 d=$(setup sonde_off $'role = host\nprobe = 0\nlog_level = DEBUG')
 run "sonde off" "$d"
 expect_log "log_level = DEBUG lu" "$d" "config OK (.*log_level=debug)"
 expect_log "probe = 0 : sonde désactivée" "$d" "sonde désactivée"
-expect_log "probe = 0 : hooks installés (OnProcess)" "$d" "hooks installés (OnProcess)"
-expect_no_log "probe = 0 : pas de hook PlayMotion" "$d" "PlayMotion"
+expect_log "probe = 0 : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled)"
+expect_no_log "probe = 0 : pas de hooks de la sonde" "$d" "hooks installés (OnProcess, PlayMotion"
 expect_log "probe = 0 : session prête" "$d" "\[sync\] session prête (rôle hôte)"
 expect_log "log_level = DEBUG : lignes DEBUG écrites" "$d" "DEBUG .*\[sync\] empreinte locale SharedBase.dll"
 
@@ -80,7 +80,7 @@ d=$(setup sonde_on $'role = host\nprobe = 1')
 run "sonde on" "$d"
 expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, PlayMotion, SetRagDollEnabled)"
 expect_log "probe = 1 : mod actif" "$d" "mod actif"
-expect_no_log "probe = 1 : pas de hook de session" "$d" "hooks installés (OnProcess)"
+expect_no_log "probe = 1 : pas de hook de session" "$d" "hooks de session installés"
 expect_no_log "probe = 1 : aucune session" "$d" "\[sync\]"
 
 # Hook impossible : jeu sans Script.dll (Game.dll n'en dépend pas). Attendu : erreur

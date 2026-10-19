@@ -35,12 +35,14 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		reliable bool
 		want     Message
 	}{
-		{"hello.bin", false, Hello{ProtocolVersion: 2, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
+		{"hello.bin", false, Hello{ProtocolVersion: 3, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
 			Nickname: "Leo", Equipment: "It_Sword_01"}},
 		{"welcome.bin", false, Welcome{Conv: 0x12345678, X: 100.0, Y: -50.5, Z: 2000.0, Yaw: 1.5}},
 		{"reject.bin", false, Reject{Reason: 2}},
 		{"heartbeat.bin", true, Heartbeat{}},
 		{"session_end.bin", true, SessionEnd{Reason: 1}},
+		{"spawn.bin", true, Spawn{NetId: 2, Kind: SpawnTypeHero, X: 100.0, Y: -50.5, Z: 2000.0, Yaw: 1.5}},
+		{"despawn.bin", true, Despawn{NetId: 2}},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
@@ -94,7 +96,7 @@ func TestInvalidVectors(t *testing.T) {
 	if v, ok := PeekHelloVersion(vector(t, "hello_future.bin")); !ok || v != 0xffff {
 		t.Fatalf("peek hello_future = %d, %v", v, ok)
 	}
-	if v, ok := PeekHelloVersion(vector(t, "hello_truncated.bin")); !ok || v != 2 {
+	if v, ok := PeekHelloVersion(vector(t, "hello_truncated.bin")); !ok || v != 3 {
 		t.Fatalf("peek hello_truncated = %d, %v", v, ok)
 	}
 }
@@ -106,7 +108,7 @@ func TestAllVectorsCovered(t *testing.T) {
 	}
 	known := map[string]bool{"hello.bin": true, "welcome.bin": true, "reject.bin": true, "heartbeat.bin": true,
 		"session_end.bin": true, "hello_future.bin": true, "hello_truncated.bin": true,
-		"hello_long_nickname.bin": true, "unknown_type.bin": true,
+		"hello_long_nickname.bin": true, "unknown_type.bin": true, "spawn.bin": true, "despawn.bin": true,
 		// Motion (v2) : codec Go et vérification de ces vecteurs en story 2.4.
 		"motion.bin": true, "motion_bad_type.bin": true}
 	for _, e := range entries {
@@ -132,6 +134,10 @@ func TestDecodeErrors(t *testing.T) {
 		{"heartbeat en contrôle", []byte{2, 16}, false, ErrUnknownType},
 		{"hello en fiable", []byte{1, 1, 0}, true, ErrUnknownType},
 		{"réservé", []byte{18}, true, ErrUnknownType},
+		{"réservé 22", []byte{22}, true, ErrUnknownType},
+		{"spawn en contrôle", []byte{2, 20}, false, ErrUnknownType},
+		{"spawn tronqué", []byte{20, 2, 0, 0, 0, 0}, true, ErrTruncated},
+		{"despawn trop long", []byte{21, 2, 0, 0, 0, 0}, true, ErrTrailingBytes},
 		{"reject tronqué", []byte{2, 3}, false, ErrTruncated},
 		{"reject trop long", []byte{2, 3, 1, 0}, false, ErrTrailingBytes},
 		{"heartbeat trop long", []byte{16, 0}, true, ErrTrailingBytes},
@@ -152,7 +158,7 @@ func TestDecodeErrors(t *testing.T) {
 		}
 	}
 	// Pseudo vide → BadLength.
-	empty := Hello{ProtocolVersion: 2, Nickname: "x"}
+	empty := Hello{ProtocolVersion: ProtocolVersion, Nickname: "x"}
 	b, err := EncodeControl(empty)
 	if err != nil {
 		t.Fatal(err)
@@ -178,13 +184,13 @@ func TestUnknownReasonsKept(t *testing.T) {
 }
 
 func TestEncoderBounds(t *testing.T) {
-	ok := Hello{ProtocolVersion: 2, ModVersion: "0.1.0", Nickname: "Leo"}
+	ok := Hello{ProtocolVersion: ProtocolVersion, ModVersion: "0.1.0", Nickname: "Leo"}
 	bad := []Hello{
 		{ProtocolVersion: 1, Nickname: "Leo"},
-		{ProtocolVersion: 2, Nickname: ""},
-		{ProtocolVersion: 2, Nickname: strings.Repeat("A", 33)},
-		{ProtocolVersion: 2, Nickname: "Leo", ModVersion: strings.Repeat("v", 256)},
-		{ProtocolVersion: 2, Nickname: "Leo", Equipment: strings.Repeat("e", 256)},
+		{ProtocolVersion: ProtocolVersion, Nickname: ""},
+		{ProtocolVersion: ProtocolVersion, Nickname: strings.Repeat("A", 33)},
+		{ProtocolVersion: ProtocolVersion, Nickname: "Leo", ModVersion: strings.Repeat("v", 256)},
+		{ProtocolVersion: ProtocolVersion, Nickname: "Leo", Equipment: strings.Repeat("e", 256)},
 	}
 	if _, err := EncodeControl(ok); err != nil {
 		t.Fatal(err)
@@ -195,7 +201,7 @@ func TestEncoderBounds(t *testing.T) {
 		}
 	}
 	// Bornes maximales : 581 octets.
-	max := Hello{ProtocolVersion: 2, ModVersion: strings.Repeat("v", 255), Nickname: strings.Repeat("n", 32),
+	max := Hello{ProtocolVersion: ProtocolVersion, ModVersion: strings.Repeat("v", 255), Nickname: strings.Repeat("n", 32),
 		Equipment: strings.Repeat("e", 255)}
 	if b, err := EncodeControl(max); err != nil || len(b) != 581 {
 		t.Fatalf("hello maximal : %d %v", len(b), err)

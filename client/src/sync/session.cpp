@@ -4,6 +4,7 @@
 #include "core/session.h"
 #include "game/entity.h"
 #include "net/transport.h"
+#include "sync/avatar.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -102,8 +103,10 @@ cs::World read_world(cs::State state) {
                    " dead=" + (now.dead ? "1" : "0") + " (état " + cs::state_name(state) + ")");
     }
 
-    // La pose ne sert qu'au Welcome de l'hôte : lue seulement avant ou pendant Hosting.
-    if (w.loaded() && (state == cs::State::Inactive || state == cs::State::Hosting)) {
+    // La pose ne sert qu'au Welcome de l'hôte et au Spawn de l'invité (repli si le Welcome
+    // porte une pose nulle) : lue seulement avant l'entrée en session.
+    if (w.loaded() && (state == cs::State::Inactive || state == cs::State::Hosting ||
+                       state == cs::State::Connecting)) {
         game::Matrix m{};
         if (game::get_pose(player, m)) {
             w.pose_ok = true;
@@ -135,6 +138,19 @@ void execute(cs::Output out) {
                 }
                 pending.push_back(g_session->fail(now_ms(), "réseau : " + error));
                 break;  // commandes suivantes sans objet
+            }
+            // Avatars (story 2.2) : appels au jeu, sur ce thread (AD-2).
+            if (const auto* t = std::get_if<cs::Teleport>(&cmd)) {
+                avatar::teleport_player(t->pose);
+                continue;
+            }
+            if (const auto* sa = std::get_if<cs::SpawnAvatar>(&cmd)) {
+                avatar::spawn(sa->net_id, sa->pose);
+                continue;
+            }
+            if (const auto* da = std::get_if<cs::DespawnAvatar>(&cmd)) {
+                avatar::despawn(da->net_id);
+                continue;
             }
             if (g_transport == nullptr) continue;
             bool posted = true;

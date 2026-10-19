@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"net/netip"
@@ -79,6 +80,8 @@ type sessionResult struct {
 	HeartbeatsTx int
 	HeartbeatsRx int
 	Dropped      int
+	SpawnsRx     int // Spawn reçus de l'hôte (v3)
+	DespawnsRx   int // Despawn reçus de l'hôte (v3)
 	EndReason    string
 }
 
@@ -290,6 +293,10 @@ func (g *guest) sendReliable(m protocol.Message) {
 		g.hbTxPeriod++
 	case protocol.SessionEnd:
 		g.log.printf("-> SessionEnd raison=%d (%s)", m.Reason, protocol.EndReasonName(m.Reason))
+	case protocol.Spawn:
+		g.log.printf("-> Spawn netid=%d type=%d pos=(%g, %g, %g) lacet=%g", m.NetId, m.Kind, m.X, m.Y, m.Z, m.Yaw)
+	case protocol.Despawn:
+		g.log.printf("-> Despawn netid=%d", m.NetId)
 	}
 }
 
@@ -347,7 +354,7 @@ func (g *guest) handleControl(b []byte) (sessionResult, bool) {
 			}
 			return sessionResult{}, false
 		}
-		g.enterSession(m.Conv)
+		g.enterSession(m)
 	case protocol.Reject:
 		g.log.printf("<- Reject raison=%d (%s)", m.Reason, protocol.RejectReasonName(m.Reason))
 		if g.st == connecting {
@@ -359,7 +366,26 @@ func (g *guest) handleControl(b []byte) (sessionResult, bool) {
 	return sessionResult{}, false
 }
 
-func (g *guest) enterSession(conv uint32) {
+// guestPoseNear : pose de l'invité à 2 m devant l'hôte, tourné vers lui (PROTOCOL.md §8),
+// comme mp::core::session::guest_pose_near.
+func guestPoseNear(w protocol.Welcome) protocol.Spawn {
+	const distance = 200.0
+	yaw := float64(w.Yaw) + math.Pi
+	if yaw > math.Pi {
+		yaw -= 2 * math.Pi
+	}
+	return protocol.Spawn{
+		NetId: protocol.GuestNetId,
+		Kind:  protocol.SpawnTypeHero,
+		X:     w.X + float32(distance*math.Sin(float64(w.Yaw))),
+		Y:     w.Y,
+		Z:     w.Z + float32(distance*math.Cos(float64(w.Yaw))),
+		Yaw:   float32(yaw),
+	}
+}
+
+func (g *guest) enterSession(w protocol.Welcome) {
+	conv := w.Conv
 	k, err := kcp.New(conv, g.send)
 	if err != nil {
 		g.log.printf("KCP : %v", err)
@@ -377,6 +403,7 @@ func (g *guest) enterSession(conv uint32) {
 	}
 	g.log.printf("InSession conv=0x%08x", conv)
 	g.extraHello = g.cfg.DupHello
+	g.sendReliable(guestPoseNear(w)) // avatar de l'invité chez l'hôte (v3)
 }
 
 // drain lit les messages complets rendus par KCP.
@@ -395,6 +422,12 @@ func (g *guest) drain() (sessionResult, bool) {
 		case protocol.Heartbeat:
 			g.res.HeartbeatsRx++
 			g.hbRxPeriod++
+		case protocol.Spawn:
+			g.res.SpawnsRx++
+			g.log.printf("<- Spawn netid=%d type=%d pos=(%g, %g, %g) lacet=%g", m.NetId, m.Kind, m.X, m.Y, m.Z, m.Yaw)
+		case protocol.Despawn:
+			g.res.DespawnsRx++
+			g.log.printf("<- Despawn netid=%d", m.NetId)
 		case protocol.SessionEnd:
 			g.log.printf("<- SessionEnd raison=%d (%s)", m.Reason, protocol.EndReasonName(m.Reason))
 			g.kcp.Flush() // acquitte le SessionEnd avant de fermer
@@ -407,6 +440,7 @@ func (g *guest) drain() (sessionResult, bool) {
 // fermeture du KCP, et fin.
 func (g *guest) endSession(code int, reason string, sendEnd bool) sessionResult {
 	if sendEnd {
+		g.sendReliable(protocol.Despawn{NetId: protocol.GuestNetId}) // juste avant SessionEnd (§8)
 		g.sendReliable(protocol.SessionEnd{Reason: protocol.EndPlayerLeft})
 		g.kcp.Flush()
 		g.linger()

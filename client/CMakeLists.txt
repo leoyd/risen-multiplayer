@@ -64,6 +64,7 @@ if(WIN32)
         src/game/entity.cpp
         src/game/motion_desc.cpp
         src/sync/anim_filter.cpp
+        src/sync/avatar.cpp
         src/sync/probe.cpp
         src/sync/session.cpp
         ${MINHOOK_SOURCES})

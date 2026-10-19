@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4 et 1.5 : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5 et 2.2 : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -158,6 +158,7 @@ if start_host reload $p 60000 3; then
         wait $g_pid; rc=$?
         expect_code "rechargement $i : invité sorti sur SessionEnd" 0 $rc "$work/reload.guest$i.log"
         expect_log "rechargement $i : SessionEnd{2} reçu par l'invité" "$work/reload.guest$i.log" "<- SessionEnd raison=2"
+        expect_log "rechargement $i : Despawn de l'hôte reçu" "$work/reload.guest$i.log" "<- Despawn netid=1"
         if ! wait_count "$h" "Ended → Inactive" $i; then
             ko "rechargement $i : pas de retour à Inactive"
             kill "$host_pid" 2>/dev/null; wait "$host_pid" 2>/dev/null; reload_ok=0; break
@@ -183,6 +184,38 @@ if start_host rearm $p 30000 2; then
     expect_code "réarmement : second invité" 0 $rc_b "$work/rearm.b.log"
     expect_count "réarmement : 2 sessions" "$h" "→ InSession" 2
     expect_count "réarmement : réarmement immédiat" "$h" "réarmement immédiat" 2
+fi
+
+# --- Story 2.2 : « rejoindre, --kill, rejoindre, quitter » : jamais deux avatars ---------
+p=$((base_port + 10))
+if start_host avatars $p 30000 2; then
+    h=$work/avatars.host.log
+    "$guest" --host 127.0.0.1 --port $p --duration 1s --kill > "$work/avatars.a.log" 2>&1; rc_a=$?
+    # L'hôte constate le timeout (5 s) et se réarme avant le second invité.
+    if wait_count "$h" "Ended → Inactive" 1; then
+        "$guest" --host 127.0.0.1 --port $p --duration 1s --quit > "$work/avatars.b.log" 2>&1; rc_b=$?
+        wait $host_pid
+    else
+        ko "avatars : pas de réarmement après --kill"; kill "$host_pid" 2>/dev/null; wait "$host_pid" 2>/dev/null; rc_b=-1
+    fi
+    expect_code "avatars : premier invité (--kill)" 0 $rc_a "$work/avatars.a.log"
+    expect_code "avatars : second invité (--quit)" 0 $rc_b "$work/avatars.b.log"
+    expect_count "avatars : 2 sessions" "$h" "→ InSession" 2
+    expect_count "avatars : 2 Spawn de l'invité reçus" "$h" "Spawn reçu (NetId 2 (invité), type 0" 2
+    expect_count "avatars : 2 créations" "$h" "SpawnAvatar NetId 2 : avatars présents=1" 2
+    expect_count "avatars : 2 retraits" "$h" "DespawnAvatar NetId 2 : avatars présents=0" 2
+    expect_count "avatars : jamais deux avatars" "$h" "avatars présents=2" 0
+    expect_log "avatars : retrait au timeout" "$h" "avatar 2 (invité) retiré : fin de session"
+    expect_log "avatars : retrait sur Despawn" "$h" "avatar 2 (invité) retiré : Despawn reçu"
+    expect_count "avatars : Spawn de l'hôte reçu à chaque session" "$work/avatars.a.log" "<- Spawn netid=1 type=0" 1
+    expect_count "avatars : Spawn de l'hôte reçu (second)" "$work/avatars.b.log" "<- Spawn netid=1 type=0" 1
+    l_despawn=$(grep -n -- "-> Despawn netid=2" "$work/avatars.b.log" | head -1 | cut -d: -f1)
+    l_end=$(grep -n -- "-> SessionEnd raison=1" "$work/avatars.b.log" | head -1 | cut -d: -f1)
+    if [[ -n $l_despawn && -n $l_end && $l_despawn -lt $l_end ]]; then
+        ok "avatars : Despawn avant SessionEnd"
+    else
+        ko "avatars : Despawn avant SessionEnd (lignes ${l_despawn:-?} et ${l_end:-?})"; sed 's/^/    /' "$work/avatars.b.log"
+    fi
 fi
 
 # --- Story 1.5 : mort de l'hôte en session → SessionEnd{3} ----------------------------

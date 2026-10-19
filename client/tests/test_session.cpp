@@ -4,6 +4,7 @@
 #include "test.h"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -1058,4 +1059,336 @@ TEST("fin 1.5 : hôte à réarmement immédiat dont le monde se décharge pendan
     for (std::uint64_t t = 3100; t < 6000; t += 100) CHECK(s.tick(t, World{}, {}).commands.empty());
     s.tick(6000, loaded_world(kPlayer2), {});
     CHECK(s.state() == State::Hosting);
+}
+
+// --- Avatars (story 2.2) ---------------------------------------------------------------
+
+namespace {
+
+// Messages fiables envoyés dans `out`, décodés, dans l'ordre.
+std::vector<proto::ReliableMessage> reliables_sent(const Output& out) {
+    std::vector<proto::ReliableMessage> v;
+    for (const auto* s : commands_of<SendReliable>(out)) {
+        const auto d = proto::decode_reliable(s->bytes.data(), s->bytes.size());
+        CHECK(d.ok());
+        if (d.ok()) v.push_back(d.message);
+    }
+    return v;
+}
+
+template <typename T>
+std::vector<T> sent_of(const Output& out) {
+    std::vector<T> v;
+    for (const auto& m : reliables_sent(out)) {
+        if (const auto* p = std::get_if<T>(&m)) v.push_back(*p);
+    }
+    return v;
+}
+
+// Indice de la première commande de type T dans `out` (out.commands.size() si absente).
+template <typename T>
+std::size_t index_of(const Output& out) {
+    for (std::size_t i = 0; i < out.commands.size(); ++i) {
+        if (std::holds_alternative<T>(out.commands[i])) return i;
+    }
+    return out.commands.size();
+}
+
+// Indice de la commande SendReliable portant un message de type T.
+template <typename T>
+std::size_t index_of_sent(const Output& out) {
+    for (std::size_t i = 0; i < out.commands.size(); ++i) {
+        const auto* s = std::get_if<SendReliable>(&out.commands[i]);
+        if (s == nullptr) continue;
+        const auto d = proto::decode_reliable(s->bytes.data(), s->bytes.size());
+        if (d.ok() && std::holds_alternative<T>(d.message)) return i;
+    }
+    return out.commands.size();
+}
+
+proto::Spawn spawn_of(std::uint32_t net_id, std::uint8_t type = proto::kSpawnTypeHero) {
+    proto::Spawn m;
+    m.net_id = net_id;
+    m.type = type;
+    m.x = 10.0f;
+    m.y = 20.0f;
+    m.z = 30.0f;
+    m.yaw = -0.25f;
+    return m;
+}
+
+// Hôte en session avec A, avatar de l'invité créé à t = 1100.
+Session host_with_avatar() {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    const Output out = s.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK_EQ(commands_of<SpawnAvatar>(out).size(), 1u);
+    CHECK(s.avatar_present());
+    return s;
+}
+
+proto::Welcome welcome_at(float x, float y, float z, float yaw) {
+    proto::Welcome w;
+    w.conv = 0xfe24b1fd;
+    w.x = x;
+    w.y = y;
+    w.z = z;
+    w.yaw = yaw;
+    return w;
+}
+
+bool near(float a, float b) { return a - b < 1e-3f && b - a < 1e-3f; }
+
+}  // namespace
+
+TEST("avatars : guest_pose_near → 2 m devant l'hôte, tourné vers lui") {
+    Pose p = guest_pose_near(Pose{1.0f, 2.0f, 3.0f, 0.0f});
+    CHECK(near(p.x, 1.0f) && near(p.y, 2.0f) && near(p.z, 203.0f));
+    CHECK(near(p.yaw, 3.14159265f));
+    p = guest_pose_near(Pose{0.0f, 0.0f, 0.0f, 1.5707963f});  // avant = +x
+    CHECK(near(p.x, 200.0f) && near(p.z, 0.0f));
+    CHECK(near(p.yaw, 1.5707963f - 3.14159265f));  // ramené dans ]−π, π]
+    p = guest_pose_near(Pose{0.0f, 0.0f, 0.0f, -3.0f});
+    CHECK(near(p.yaw, -3.0f + 3.14159265f));
+}
+
+TEST("avatars : hôte accepte → Welcome, OpenReliable, puis Spawn{1, pose du Welcome}") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {});
+    const Output out = s.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    const auto spawns = sent_of<proto::Spawn>(out);
+    CHECK_EQ(spawns.size(), 1u);
+    if (!spawns.empty()) {
+        CHECK_EQ(spawns[0].net_id, proto::kHostNetId);
+        CHECK_EQ(static_cast<int>(spawns[0].type), 0);
+        CHECK(spawns[0].x == 100.0f && spawns[0].y == -50.5f && spawns[0].z == 2000.0f && spawns[0].yaw == 1.5f);
+    }
+    CHECK(index_of<OpenReliable>(out) < index_of_sent<proto::Spawn>(out));
+    CHECK(commands_of<Teleport>(out).empty());
+    CHECK(has_log(out, "Spawn envoyé : NetId 1 (hôte)"));
+}
+
+TEST("avatars : invité reçoit Welcome → Teleport devant l'hôte, puis Spawn{2, même pose}") {
+    Session s(guest_settings());
+    s.tick(0, loaded_world(), {});
+    const Output out = s.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1.0f, 2.0f, 3.0f, 0.0f))));
+    CHECK(s.state() == State::InSession);
+    const auto tps = commands_of<Teleport>(out);
+    const auto spawns = sent_of<proto::Spawn>(out);
+    CHECK_EQ(tps.size(), 1u);
+    CHECK_EQ(spawns.size(), 1u);
+    if (!tps.empty() && !spawns.empty()) {
+        const Pose want = guest_pose_near(Pose{1.0f, 2.0f, 3.0f, 0.0f});
+        CHECK(tps[0]->pose.x == want.x && tps[0]->pose.z == want.z && tps[0]->pose.yaw == want.yaw);
+        CHECK_EQ(spawns[0].net_id, proto::kGuestNetId);
+        CHECK(spawns[0].x == want.x && spawns[0].y == want.y && spawns[0].z == want.z && spawns[0].yaw == want.yaw);
+    }
+    CHECK(index_of<OpenReliable>(out) < index_of<Teleport>(out));
+    CHECK(index_of<Teleport>(out) < index_of_sent<proto::Spawn>(out));
+}
+
+TEST("avatars : Welcome à pose nulle → pas de Teleport, Spawn à la pose du héros") {
+    Session s(guest_settings());
+    s.tick(0, loaded_world(), {});
+    const Output out = s.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(0, 0, 0, 0))));
+    CHECK(commands_of<Teleport>(out).empty());
+    const auto spawns = sent_of<proto::Spawn>(out);
+    CHECK_EQ(spawns.size(), 1u);
+    if (!spawns.empty()) CHECK(spawns[0].x == 100.0f && spawns[0].z == 2000.0f && spawns[0].yaw == 1.5f);
+    CHECK(has_log(out, "pose de l'hôte nulle"));
+}
+
+TEST("avatars : Spawn du pair → SpawnAvatar ; en double → ignoré") {
+    Session s = host_with_avatar();
+    const Output out = s.tick(1200, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK(commands_of<SpawnAvatar>(out).empty());
+    CHECK(has_log(out, "ignoré (avatar déjà présent)"));
+    CHECK(s.state() == State::InSession);
+}
+
+TEST("avatars : SpawnAvatar porte le NetId et la pose reçus") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    const Output out = s.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    const auto sp = commands_of<SpawnAvatar>(out);
+    CHECK_EQ(sp.size(), 1u);
+    if (!sp.empty()) {
+        CHECK_EQ(sp[0]->net_id, proto::kGuestNetId);
+        CHECK(sp[0]->pose.x == 10.0f && sp[0]->pose.y == 20.0f && sp[0]->pose.z == 30.0f &&
+              sp[0]->pose.yaw == -0.25f);
+    }
+}
+
+TEST("avatars : Spawn d'un mauvais NetId ou d'un autre type → ignoré, avec log") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    Output out = s.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kHostNetId))));
+    CHECK(commands_of<SpawnAvatar>(out).empty());
+    CHECK(has_log(out, "ignoré (attendu NetId 2 (invité), type 0)"));
+    out = s.tick(1200, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId, 7))));
+    CHECK(commands_of<SpawnAvatar>(out).empty());
+    CHECK(has_log(out, "type 7"));
+    CHECK(!s.avatar_present());
+    // Côté invité : seul NetId 1 est accepté.
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), {});
+    g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    out = g.tick(200, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK(commands_of<SpawnAvatar>(out).empty());
+    out = g.tick(300, loaded_world(), reliable(encode_r(spawn_of(proto::kHostNetId))));
+    CHECK_EQ(commands_of<SpawnAvatar>(out).size(), 1u);
+}
+
+TEST("avatars : fin locale en session → Despawn, SessionEnd, puis DespawnAvatar") {
+    Session s = host_with_avatar();
+    const Output out = s.tick(2000, loaded_world(kPlayer2), {});  // fin de monde
+    const auto despawns = sent_of<proto::Despawn>(out);
+    CHECK_EQ(despawns.size(), 1u);
+    if (!despawns.empty()) CHECK_EQ(despawns[0].net_id, proto::kHostNetId);
+    const auto da = commands_of<DespawnAvatar>(out);
+    CHECK_EQ(da.size(), 1u);
+    if (!da.empty()) CHECK_EQ(da[0]->net_id, proto::kGuestNetId);
+    CHECK(index_of_sent<proto::Despawn>(out) < index_of_sent<proto::SessionEnd>(out));
+    CHECK(index_of_sent<proto::SessionEnd>(out) < index_of<DespawnAvatar>(out));
+    CHECK(!s.avatar_present());
+    // Le maintien et le réarmement n'en émettent pas d'autre.
+    CHECK(commands_of<DespawnAvatar>(s.tick(3000, loaded_world(kPlayer2), {})).empty());
+}
+
+TEST("avatars : fin locale sans avatar → Despawn de son héros quand même, pas de DespawnAvatar") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    const Output out = s.fail(2000, "test");
+    CHECK_EQ(sent_of<proto::Despawn>(out).size(), 1u);
+    CHECK(sent_session_end(out, 4));
+    CHECK(commands_of<DespawnAvatar>(out).empty());
+}
+
+TEST("avatars : timeout avec avatar → DespawnAvatar, sans Despawn envoyé") {
+    Session s = host_with_avatar();
+    const Output out = s.tick(1100 + kPeerTimeoutMs, loaded_world(), {});
+    CHECK(s.state() == State::Ended);
+    CHECK(reliables_sent(out).empty());
+    CHECK_EQ(commands_of<DespawnAvatar>(out).size(), 1u);
+}
+
+TEST("avatars : SessionEnd reçu avec avatar → DespawnAvatar, sans Despawn envoyé") {
+    Session s = host_with_avatar();
+    const Output out = s.tick(1200, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK(s.state() == State::Ended);
+    CHECK(sent_of<proto::Despawn>(out).empty());
+    CHECK_EQ(commands_of<DespawnAvatar>(out).size(), 1u);
+}
+
+TEST("avatars : Despawn reçu → DespawnAvatar, la session continue ; nouveau Spawn accepté") {
+    Session s = host_with_avatar();
+    Output out = s.tick(1200, loaded_world(), reliable(encode_r(proto::Despawn{proto::kGuestNetId})));
+    CHECK(s.state() == State::InSession);
+    const auto da = commands_of<DespawnAvatar>(out);
+    CHECK_EQ(da.size(), 1u);
+    if (!da.empty()) CHECK_EQ(da[0]->net_id, proto::kGuestNetId);
+    CHECK(!s.avatar_present());
+    out = s.tick(1300, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK_EQ(commands_of<SpawnAvatar>(out).size(), 1u);
+    // Fin ensuite : un seul DespawnAvatar, pour le nouvel avatar.
+    out = s.tick(1400, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK_EQ(commands_of<DespawnAvatar>(out).size(), 1u);
+}
+
+TEST("avatars : Despawn sans avatar ou d'un autre NetId → ignoré, avec log") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    Output out = s.tick(1100, loaded_world(), reliable(encode_r(proto::Despawn{proto::kGuestNetId})));
+    CHECK(commands_of<DespawnAvatar>(out).empty());
+    CHECK(has_log(out, "ignoré (pas d'avatar)"));
+    s = host_with_avatar();
+    out = s.tick(1200, loaded_world(), reliable(encode_r(proto::Despawn{proto::kHostNetId})));
+    CHECK(commands_of<DespawnAvatar>(out).empty());
+    CHECK(has_log(out, "ignoré (pas l'avatar du pair)"));
+    CHECK(s.avatar_present());
+}
+
+TEST("avatars : rejoindre, timeout, rejoindre, quitter → jamais deux avatars") {
+    Session s(host_settings());
+    int present = 0, max_present = 0;
+    auto run = [&](const Output& out) {
+        for (const auto& c : out.commands) {
+            if (std::holds_alternative<SpawnAvatar>(c)) ++present;
+            if (std::holds_alternative<DespawnAvatar>(c)) --present;
+            if (present > max_present) max_present = present;
+            CHECK(present >= 0);
+        }
+    };
+    std::uint64_t t = 0;
+    run(s.tick(t, loaded_world(), {}));
+    for (int round = 0; round < 3; ++round) {
+        t += 100;
+        run(s.tick(t, loaded_world(), control_from(kGuestA, encode(make_hello()))));
+        CHECK(s.state() == State::InSession);
+        t += 100;
+        run(s.tick(t, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId)))));
+        run(s.tick(t + 1, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId)))));  // en double
+        CHECK_EQ(present, 1);
+        if (round == 1) {
+            t += kPeerTimeoutMs + 10;  // --kill : timeout
+            run(s.tick(t, loaded_world(), {}));
+        } else {
+            t += 100;
+            run(s.tick(t, loaded_world(), reliable(encode_r(proto::Despawn{proto::kGuestNetId}))));
+            run(s.tick(t + 1, loaded_world(), reliable(encode_r(proto::SessionEnd{1}))));
+        }
+        CHECK_EQ(present, 0);
+        t += kLingerMs + 10;
+        run(s.tick(t, loaded_world(), {}));
+        CHECK(s.state() == State::Hosting);
+    }
+    CHECK_EQ(max_present, 1);
+}
+
+TEST("avatars : Spawn à pose non finie → ignoré, avec log") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    proto::Spawn m = spawn_of(proto::kGuestNetId);
+    m.y = std::numeric_limits<float>::quiet_NaN();
+    Output out = s.tick(1100, loaded_world(), reliable(encode_r(m)));
+    CHECK(commands_of<SpawnAvatar>(out).empty());
+    CHECK(has_log(out, "ignoré (pose non finie)"));
+    m = spawn_of(proto::kGuestNetId);
+    m.yaw = std::numeric_limits<float>::infinity();
+    out = s.tick(1200, loaded_world(), reliable(encode_r(m)));
+    CHECK(commands_of<SpawnAvatar>(out).empty());
+    CHECK(!s.avatar_present());
+}
+
+TEST("avatars : côté invité, Despawn{1} reçu, fin locale et SessionEnd reçu") {
+    auto guest_with_avatar = [] {
+        Session g(guest_settings());
+        g.tick(0, loaded_world(), {});
+        g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+        const Output out = g.tick(200, loaded_world(), reliable(encode_r(spawn_of(proto::kHostNetId))));
+        CHECK_EQ(commands_of<SpawnAvatar>(out).size(), 1u);
+        return g;
+    };
+    // Despawn{1} : avatar de l'hôte retiré, la session continue.
+    Session g = guest_with_avatar();
+    Output out = g.tick(300, loaded_world(), reliable(encode_r(proto::Despawn{proto::kHostNetId})));
+    auto da = commands_of<DespawnAvatar>(out);
+    CHECK_EQ(da.size(), 1u);
+    if (!da.empty()) CHECK_EQ(da[0]->net_id, proto::kHostNetId);
+    CHECK(g.state() == State::InSession);
+    // Fin locale (fin de monde) : Despawn{2} avant SessionEnd{2}, puis DespawnAvatar{1}.
+    g = guest_with_avatar();
+    out = g.tick(300, loaded_world(kPlayer2), {});
+    const auto despawns = sent_of<proto::Despawn>(out);
+    CHECK_EQ(despawns.size(), 1u);
+    if (!despawns.empty()) CHECK_EQ(despawns[0].net_id, proto::kGuestNetId);
+    CHECK(index_of_sent<proto::Despawn>(out) < index_of_sent<proto::SessionEnd>(out));
+    da = commands_of<DespawnAvatar>(out);
+    CHECK_EQ(da.size(), 1u);
+    if (!da.empty()) CHECK_EQ(da[0]->net_id, proto::kHostNetId);
+    // SessionEnd reçu : DespawnAvatar{1}, rien d'envoyé.
+    g = guest_with_avatar();
+    out = g.tick(300, loaded_world(), reliable(encode_r(proto::SessionEnd{2})));
+    CHECK(reliables_sent(out).empty());
+    CHECK_EQ(commands_of<DespawnAvatar>(out).size(), 1u);
 }

@@ -13,8 +13,8 @@
 //
 // En J0, la seule entrée est le script `MP_Probe`, que personne n'appelle. Avec
 // `probe = 1` (spike J1), ScriptInit installe les hooks de la sonde (win/hooks,
-// sync/probe) ; sinon (story 1.4) il installe le seul hook OnProcess de la session
-// (sync/session). Sonde et session sont exclusives. Si la version du jeu
+// sync/probe) ; sinon (story 1.4) il installe les hooks de la session (sync/session,
+// sync/avatar). Sonde et session sont exclusives. Si la version du jeu
 // n'est pas reconnue ou si l'ABI est introuvable, les tables restent vides (rejet
 // silencieux) et aucun code du jeu n'est appelé. Toute la logique s'exécute dans ScriptInit (hors loader lock).
 
@@ -238,7 +238,8 @@ bool load_config(const std::wstring& dir) {
     return true;
 }
 
-// Session (story 1.4, probe = 0) : hook OnProcess seul, puis empreintes des 4 modules
+// Session (story 1.4, probe = 0) : hooks de session (OnProcess, et depuis la story 2.2
+// PlayMotion et SetRagDollEnabled pour les avatars), puis empreintes des 4 modules
 // (Script.dll est chargée par la résolution des entités). Un échec laisse le jeu en solo.
 void start_session() {
     if (!mp::win::hooks::install_session()) {

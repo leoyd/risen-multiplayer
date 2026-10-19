@@ -12,6 +12,11 @@
 // session, Ended (raison au log), maintien du KCP pendant kLingerMs, puis CloseReliable, Stop
 // et Ended → Inactive. La session se réarme ensuite au monde chargé suivant ; l'hôte dont
 // l'invité est parti (timeout, SessionEnd reçu) se réarme aussitôt, dans le même monde.
+//
+// Avatars (story 2.2, PROTOCOL.md §8) : à l'entrée en session, chaque pair envoie le Spawn de
+// son héros ; l'invité est d'abord téléporté devant l'hôte (Teleport). Un Spawn reçu du pair
+// donne SpawnAvatar, un Despawn reçu ou toute fin de session donne DespawnAvatar. La session
+// sait seulement si l'avatar existe ; sa création et sa destruction sont l'affaire de sync/.
 #pragma once
 
 #include <array>
@@ -35,6 +40,7 @@ inline constexpr std::uint64_t kConnectTimeoutMs = 10000;
 inline constexpr std::uint64_t kHeartbeatIntervalMs = 1000;
 inline constexpr std::uint64_t kPeerTimeoutMs = 5000;
 inline constexpr std::uint64_t kLingerMs = 1000;  // maintien du KCP après Ended (SessionEnd)
+inline constexpr float kGuestSpawnDistance = 200.0f;  // invité placé à 2 m devant l'hôte (cm)
 
 enum class State { Inactive, Hosting, Connecting, InSession, Ended };
 const char* state_name(State state);  // "Inactive", "Hosting"…
@@ -55,7 +61,7 @@ struct World {
     std::uintptr_t player = 0;  // Entity::GetPlayer(), entier opaque (jamais déréférencé ici)
     bool running = false;       // gCSession::IsGameRunning (instance nulle : false)
     bool dead = false;          // Entity::IsDead du joueur
-    bool pose_ok = false;       // pose lue (utile seulement en Hosting, pour le Welcome)
+    bool pose_ok = false;       // pose lue (Hosting : Welcome ; Connecting : Spawn de l'invité)
     float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f;
 
     bool loaded() const { return player != 0 && running; }  // monde chargé
@@ -70,6 +76,16 @@ struct ReliableIn {
     Bytes bytes;  // [MsgType][charge]
 };
 using Input = std::variant<ControlIn, ReliableIn>;
+
+// Pose d'un héros : position et lacet (AD-7).
+struct Pose {
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    float yaw = 0.0f;  // radians, atan2(m[8], m[10])
+};
+
+// Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
+// (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
+Pose guest_pose_near(const Pose& host);
 
 // Commandes, à exécuter dans l'ordre.
 struct Start {
@@ -88,7 +104,18 @@ struct SendReliable {
 };
 struct CloseReliable {};
 struct Stop {};
-using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop>;
+struct Teleport {  // invité : déplacer son propre héros (Entity::MoveTo)
+    Pose pose;
+};
+struct SpawnAvatar {  // créer l'avatar du pair
+    std::uint32_t net_id = 0;
+    Pose pose;
+};
+struct DespawnAvatar {  // retirer puis détruire l'avatar du pair
+    std::uint32_t net_id = 0;
+};
+using Command =
+    std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar, DespawnAvatar>;
 
 enum class Level { Debug, Info, Warn, Error };
 struct LogLine {
@@ -114,6 +141,7 @@ public:
     Output fail(std::uint64_t now_ms, const std::string& cause);
 
     State state() const { return state_; }
+    bool avatar_present() const { return avatar_present_; }
     std::uint32_t conv() const { return conv_; }
     const Endpoint& peer() const { return peer_; }
 
@@ -124,7 +152,11 @@ private:
     void host_on_hello(std::uint64_t now, const ControlIn& in, Output& out);
     void guest_on_control(std::uint64_t now, const ControlIn& in, Output& out);
     void timers(std::uint64_t now, Output& out);
-    void enter_session(std::uint64_t now, Output& out);
+    // Entrée en InSession : délais, puis Spawn de son héros à la pose `own`.
+    void enter_session(std::uint64_t now, const Pose& own, Output& out);
+    void remove_avatar(const std::string& why, Output& out);  // DespawnAvatar si l'avatar existe
+    std::uint32_t own_net_id() const;
+    std::uint32_t peer_net_id() const;
     // Transition de fin unique. `local_reason` ≠ 0 : cause locale, SessionEnd{local_reason}
     // envoyé si InSession. `rearm_now` : l'hôte se réarme dès la fin du maintien, dans le
     // même monde ; sinon, au monde suivant.
@@ -159,6 +191,7 @@ private:
     std::uint64_t rng_ = 0;
     bool foreign_warned_ = false;  // invité : réponse d'une autre adresse déjà signalée
     World world_;             // monde du tick en cours (pose du Welcome)
+    bool avatar_present_ = false;  // SpawnAvatar émis, pas encore de DespawnAvatar
 
     std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)
     std::uint64_t linger_until_ = 0;   // Ended : fin du maintien du KCP

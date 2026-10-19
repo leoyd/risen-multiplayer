@@ -53,8 +53,11 @@ type hostRecord struct {
 	ignoredHello int // Hello du pair arrivés après un segment KCP (ignorés, §8)
 	heartbeats   int
 	sessionEnds  []uint8
-	lastDatagram time.Time // dernier datagramme du pair de session
-	timeoutAt    time.Time // fin « timeout » constatée
+	spawns       []protocol.Spawn   // Spawn reçus de l'invité (v3)
+	despawns     []uint32           // NetId des Despawn reçus
+	order        []protocol.MsgType // Spawn, Despawn et SessionEnd, dans l'ordre de réception
+	lastDatagram time.Time          // dernier datagramme du pair de session
+	timeoutAt    time.Time          // fin « timeout » constatée
 	ended        string
 }
 
@@ -292,6 +295,7 @@ func (h *simHost) openSession(peer netip.AddrPort) {
 	}
 	h.welcome = protocol.Welcome{Conv: conv, X: 1, Y: 2, Z: 3, Yaw: 0.5}
 	h.sendControl(peer, h.welcome)
+	h.sendReliable(protocol.Spawn{NetId: protocol.HostNetId, Kind: protocol.SpawnTypeHero, X: 1, Y: 2, Z: 3, Yaw: 0.5})
 	if h.cfg.SilentAfterWelcome {
 		h.silent = true
 	}
@@ -312,9 +316,20 @@ func (h *simHost) drain() {
 			h.mu.Lock()
 			h.rec.heartbeats++
 			h.mu.Unlock()
+		case protocol.Spawn:
+			h.mu.Lock()
+			h.rec.spawns = append(h.rec.spawns, m)
+			h.rec.order = append(h.rec.order, protocol.TypeSpawn)
+			h.mu.Unlock()
+		case protocol.Despawn:
+			h.mu.Lock()
+			h.rec.despawns = append(h.rec.despawns, m.NetId)
+			h.rec.order = append(h.rec.order, protocol.TypeDespawn)
+			h.mu.Unlock()
 		case protocol.SessionEnd:
 			h.mu.Lock()
 			h.rec.sessionEnds = append(h.rec.sessionEnds, m.Reason)
+			h.rec.order = append(h.rec.order, protocol.TypeSessionEnd)
 			h.rec.ended = "SessionEnd"
 			h.mu.Unlock()
 			h.k.Flush() // acquittement

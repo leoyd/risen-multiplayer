@@ -112,6 +112,21 @@ void write(Writer& w, const Motion& m) {
     w.u32(m.d18);
 }
 
+void write(Writer& w, const Spawn& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::Spawn));
+    w.u32(m.net_id);
+    w.u8(m.type);
+    w.f32(m.x);
+    w.f32(m.y);
+    w.f32(m.z);
+    w.f32(m.yaw);
+}
+
+void write(Writer& w, const Despawn& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::Despawn));
+    w.u32(m.net_id);
+}
+
 // --- Lecture ------------------------------------------------------------------
 
 // Curseur borné : chaque lecture vérifie la place restante et lève le drapeau
@@ -236,6 +251,21 @@ DecodeError read(Reader& r, Motion& m) {
     return valid(m) ? DecodeError::None : DecodeError::BadValue;
 }
 
+DecodeError read(Reader& r, Spawn& m) {
+    m.net_id = r.u32();
+    m.type = r.u8();
+    m.x = r.f32();
+    m.y = r.f32();
+    m.z = r.f32();
+    m.yaw = r.f32();
+    return r.finish();
+}
+
+DecodeError read(Reader& r, Despawn& m) {
+    m.net_id = r.u32();
+    return r.finish();
+}
+
 template <typename Message, typename Variant>
 Decoded<Variant> decode_as(Reader& r) {
     Decoded<Variant> d;
@@ -291,6 +321,8 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
         case MsgType::Heartbeat: return decode_as<Heartbeat, ReliableMessage>(r);
         case MsgType::SessionEnd: return decode_as<SessionEnd, ReliableMessage>(r);
         case MsgType::Motion: return decode_as<Motion, ReliableMessage>(r);
+        case MsgType::Spawn: return decode_as<Spawn, ReliableMessage>(r);
+        case MsgType::Despawn: return decode_as<Despawn, ReliableMessage>(r);
         default: return {DecodeError::UnknownType, {}};
     }
 }

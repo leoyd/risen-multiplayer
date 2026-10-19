@@ -2,6 +2,7 @@
 
 #include "core/protocol.h"
 
+#include <cmath>
 #include <cstdio>
 #include <utility>
 
@@ -33,7 +34,22 @@ std::string reason_text(const char* name, std::uint8_t reason) {
 std::string reject_text(std::uint8_t reason) { return reason_text(proto::reject_reason_name(reason), reason); }
 std::string end_text(std::uint8_t reason) { return reason_text(proto::end_reason_name(reason), reason); }
 
+std::string net_id_text(std::uint32_t id) {
+    return id == proto::kHostNetId ? "1 (hôte)" : id == proto::kGuestNetId ? "2 (invité)" : std::to_string(id);
+}
+
 }  // namespace
+
+Pose guest_pose_near(const Pose& host) {
+    constexpr float kPi = 3.14159265358979323846f;
+    Pose p;
+    p.x = host.x + kGuestSpawnDistance * std::sin(host.yaw);
+    p.y = host.y;
+    p.z = host.z + kGuestSpawnDistance * std::cos(host.yaw);
+    p.yaw = host.yaw + kPi;
+    if (p.yaw > kPi) p.yaw -= 2.0f * kPi;
+    return p;
+}
 
 const char* state_name(State state) {
     switch (state) {
@@ -75,15 +91,35 @@ void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t loc
     if (state_ == State::Ended || state_ == State::Inactive) return;
     if (state_ == State::InSession && local_reason != 0) {
         Bytes bytes;
+        if (proto::encode_reliable(proto::Despawn{own_net_id()}, bytes)) {
+            out.commands.push_back(SendReliable{std::move(bytes)});
+            out.logs.push_back({Level::Info, "[sync] Despawn envoyé : NetId " + net_id_text(own_net_id())});
+        }
         if (proto::encode_reliable(proto::SessionEnd{local_reason}, bytes)) {
             out.commands.push_back(SendReliable{std::move(bytes)});
             out.logs.push_back({Level::Info, "[sync] SessionEnd envoyé : " + end_text(local_reason)});
         }
     }
     transition(State::Ended, reason + " ; retour au solo", out, level);
+    remove_avatar("fin de session", out);  // AD-11 : la transition unique vers Ended retire l'avatar
     linger_until_ = now + kLingerMs;  // le KCP reste ouvert pour laisser partir le SessionEnd
     wait_new_world_ = !rearm_now;
     track_world(world_, false);  // fin de monde : le monde a déjà changé
+}
+
+void Session::remove_avatar(const std::string& why, Output& out) {
+    if (!avatar_present_) return;
+    avatar_present_ = false;
+    out.commands.push_back(DespawnAvatar{peer_net_id()});
+    out.logs.push_back({Level::Info, "[sync] avatar " + net_id_text(peer_net_id()) + " retiré : " + why});
+}
+
+std::uint32_t Session::own_net_id() const {
+    return settings_.role == Role::Host ? proto::kHostNetId : proto::kGuestNetId;
+}
+
+std::uint32_t Session::peer_net_id() const {
+    return settings_.role == Role::Host ? proto::kGuestNetId : proto::kHostNetId;
 }
 
 void Session::finish_linger(const World& world, Output& out) {
@@ -170,6 +206,7 @@ void Session::arm(std::uint64_t now, const World& world, Output& out) {
     reliable_seen_ = false;
     heartbeats_rx_ = 0;
     foreign_warned_ = false;
+    avatar_present_ = false;  // déjà retiré par end() ; par sûreté
     if (settings_.role == Role::Host) {
         out.commands.push_back(Start{settings_.port});
         transition(State::Hosting,
@@ -328,7 +365,7 @@ void Session::host_on_hello(std::uint64_t now, const ControlIn& in, Output& out)
     transition(State::InSession, "invité " + who + " « " + hello.nickname + " » accepté, conv=" + hex32(conv_) +
                                      ", pose envoyée " + pose_text(welcome.x, welcome.y, welcome.z, welcome.yaw),
                out);
-    enter_session(now, out);
+    enter_session(now, Pose{welcome.x, welcome.y, welcome.z, welcome.yaw}, out);
 }
 
 void Session::guest_on_control(std::uint64_t now, const ControlIn& in, Output& out) {
@@ -362,7 +399,20 @@ void Session::guest_on_control(std::uint64_t now, const ControlIn& in, Output& o
         transition(State::InSession, "Welcome de " + net::to_string(host_) + ", conv=" + hex32(conv_) +
                                          ", pose de l'hôte " + pose_text(w->x, w->y, w->z, w->yaw),
                    out);
-        enter_session(now, out);
+        // Pose nulle : l'hôte n'a pas pu lire la sienne (§8). On ne téléporte pas à l'origine.
+        Pose own{world_.x, world_.y, world_.z, world_.yaw};
+        if (w->x == 0.0f && w->y == 0.0f && w->z == 0.0f && w->yaw == 0.0f) {
+            out.logs.push_back({Level::Warn, "[sync] pose de l'hôte nulle : héros de l'invité laissé sur place"});
+            if (!world_.pose_ok) {
+                out.logs.push_back({Level::Warn, "[sync] pose du héros illisible : Spawn envoyé avec une pose nulle"});
+            }
+        } else {
+            own = guest_pose_near(Pose{w->x, w->y, w->z, w->yaw});
+            out.commands.push_back(Teleport{own});
+            out.logs.push_back({Level::Info, "[sync] héros téléporté devant l'hôte : " +
+                                                 pose_text(own.x, own.y, own.z, own.yaw)});
+        }
+        enter_session(now, own, out);
         return;
     }
     if (const auto* r = std::get_if<proto::Reject>(&decoded.message)) {
@@ -392,7 +442,39 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
     }
     if (std::holds_alternative<proto::Motion>(decoded.message)) {
         // Avatar : story 2.4. En attendant, ignoré sans bruit hors debug.
-        out.logs.push_back({Level::Debug, "[sync] Motion reçu, ignoré (pas encore d'avatar)"});
+        out.logs.push_back({Level::Debug, "[sync] Motion reçu, ignoré (pas encore d'animation de l'avatar)"});
+        return;
+    }
+    if (const auto* sp = std::get_if<proto::Spawn>(&decoded.message)) {
+        const std::string what = "Spawn reçu (NetId " + net_id_text(sp->net_id) + ", type " +
+                                 std::to_string(sp->type) + ", " + pose_text(sp->x, sp->y, sp->z, sp->yaw) + ")";
+        if (sp->net_id != peer_net_id() || sp->type != proto::kSpawnTypeHero) {
+            out.logs.push_back({Level::Warn, "[sync] " + what + " : ignoré (attendu NetId " +
+                                                 net_id_text(peer_net_id()) + ", type 0)"});
+            return;
+        }
+        if (!std::isfinite(sp->x) || !std::isfinite(sp->y) || !std::isfinite(sp->z) || !std::isfinite(sp->yaw)) {
+            out.logs.push_back({Level::Warn, "[sync] " + what + " : ignoré (pose non finie)"});
+            return;
+        }
+        if (avatar_present_) {
+            out.logs.push_back({Level::Warn, "[sync] " + what + " : ignoré (avatar déjà présent)"});
+            return;
+        }
+        avatar_present_ = true;
+        out.commands.push_back(SpawnAvatar{sp->net_id, Pose{sp->x, sp->y, sp->z, sp->yaw}});
+        out.logs.push_back({Level::Info, "[sync] " + what + " : avatar créé"});
+        return;
+    }
+    if (const auto* dp = std::get_if<proto::Despawn>(&decoded.message)) {
+        if (dp->net_id != peer_net_id() || !avatar_present_) {
+            out.logs.push_back({Level::Warn, "[sync] Despawn reçu (NetId " + net_id_text(dp->net_id) +
+                                                 ") : ignoré (" +
+                                                 (dp->net_id != peer_net_id() ? "pas l'avatar du pair" : "pas d'avatar") +
+                                                 ")"});
+            return;
+        }
+        remove_avatar("Despawn reçu", out);
         return;
     }
     const auto& e = std::get<proto::SessionEnd>(decoded.message);
@@ -404,10 +486,22 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         routine ? Level::Info : Level::Warn, out);
 }
 
-void Session::enter_session(std::uint64_t now, Output& /*out*/) {
+void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     last_peer_ = now;
     next_heartbeat_ = now;  // premier heartbeat dès l'entrée en session
     heartbeats_rx_ = 0;
+    proto::Spawn spawn;
+    spawn.net_id = own_net_id();
+    spawn.x = own.x;
+    spawn.y = own.y;
+    spawn.z = own.z;
+    spawn.yaw = own.yaw;
+    Bytes bytes;
+    if (proto::encode_reliable(spawn, bytes)) {
+        out.commands.push_back(SendReliable{std::move(bytes)});
+        out.logs.push_back({Level::Info, "[sync] Spawn envoyé : NetId " + net_id_text(spawn.net_id) + ", " +
+                                             pose_text(own.x, own.y, own.z, own.yaw)});
+    }
 }
 
 void Session::send_hello(Output& out) {

@@ -21,6 +21,8 @@ using SpawnFn = Entity* (*)(Entity* sret, Template* by_value, const Matrix* pose
 using TemplateDtorFn = void (*)(Template* self);
 using IsProcessingRangeEnteredFn = bool (*)(const Entity* self);
 using IsDeadFn = bool (*)(const Entity* self);
+// Saute vers eCEntity::Kill (Engine.dll) : destruction différée (liste du moteur, bit 0x8 de +0x28).
+using KillFn = void (*)(const Entity* self);
 // Game.dll
 using SessionGetInstanceFn = void* (*)();             // gCSession& (pointeur global, nul possible)
 using SessionIsGameRunningFn = bool (*)(const void* session);  // octet à +0x110
@@ -52,6 +54,7 @@ constexpr const char* kSpawn = "?Spawn@Entity@@SA?AV1@VTemplate@@AEBVbCMatrix@@_
 constexpr const char* kTemplateDtor = "??1Template@@QEAA@XZ";
 constexpr const char* kIsProcessingRangeEntered = "?IsProcessingRangeEntered@Entity@@QEBA_NXZ";
 constexpr const char* kIsDead = "?IsDead@Entity@@QEBA_NXZ";
+constexpr const char* kKill = "?Kill@Entity@@QEAAXXZ";
 constexpr const char* kSessionGetInstance = "?GetInstance@gCSession@@SAAEAV1@XZ";
 constexpr const char* kSessionIsGameRunning = "?IsGameRunning@gCSession@@QEBA_NXZ";
 constexpr const char* kGetNPCs = "?GetNPCs@Entity@@SA?AV?$bTObjArray@VEntity@@@@XZ";
@@ -82,6 +85,7 @@ struct EntityAbi {
     TemplateDtorFn template_dtor = nullptr;
     IsProcessingRangeEnteredFn is_processing_range_entered = nullptr;
     IsDeadFn is_dead = nullptr;
+    KillFn kill = nullptr;
     SessionGetInstanceFn session_get_instance = nullptr;
     SessionIsGameRunningFn session_is_game_running = nullptr;
     GetNPCsFn get_npcs = nullptr;
@@ -145,6 +149,7 @@ bool resolve_entities(const char*& missing) {
                     lookup(script, kIsProcessingRangeEntered, a.is_processing_range_entered, missing) &&
                     lookup(script, kGetNPCs, a.get_npcs, missing) &&
                     lookup(script, kIsDead, a.is_dead, missing) &&
+                    lookup(script, kKill, a.kill, missing) &&
                     lookup(game, kSessionGetInstance, a.session_get_instance, missing) &&
                     lookup(game, kSessionIsGameRunning, a.session_is_game_running, missing) &&
                     lookup(engine, kGetPropertySet, a.get_property_set, missing) &&
@@ -289,6 +294,16 @@ bool is_dead(const Entity& e, bool& out) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = false;
+        return false;
+    }
+}
+
+bool kill(const Entity& e) {
+    if (!g_resolved || e.ptr == nullptr) return false;
+    __try {
+        g_abi.kill(&e);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
 }

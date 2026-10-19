@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 2, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 3, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 2
+	ProtocolVersion   = 3
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -31,12 +31,12 @@ type Channel uint8
 
 const (
 	ChannelReliable Channel = 0 // segments KCP
-	ChannelSnapshot Channel = 1 // Epic 2, non défini en v2
+	ChannelSnapshot Channel = 1 // Epic 2, non défini en v3
 	ChannelControl  Channel = 2 // Hello, Welcome, Reject
 )
 
-// MsgType : 18 à 25 sont réservés et se décodent en ErrUnknownType. Motion (19, v2) n'est
-// pas encore décodé ici : son codec Go arrive avec la story 2.4.
+// MsgType : 18 et 22 à 25 sont réservés et se décodent en ErrUnknownType. Motion (19, v2)
+// n'est pas encore décodé ici : son codec Go arrive avec la story 2.4.
 type MsgType uint8
 
 const (
@@ -45,6 +45,15 @@ const (
 	TypeReject     MsgType = 3
 	TypeHeartbeat  MsgType = 16
 	TypeSessionEnd MsgType = 17
+	TypeSpawn      MsgType = 20 // v3
+	TypeDespawn    MsgType = 21 // v3
+)
+
+// NetId (AD-6) et type de Spawn.
+const (
+	HostNetId     uint32 = 1
+	GuestNetId    uint32 = 2
+	SpawnTypeHero uint8  = 0
 )
 
 // Raisons de Reject.
@@ -82,7 +91,7 @@ var (
 	ErrTrailingBytes      = errors.New("octets en trop")
 )
 
-// ErrOutOfBounds : refus de l'encodeur (texte hors bornes, version ≠ 1, > 1200 octets,
+// ErrOutOfBounds : refus de l'encodeur (texte hors bornes, version ≠ ProtocolVersion, > 1200 octets,
 // ou message absent de ce canal). Rien n'est produit.
 var ErrOutOfBounds = errors.New("message hors bornes, non encodé")
 
@@ -92,7 +101,8 @@ type Fingerprint struct {
 	SizeOfImage   uint32
 }
 
-// Message est l'un de Hello, Welcome, Reject (contrôle) ou Heartbeat, SessionEnd (fiable).
+// Message est l'un de Hello, Welcome, Reject (contrôle) ou Heartbeat, SessionEnd, Spawn,
+// Despawn (fiable).
 type Message interface {
 	Type() MsgType
 }
@@ -117,11 +127,23 @@ type Heartbeat struct{}
 
 type SessionEnd struct{ Reason uint8 }
 
+// Spawn : apparition d'une entité ; Kind (champ `type` du §4) est gardé brut (0 = héros).
+type Spawn struct {
+	NetId   uint32
+	Kind    uint8
+	X, Y, Z float32
+	Yaw     float32
+}
+
+type Despawn struct{ NetId uint32 }
+
 func (Hello) Type() MsgType      { return TypeHello }
 func (Welcome) Type() MsgType    { return TypeWelcome }
 func (Reject) Type() MsgType     { return TypeReject }
 func (Heartbeat) Type() MsgType  { return TypeHeartbeat }
 func (SessionEnd) Type() MsgType { return TypeSessionEnd }
+func (Spawn) Type() MsgType      { return TypeSpawn }
+func (Despawn) Type() MsgType    { return TypeDespawn }
 
 // --- Encodage ------------------------------------------------------------------------
 
@@ -168,6 +190,15 @@ func (w *writer) message(m Message) {
 	case Heartbeat:
 	case SessionEnd:
 		w.u8(m.Reason)
+	case Spawn:
+		w.u32(m.NetId)
+		w.u8(m.Kind)
+		w.f32(m.X)
+		w.f32(m.Y)
+		w.f32(m.Z)
+		w.f32(m.Yaw)
+	case Despawn:
+		w.u32(m.NetId)
 	}
 }
 
@@ -191,10 +222,11 @@ func EncodeControl(m Message) ([]byte, error) {
 	return w.b, nil
 }
 
-// EncodeReliable rend le message [MsgType][charge] d'un Heartbeat ou SessionEnd (sans canal).
+// EncodeReliable rend le message [MsgType][charge] d'un Heartbeat, SessionEnd, Spawn ou
+// Despawn (sans canal).
 func EncodeReliable(m Message) ([]byte, error) {
 	switch m.(type) {
-	case Heartbeat, SessionEnd:
+	case Heartbeat, SessionEnd, Spawn, Despawn:
 	default:
 		return nil, ErrOutOfBounds
 	}
@@ -355,6 +387,18 @@ func DecodeReliable(b []byte) (Message, error) {
 			return nil, err
 		}
 		return SessionEnd{Reason: v}, nil
+	case TypeSpawn:
+		m := Spawn{NetId: r.u32(), Kind: r.u8(), X: r.f32(), Y: r.f32(), Z: r.f32(), Yaw: r.f32()}
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case TypeDespawn:
+		m := Despawn{NetId: r.u32()}
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
 	}
 	return nil, ErrUnknownType
 }

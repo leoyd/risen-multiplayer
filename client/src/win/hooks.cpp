@@ -2,6 +2,7 @@
 
 #include "common/log.h"
 #include "game/entity.h"
+#include "sync/avatar.h"
 #include "sync/probe.h"
 #include "sync/session.h"
 
@@ -38,6 +39,15 @@ void detour_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vec
     if (sync::probe::on_set_ragdoll(animation_ps, on, flag, vector)) {
         g_original_set_ragdoll(animation_ps, on, flag, vector);
     }
+}
+
+// Session (story 2.2) : seuls les avatars sont filtrés ; tout le reste passe.
+void detour_play_motion_session(void* animation_ps, int type, void* desc, bool flag) {
+    if (sync::avatar::on_play_motion(animation_ps)) g_original_play_motion(animation_ps, type, desc, flag);
+}
+
+void detour_set_ragdoll_session(void* animation_ps, bool on, bool flag, const float* vector) {
+    if (sync::avatar::on_set_ragdoll(animation_ps, on)) g_original_set_ragdoll(animation_ps, on, flag, vector);
 }
 
 bool create(void* target, void* detour, void** original, const char* name) {
@@ -98,7 +108,11 @@ bool install_session() {
     }
     g_initialized = true;
     if (!create(game::on_process_address(), reinterpret_cast<void*>(&detour_on_process_session),
-                reinterpret_cast<void**>(&g_original_on_process), "OnProcess")) {
+                reinterpret_cast<void**>(&g_original_on_process), "OnProcess") ||
+        !create(game::play_motion_address(), reinterpret_cast<void*>(&detour_play_motion_session),
+                reinterpret_cast<void**>(&g_original_play_motion), "PlayMotion") ||
+        !create(game::set_ragdoll_address(), reinterpret_cast<void*>(&detour_set_ragdoll_session),
+                reinterpret_cast<void**>(&g_original_set_ragdoll), "SetRagDollEnabled")) {
         remove();
         log::error("[hooks] session inactive");
         return false;
@@ -109,7 +123,7 @@ bool install_session() {
         remove();
         return false;
     }
-    log::info("[hooks] hooks installés (OnProcess)");
+    log::info("[hooks] hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled)");
     return true;
 }
 

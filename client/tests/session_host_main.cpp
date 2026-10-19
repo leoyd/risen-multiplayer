@@ -108,6 +108,7 @@ int main(int argc, char** argv) {
     };
 
     std::vector<Input> inputs;
+    int avatars = 0;  // avatars présents (story 2.2) : ne doit jamais dépasser 1
     long ends = 0;  // transitions Ended → Inactive (fin du maintien)
     std::sig_atomic_t reloads_seen = 0;
     while (now_ms() < static_cast<std::uint64_t>(max_ms)) {
@@ -156,6 +157,17 @@ int main(int argc, char** argv) {
                     transport.post(mp::net::CloseReliable{});
                 } else if (std::holds_alternative<Stop>(cmd)) {
                     transport.stop();
+                } else if (const auto* t = std::get_if<Teleport>(&cmd)) {
+                    print("INFO", "[test] Teleport (" + std::to_string(t->pose.x) + ", " + std::to_string(t->pose.y) +
+                                      ", " + std::to_string(t->pose.z) + ")");
+                } else if (const auto* sa = std::get_if<SpawnAvatar>(&cmd)) {
+                    ++avatars;
+                    print(avatars > 1 ? "ERROR" : "INFO", "[test] SpawnAvatar NetId " + std::to_string(sa->net_id) +
+                                                              " : avatars présents=" + std::to_string(avatars));
+                } else if (const auto* da = std::get_if<DespawnAvatar>(&cmd)) {
+                    --avatars;
+                    print(avatars < 0 ? "ERROR" : "INFO", "[test] DespawnAvatar NetId " + std::to_string(da->net_id) +
+                                                              " : avatars présents=" + std::to_string(avatars));
                 }
             }
         }

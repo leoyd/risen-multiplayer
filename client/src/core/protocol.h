@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 2 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 3 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -21,7 +21,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 2;
+inline constexpr std::uint16_t kProtocolVersion = 3;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -36,15 +36,17 @@ enum class Channel : std::uint8_t {
     Control = 2,   // hors KCP : Hello, Welcome, Reject
 };
 
-// 18 et 20 à 25 sont réservés (AniName, Spawn, Despawn, HitRequest, HitOnGuest, Death,
-// Respawn) et ne sont pas encore définis : ils se décodent en `UnknownType`.
+// 18 et 22 à 25 sont réservés (AniName, HitRequest, HitOnGuest, Death, Respawn) et ne sont
+// pas encore définis : ils se décodent en `UnknownType`.
 enum class MsgType : std::uint8_t {
     Hello = 1,
     Welcome = 2,
     Reject = 3,
     Heartbeat = 16,
     SessionEnd = 17,
-    Motion = 19,  // v2 (story 2.1)
+    Motion = 19,   // v2 (story 2.1)
+    Spawn = 20,    // v3 (story 2.2)
+    Despawn = 21,  // v3 (story 2.2)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -113,8 +115,27 @@ struct Motion {
     std::uint32_t d18 = 0;
 };
 
+// Identifiants d'entité attribués par l'hôte (AD-6).
+inline constexpr std::uint32_t kHostNetId = 1;   // avatar de l'hôte
+inline constexpr std::uint32_t kGuestNetId = 2;  // avatar de l'invité
+inline constexpr std::uint8_t kSpawnTypeHero = 0;  // Spawn::type : héros d'un joueur
+
+// Apparition d'une entité dont l'émetteur a l'autorité. `type` est gardé brut : un type
+// inconnu se décode, l'appelant l'ignore.
+struct Spawn {
+    std::uint32_t net_id = 0;
+    std::uint8_t type = kSpawnTypeHero;
+    float x = 0.0f, y = 0.0f, z = 0.0f;  // position (unités du monde)
+    float yaw = 0.0f;                    // radians, atan2(m[8], m[10]) (AD-7)
+};
+
+// Retrait d'une entité annoncée par Spawn.
+struct Despawn {
+    std::uint32_t net_id = 0;
+};
+
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
-using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion>;
+using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,

@@ -5,14 +5,18 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v2 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v3 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
 - `kcp/` : le **même** `ikcp.c` que la DLL, inclus via cgo depuis `client/third_party/kcp/`
   (pas de copie), avec les mêmes réglages : `nodelay(1,10,2,1)`, MTU 1199, segments préfixés
   de l'octet de canal 0.
-- `main.go`, `session.go` : ligne de commande et machine à états de l'invité.
+- `main.go`, `session.go` : ligne de commande et machine à états de l'invité. En session
+  (v3, story 2.2), il envoie le `Spawn{2}` de son avatar, placé 2 m devant l'hôte d'après le
+  `Welcome` ; il journalise les `Spawn` et `Despawn` reçus (`<- Spawn netid=1 …`) ; à la fin
+  par `--quit`, il envoie `Despawn{2}` puis `SessionEnd{1}` (rien avec `--kill`).
+  `Motion` n'est pas encore décodé (story 2.4).
 
 Prérequis : Go ≥ 1.22 et un compilateur C (cgo), par exemple `sudo dnf install golang gcc`.
 Aucune dépendance externe.

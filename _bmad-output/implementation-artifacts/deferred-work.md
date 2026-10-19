@@ -83,3 +83,13 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-1b-ragdoll-miroir.md`
   summary: Couvrir par des tests Linux le routage des captures par nature (`Motion` ou ragdoll) quand l'avatar le reprendra (événement `Death`, AD-10).
   evidence: Dans la sonde (`probe.cpp`, réservée à Windows), ce routage n'est vérifié que par le test en jeu. Inverser les branches passerait tous les tests automatiques.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-apparition-retrait-avatars.md`
+  summary: Lier l'avatar à un identifiant de monde plus sûr que l'adresse du héros (par exemple `eCEntity::GetID`, ou une génération tenue par la session), pour ne jamais appeler `Entity::Kill` sur un avatar détruit avec un monde rechargé à la même adresse, ni garder son PS dans l'`AnimFilter`.
+  evidence: maybe-false, medium si vrai. `docs/re/fin-de-monde.md` : l'adresse a changé à chaque rechargement observé, mais rien ne garantit qu'elle ne sera jamais réutilisée. Même cause que l'entrée « signal de remplacement `eCEntity::GetID` » de la story 1.5.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-apparition-retrait-avatars.md`
+  summary: Détecter un avatar détruit par le moteur hors fin de monde avant de l'oublier ou de le tuer (complète l'entrée de la 2.1 sur la copie de la sonde).
+  evidence: maybe-false. Une copie temporaire est-elle détruite hors chargement (sortie de la zone de traitement…) ? À observer en jeu ; `Kill` relirait alors `+0x28` dans de la mémoire libérée.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-apparition-retrait-avatars.md`
+  summary: Rendre portables et tester sous Linux `matrix_of` (convention du lacet, AD-7) et les prédicats des hooks de l'avatar (`on_set_ragdoll` laisse passer `on=false`), en story 2.4.
+  evidence: `sync/avatar.cpp` n'est compilé que pour Windows : inverser le signe de `m[2]`/`m[8]` ou retirer la règle `!on` ne fait échouer aucun test automatique.

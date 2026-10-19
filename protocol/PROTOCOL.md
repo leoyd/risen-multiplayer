@@ -1,12 +1,12 @@
-# Protocole Risen Multiplayer — version 2
+# Protocole Risen Multiplayer — version 3
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
 et le codec Go le suivent, et les vecteurs de `protocol/vectors/` en sont tirés.
 
 La v1 couvrait **uniquement la session** (poignée de main, présence, fin de session). La v2
-(story 2.1) ajoute `Motion`. Les snapshots, apparitions et combats arrivent avec les stories
-suivantes et incrémenteront la version.
+(story 2.1) ajoute `Motion`, la v3 (story 2.2) `Spawn` et `Despawn`. Les snapshots et les
+combats arrivent avec les stories suivantes et incrémenteront la version.
 
 ## 1. Règles générales
 
@@ -23,7 +23,7 @@ suivantes et incrémenteront la version.
 | Canal | Valeur | Contenu | Story |
 |---|---|---|---|
 | Fiable | `0` | segments KCP (`conv` = identifiant de session tiré par l'hôte) | 1.2 |
-| Snapshot | `1` | état complet à 20 Hz, non fiable — **non défini en v2** | Epic 2 |
+| Snapshot | `1` | état complet à 20 Hz, non fiable — **non défini en v3** | Epic 2 |
 | Contrôle | `2` | `Hello`, `Welcome`, `Reject`, hors KCP | 1.1 |
 
 - **Message de contrôle** = un datagramme complet : `[u8 canal=2][u8 MsgType][charge]`.
@@ -41,7 +41,9 @@ suivantes et incrémenteront la version.
 | 16 | `Heartbeat` | fiable | les deux sens, 1 Hz |
 | 17 | `SessionEnd` | fiable | les deux sens |
 | 19 | `Motion` | fiable | les deux sens : une animation lancée sur une entité dont l'émetteur a l'autorité (v2) |
-| 18, 20–25 | *réservés* | fiable | `AniName` (18), `Spawn`, `Despawn`, `HitRequest`, `HitOnGuest`, `Death`, `Respawn` — **non définis en v2** |
+| 20 | `Spawn` | fiable | les deux sens : apparition d'une entité dont l'émetteur a l'autorité (v3) |
+| 21 | `Despawn` | fiable | les deux sens : retrait d'une entité annoncée par `Spawn` (v3) |
+| 18, 22–25 | *réservés* | fiable | `AniName` (18), `HitRequest`, `HitOnGuest`, `Death`, `Respawn` — **non définis en v3** |
 
 Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -53,7 +55,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `2` en v2 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `3` en v3 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -136,6 +138,28 @@ jamais transmis : le moteur n'en lit que les 7 scalaires ci‑dessous (offsets `
 Bit 1 de `flags` à 0 : les 7 scalaires valent 0 (sinon `BadValue`) et le récepteur passe un descripteur **nul**
 (lecture par défaut du moteur). Taille : 41 octets.
 
+### `Spawn` (20) — fiable — v3
+
+Apparition d'une entité dont l'émetteur a l'autorité. En v3, chaque joueur n'annonce que son
+propre héros (`type` 0), sous son propre `NetId` (AD-6) : `1` pour l'hôte, `2` pour l'invité.
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `net_id` | `u32` | identifiant de l'entité (AD-6) |
+| `type` | `u8` | `0` = héros d'un joueur ; gardé brut au décodage (l'appelant ignore un type inconnu) |
+| position x, y, z | 3 × `f32` | unités du monde |
+| `lacet` | `f32` | radians, `atan2(m[8], m[10])` (AD-7) |
+
+Taille : 22 octets.
+
+### `Despawn` (21) — fiable — v3
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `net_id` | `u32` | entité annoncée par `Spawn` |
+
+Taille : 5 octets.
+
 **Raison inconnue** (`Reject` ou `SessionEnd`) : le message se décode quand même ; la valeur
 brute est conservée et l'appelant la journalise telle quelle (« raison inconnue (200) »).
 
@@ -148,13 +172,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide) |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 2 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 3 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets) |
 | `TrailingBytes` | octets restants après la fin du message |
 | `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 2, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 3, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -186,13 +210,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=2`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=3`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0300 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -202,7 +226,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `02 00` | `version_protocole` = 2 |
+| 0x02 | `03 00` | `version_protocole` = 3 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -299,6 +323,40 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 | 0x21 | `00 00 40 3f` | `d14` = 0.75 |
 | 0x25 | `02 00 00 00` | `d18` = 2 |
 
+#### `spawn.bin` — `Spawn` (fiable, sans octet de canal), 22 octets
+
+`net_id=2`, `type=0`, position `(100.0, -50.5, 2000.0)`, `lacet=1.5`.
+
+<!-- vector: spawn.bin -->
+```text
+00000000: 1402 0000 0000 0000 c842 0000 4ac2 0000  .........B..J...
+00000010: fa44 0000 c03f                           .D...?
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `14` | `MsgType` Spawn (20) |
+| 0x01 | `02 00 00 00` | `net_id` = 2 |
+| 0x05 | `00` | `type` = 0 (héros) |
+| 0x06 | `00 00 c8 42` | x = 100.0 |
+| 0x0a | `00 00 4a c2` | y = -50.5 |
+| 0x0e | `00 00 fa 44` | z = 2000.0 |
+| 0x12 | `00 00 c0 3f` | lacet = 1.5 |
+
+#### `despawn.bin` — `Despawn` (fiable, sans octet de canal), 5 octets
+
+`net_id=2`.
+
+<!-- vector: despawn.bin -->
+```text
+00000000: 1502 0000 00                             .....
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `15` | `MsgType` Despawn (21) |
+| 0x01 | `02 00 00 00` | `net_id` = 2 |
+
 ### Invalides
 
 #### `hello_future.bin` — `Hello` d'une version future, 8 octets
@@ -321,11 +379,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 2.
+`Truncated` ; `peek_hello_version` → 3.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0300 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -335,7 +393,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0300 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -365,7 +423,7 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1, inchangées en v2. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`). Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -420,8 +478,21 @@ d'appels.
 - **Raisons locales** envoyées par la DLL en session : `2` fin de monde (rechargement,
   chargement rapide, retour au menu), `3` mort de l'hôte (hôte seulement), `4` erreur interne.
   Hors session (`Hosting`, `Connecting`), une fin locale n'envoie rien.
-- `Motion` (v2) : reçu en session, il est **ignoré** tant qu'il n'y a pas d'avatar (story 2.4) ;
+- `Motion` (v2) : reçu en session, il est **ignoré** tant que l'avatar n'est pas animé (story 2.4) ;
   il ne compte que comme activité du pair.
+- **Avatars** (v3) :
+  - à l'entrée en session, chaque pair envoie le `Spawn` de son héros : l'hôte `Spawn{1, 0, sa
+    pose du Welcome}` juste après le `Welcome`, l'invité `Spawn{2, 0, sa pose}` dès le `Welcome`
+    reçu ;
+  - **placement de l'invité** : à réception du `Welcome`, l'invité téléporte son héros à 2 m
+    (200 unités) devant l'hôte, le long de l'axe avant (`sin lacet, 0, cos lacet`), tourné vers
+    lui (`lacet + π`, ramené dans ]−π, π]). C'est cette pose que porte son `Spawn` ;
+  - chaque pair n'accepte que le `Spawn` du `NetId` de l'autre, de `type` 0 et de pose finie,
+    et que le `Despawn` de ce même `NetId` ; tout autre est ignoré (journalisé). Un `Spawn` reçu alors que l'avatar existe est ignoré :
+    jamais deux avatars ;
+  - un `Despawn` reçu retire l'avatar ; la session continue ;
+  - fin volontaire en session : `Despawn{son NetId}` est envoyé juste avant `SessionEnd` ;
+  - toute fin de session retire l'avatar du pair, `Despawn` reçu ou non.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -436,4 +507,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v2).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v3).

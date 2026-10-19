@@ -89,9 +89,11 @@ et vérifie les codes de sortie et les logs : nominal, `--dup-hello`, `--bad-ver
 invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte), puis
 (story 1.5) trois cycles « rejoindre, fin de monde, réarmer » avec `SessionEnd{2}` reçu par le
 faux invité et trois `conv` distincts, le réarmement de l'hôte après `--quit` (un second invité
-rejoint le même monde) et la mort de l'hôte (`SessionEnd{3}`). Le test CTest
+rejoint le même monde) et la mort de l'hôte (`SessionEnd{3}`), enfin (story 2.2) « rejoindre,
+`--kill`, rejoindre, quitter » : un `SpawnAvatar` et un `DespawnAvatar` par session, jamais
+deux avatars (`avatars présents=2` absent du log), `Despawn` avant `SessionEnd`. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
-45 s. Lancement à la main :
+55 s. Lancement à la main :
 
 ```bash
 client/tests/session_fake_guest.sh client/build-tests/session_host tools/fake-guest
@@ -133,9 +135,11 @@ de Risen l'ignore alors silencieusement (pas de boîte de dialogue). Après une 
 jeu, il faut revérifier la rétro-ingénierie puis ajouter la nouvelle empreinte à la
 liste blanche (`src/core/version.cpp`).
 
-## Tester une session (`probe = 0`, stories 1.4 et 1.5)
+## Tester une session (`probe = 0`, stories 1.4, 1.5 et 2.2)
 
-Sans sonde, le mod hooke seulement `eCApplication::OnProcess`. Au premier appel où le monde est
+Sans sonde, le mod hooke `eCApplication::OnProcess`, ainsi que (story 2.2)
+`eCAnimation_PS::PlayMotion` et `SetRagDollEnabled`, qui ne bloquent que les appels du moteur
+sur l'avatar. Au premier appel où le monde est
 chargé (`Entity::GetPlayer()` non nul **et** `gCSession::IsGameRunning()`), la session démarre, avec le préfixe
 `[sync]` au log pour chaque transition, chaque `Hello` reçu et chaque `Reject` :
 
@@ -182,6 +186,31 @@ frame). Elle sert au test en jeu ci-dessous.
    tard `InSession → Ended : fin de session par le pair : départ du joueur (1)`. Le faux invité
    sort avec le code 0. Variantes : `--bad-version` (log : `Reject envoyé … (1)`, l'hôte reste
    en attente), `--kill` (log : `timeout` 5 s après la fin).
+
+### Avatars en jeu (story 2.2, une machine)
+
+À l'entrée en session, chaque pair envoie le `Spawn` de son héros (`NetId` 1 pour l'hôte, 2 pour
+l'invité). L'invité est d'abord téléporté à 2 m devant l'hôte, tourné vers lui. À réception,
+l'avatar est une copie temporaire du héros **local** (`Entity::Spawn`, même modèle et même
+équipement que le héros local) ; le moteur ne l'anime pas, et il peut rester figé (voire en
+T-pose) jusqu'à la story 2.4. Toute fin de session le retire : `Entity::Kill` si le monde est
+toujours là, sinon il est seulement oublié (détruit avec le monde).
+
+Prérequis : `role = host`, `probe = 0`. Le faux invité place son avatar comme le ferait un vrai
+invité : 2 m devant le héros de l'hôte, tourné vers lui.
+
+1. Charger une partie, puis `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 20s --kill`.
+   Attendu : `Spawn envoyé : NetId 1 (hôte)`, `Spawn reçu (NetId 2 (invité), type 0, …) : avatar
+   créé`, puis `[sync] avatar 2 créé : entité 0x…, PS 0x…`. **À l'écran** : une copie du héros
+   apparaît 2 m devant lui, tournée vers lui.
+2. Environ 25 s plus tard (20 s, puis le timeout de 5 s) : `InSession → Ended : timeout`, `avatar
+   2 (invité) retiré : fin de session`, `[sync] avatar 2 détruit (Entity::Kill, N appels moteur
+   bloqués)`. **À l'écran** : la copie disparaît.
+3. Relancer `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 20s` (sortie normale) :
+   l'avatar réapparaît, puis disparaît sur `Despawn reçu`. Il n'y a jamais deux copies à la fois.
+4. Variante : relancer le faux invité, puis faire un chargement rapide en session. Attendu :
+   `avatar 2 oublié : monde détruit`, et aucun crash.
+5. Fournir `Script_Multiplayer.log`, et noter l'allure de l'avatar (figé, T-pose, au sol…).
 
 ### Fin de session en jeu (story 1.5, une machine)
 

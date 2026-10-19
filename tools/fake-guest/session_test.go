@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -44,7 +47,7 @@ func (s *syncBuffer) String() string {
 func guestConfig(host netip.AddrPort) sessionConfig {
 	return sessionConfig{
 		Host: host,
-		Hello: protocol.Hello{ProtocolVersion: 2, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
+		Hello: protocol.Hello{ProtocolVersion: protocol.ProtocolVersion, ModVersion: "0.1.0", Fingerprint: steamFingerprint,
 			Nickname: "Invite"},
 		Seed:              1,
 		HelloInterval:     testHello,
@@ -105,7 +108,7 @@ func TestToolMatchesVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := protocol.Hello{ProtocolVersion: 2, ModVersion: "0.1.0", Fingerprint: steamFingerprint, Nickname: "Leo",
+	h := protocol.Hello{ProtocolVersion: protocol.ProtocolVersion, ModVersion: "0.1.0", Fingerprint: steamFingerprint, Nickname: "Leo",
 		Equipment: "It_Sword_01"}
 	if b, err := protocol.EncodeControl(h); err != nil || !bytes.Equal(b, ref) {
 		t.Fatal("empreintes par défaut ≠ hello.bin")
@@ -119,8 +122,12 @@ func TestNominal(t *testing.T) {
 	cfg.Duration = 1300 * time.Millisecond
 	r := runGuest(t, context.Background(), cfg)
 	expectCode(t, r, exitOK)
-	expectLog(t, r, "Connecting host=", "-> Hello version_protocole=2", "<- Welcome conv=", "InSession conv=0x",
-		"Heartbeat envoyés=", "-> SessionEnd raison=1", "Ended raison=départ du joueur")
+	expectLog(t, r, "Connecting host=", "-> Hello version_protocole=3", "<- Welcome conv=", "InSession conv=0x",
+		"-> Spawn netid=2 type=0", "<- Spawn netid=1 type=0 pos=(1, 2, 3) lacet=0.5", "Heartbeat envoyés=",
+		"-> Despawn netid=2", "-> SessionEnd raison=1", "Ended raison=départ du joueur")
+	if r.res.SpawnsRx != 1 {
+		t.Errorf("Spawn reçus par l'invité : %d, attendu 1", r.res.SpawnsRx)
+	}
 	if n := strings.Count(r.log, "Heartbeat"); n > 3 {
 		t.Errorf("%d lignes de heartbeat : un résumé par seconde attendu", n)
 	}
@@ -130,6 +137,18 @@ func TestNominal(t *testing.T) {
 	}
 	if len(rec.sessionEnds) != 1 || rec.sessionEnds[0] != protocol.EndPlayerLeft {
 		t.Errorf("SessionEnd reçus par l'hôte : %v", rec.sessionEnds)
+	}
+	// Spawn de l'invité 2 m devant l'hôte (pose du Welcome : (1, 2, 3), lacet 0.5), tourné vers lui.
+	want := guestPoseNear(protocol.Welcome{X: 1, Y: 2, Z: 3, Yaw: 0.5})
+	if len(rec.spawns) != 1 || rec.spawns[0] != want {
+		t.Errorf("Spawn reçus par l'hôte : %v, attendu %v", rec.spawns, want)
+	}
+	if len(rec.despawns) != 1 || rec.despawns[0] != protocol.GuestNetId {
+		t.Errorf("Despawn reçus par l'hôte : %v", rec.despawns)
+	}
+	wantOrder := []protocol.MsgType{protocol.TypeSpawn, protocol.TypeDespawn, protocol.TypeSessionEnd}
+	if fmt.Sprint(rec.order) != fmt.Sprint(wantOrder) {
+		t.Errorf("ordre reçu par l'hôte : %v, attendu %v", rec.order, wantOrder)
 	}
 	if len(rec.welcomes) == 0 || rec.welcomes[0] != r.res.Conv || r.res.Conv == 0 {
 		t.Errorf("conv : hôte %v, invité 0x%x", rec.welcomes, r.res.Conv)
@@ -235,7 +254,7 @@ func TestDupHello(t *testing.T) {
 	if len(rec.welcomes) != 2 || rec.ignoredHello != 1 {
 		t.Fatalf("%d Welcome (2 attendus), %d Hello ignorés (1 attendu)", len(rec.welcomes), rec.ignoredHello)
 	}
-	if strings.Count(r.log, "pos=(1, 2, 3) lacet=0.5") != 2 {
+	if n := regexp.MustCompile(`<- Welcome conv=0x[0-9a-f]+ pos=\(1, 2, 3\) lacet=0\.5`).FindAllString(r.log, -1); len(n) != 2 {
 		t.Error("les Welcome renvoyés ne sont pas identiques")
 	}
 	for _, c := range rec.welcomes {
@@ -308,8 +327,8 @@ func TestKill(t *testing.T) {
 	cfg.Kill = true
 	r := runGuest(t, context.Background(), cfg)
 	expectCode(t, r, exitOK)
-	if strings.Contains(r.log, "-> SessionEnd") {
-		t.Error("SessionEnd envoyé avec --kill")
+	if strings.Contains(r.log, "-> SessionEnd") || strings.Contains(r.log, "-> Despawn") {
+		t.Error("SessionEnd ou Despawn envoyé avec --kill")
 	}
 	rec, ok := host.waitFor(testPeerTimeout+2*time.Second, func(r hostRecord) bool { return !r.timeoutAt.IsZero() })
 	if !ok {
@@ -473,6 +492,28 @@ func TestParseConfig(t *testing.T) {
 		cfg, code := parseConfig(append(append([]string{}, base...), c.args...), &errOut)
 		if code != parseOK || !c.check(cfg) {
 			t.Errorf("%q : code %d, config %+v", c.args, code, cfg)
+		}
+	}
+}
+
+// guestPoseNear doit donner les mêmes nombres que mp::core::session::guest_pose_near
+// (client/tests/test_session.cpp) : valeurs littérales, pas recalculées par la fonction testée.
+func TestGuestPoseNear(t *testing.T) {
+	cases := []struct {
+		w            protocol.Welcome
+		x, y, z, yaw float64
+	}{
+		{protocol.Welcome{X: 1, Y: 2, Z: 3, Yaw: 0}, 1, 2, 203, math.Pi},
+		{protocol.Welcome{Yaw: 1.5707963}, 200, 0, 0, 1.5707963 - math.Pi},
+		{protocol.Welcome{Yaw: -3}, 200 * math.Sin(-3), 0, 200 * math.Cos(-3), -3 + math.Pi},
+		{protocol.Welcome{X: 1, Y: 2, Z: 3, Yaw: 0.5}, 96.885, 2, 178.517, 0.5 - math.Pi},
+	}
+	near := func(a float32, b float64) bool { return math.Abs(float64(a)-b) < 1e-2 }
+	for _, c := range cases {
+		p := guestPoseNear(c.w)
+		if p.NetId != protocol.GuestNetId || p.Kind != protocol.SpawnTypeHero ||
+			!near(p.X, c.x) || !near(p.Y, c.y) || !near(p.Z, c.z) || !near(p.Yaw, c.yaw) {
+			t.Errorf("guestPoseNear(%v) = %+v, attendu (%g, %g, %g) lacet %g", c.w, p, c.x, c.y, c.z, c.yaw)
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Adaptateur ABI des entités (Script.dll, Engine.dll), pour la sonde du spike J1.
+// Adaptateur ABI des entités (Script.dll, Engine.dll) : sonde du spike J1 et avatars.
 //
 // Faits établis par désassemblage (Steam x64, janvier 2023) :
 // - `Entity` (Script.dll) = { eCDynamicEntity* } (8 octets), constructeur et destructeur vides.
@@ -6,6 +6,9 @@
 //   dans RDX (après `this`).
 // - `Entity::Spawn(Template, bCMatrix const&, bool)` détruit lui-même le Template reçu
 //   par valeur (??1eCTemplateEntityProxy) ; le bool appelle eCEntity::SetTemporary.
+// - `Entity::Kill()` saute vers `eCEntity::Kill` (Engine.dll, 0x1806a5dd0) : sans effet si le
+//   bit 0x8 de `+0x28` est posé ; sinon l'entité rejoint une liste du moteur (destruction
+//   différée), le bit est posé et `KillIntern` est appliqué aux enfants.
 // - `eCAnimation_PS::PlayMotion(this, type 0..7, eSMotionPlayBackDesc*, bool)` lit la
 //   ressource de motion dans le PS lui-même, à `this + 0x120 + type * 0x10`.
 //
@@ -85,6 +88,9 @@ bool get_resource_name(const void* resource, std::string& out);
 // out == nullptr : nom inconnu. Retourne false sur SEH ou nom vide/trop long.
 bool get_motion(const std::string& name, void*& out);
 
+// Entity::Kill (Script.dll) : destruction différée par le moteur. Ne plus toucher à l'entité
+// ensuite. Jamais sur une entité déjà détruite (fin de monde) : la mémoire n'est plus valide.
+bool kill(const Entity& e);
 // Entity::IsDead (Script.dll) : le PS 0x24 de l'entité, à l'offset +0xC0, vaut 12.
 bool is_dead(const Entity& e, bool& out);
 // gCSession::GetInstance() (pointeur global, nul possible) puis gCSession::IsGameRunning

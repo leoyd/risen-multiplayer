@@ -93,6 +93,22 @@ bool same(const Motion& a, const Motion& b) {
            bits(a.d0c) == bits(b.d0c) && a.d10 == b.d10 && bits(a.d14) == bits(b.d14) && a.d18 == b.d18;
 }
 
+Spawn sample_spawn() {
+    Spawn m;
+    m.net_id = 2;
+    m.type = kSpawnTypeHero;
+    m.x = 100.0f;
+    m.y = -50.5f;
+    m.z = 2000.0f;
+    m.yaw = 1.5f;
+    return m;
+}
+
+bool same(const Spawn& a, const Spawn& b) {
+    return a.net_id == b.net_id && a.type == b.type && bits(a.x) == bits(b.x) && bits(a.y) == bits(b.y) &&
+           bits(a.z) == bits(b.z) && bits(a.yaw) == bits(b.yaw);
+}
+
 Decoded<ControlMessage> dc(const Bytes& b) { return decode_control(b.data(), b.size()); }
 Decoded<ReliableMessage> dr(const Bytes& b) { return decode_reliable(b.data(), b.size()); }
 
@@ -109,7 +125,8 @@ Bytes enc(const ReliableMessage& m) {
 }
 
 const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
-const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin"};
+const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin", "spawn.bin",
+                                      "despawn.bin"};
 
 }  // namespace
 
@@ -245,6 +262,31 @@ TEST("protocole : vecteur motion.bin") {
     if (got != nullptr) CHECK(enc(*got) == b);
 }
 
+TEST("protocole : vecteur spawn.bin") {
+    const Bytes b = load_vector("spawn.bin");
+    const auto d = dr(b);
+    const Spawn* got = std::get_if<Spawn>(&d.message);
+    CHECK(d.ok() && got != nullptr && same(*got, sample_spawn()));
+    CHECK(enc(sample_spawn()) == b);
+}
+
+TEST("protocole : vecteur despawn.bin") {
+    const Bytes b = load_vector("despawn.bin");
+    const auto d = dr(b);
+    const Despawn* got = std::get_if<Despawn>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->net_id == 2);
+    CHECK(enc(Despawn{2}) == b);
+}
+
+TEST("protocole : Spawn d'un type inconnu décodé, valeur brute conservée") {
+    Spawn m = sample_spawn();
+    m.type = 200;
+    m.net_id = 0xFFFFFFFFu;
+    const auto d = dr(enc(m));
+    const Spawn* got = std::get_if<Spawn>(&d.message);
+    CHECK(d.ok() && got != nullptr && same(*got, m));
+}
+
 // --- Champ hors domaine -----------------------------------------------------------
 
 TEST("protocole : Motion de type 8 -> BadValue (vecteur)") {
@@ -299,14 +341,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v2 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v3 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 2);
+    CHECK_EQ(version, 3);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 2);
+    CHECK_EQ(version, 3);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -317,12 +359,12 @@ TEST("protocole : peek_hello_version sur v2 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 2") {
+TEST("protocole : l'encodeur refuse une version autre que 3") {
     Hello h = sample_hello();
-    h.protocol_version = 1;
+    h.protocol_version = 2;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 3;
+    h.protocol_version = 4;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -383,11 +425,12 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(Bytes{0, 16}).error == DecodeError::UnknownChannel);  // segment KCP, pas du contrôle
     CHECK(dc(load_vector("unknown_type.bin")).error == DecodeError::UnknownType);
     CHECK(dr(Bytes{99}).error == DecodeError::UnknownType);
-    // Types réservés (18, 20 à 25) et types hors de leur canal.
+    // Types réservés (18, 22 à 25) et types hors de leur canal.
     for (std::uint8_t t = 18; t <= 25; ++t) {
-        if (t != static_cast<std::uint8_t>(MsgType::Motion)) CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
+        if (t < 19 || t > 21) CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
     }
     CHECK(dc(Bytes{2, 19}).error == DecodeError::UnknownType);  // Motion en contrôle
+    CHECK(dc(Bytes{2, 20}).error == DecodeError::UnknownType);  // Spawn en contrôle
     CHECK(dc(Bytes{2, 16}).error == DecodeError::UnknownType);  // Heartbeat en contrôle
     CHECK(dr(Bytes{1, 1, 0}).error == DecodeError::UnknownType);  // Hello en fiable
     CHECK(dr(Bytes{0}).error == DecodeError::UnknownType);
@@ -447,7 +490,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 2);
+    CHECK_EQ(kProtocolVersion, 3);
     CHECK_EQ(static_cast<int>(Channel::Reliable), 0);
     CHECK_EQ(static_cast<int>(Channel::Snapshot), 1);
     CHECK_EQ(static_cast<int>(Channel::Control), 2);
@@ -457,6 +500,10 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::Heartbeat), 16);
     CHECK_EQ(static_cast<int>(MsgType::SessionEnd), 17);
     CHECK_EQ(static_cast<int>(MsgType::Motion), 19);
+    CHECK_EQ(static_cast<int>(MsgType::Spawn), 20);
+    CHECK_EQ(static_cast<int>(MsgType::Despawn), 21);
+    CHECK_EQ(kHostNetId, 1u);
+    CHECK_EQ(kGuestNetId, 2u);
     CHECK_EQ(static_cast<int>(RejectReason::Protocol), 1);
     CHECK_EQ(static_cast<int>(RejectReason::BadHello), 5);
     CHECK_EQ(static_cast<int>(EndReason::PlayerLeft), 1);
