@@ -2,239 +2,281 @@
 
 # ⚔️ Risen Multiplayer
 
-**Un mod coop en ligne à deux joueurs pour _Risen_ (Piranha Bytes, 2009).**
-Explorer Faranga à deux, nettoyer les donjons ensemble, combattre les mêmes monstres.
+**A two-player online co-op mod for _Risen_ (Piranha Bytes, 2009).**
+Explore Faranga together, clear dungeons side by side, fight the same monsters.
 
-[![Licence : GPL-3.0](https://img.shields.io/badge/licence-GPL--3.0-blue.svg)](LICENSE)
-![Plateforme](https://img.shields.io/badge/plateforme-Windows%20%7C%20Linux%20(Proton)-informational)
-![Jeu](https://img.shields.io/badge/Risen-Steam%20x64-8a2be2)
-![Statut](https://img.shields.io/badge/statut-J0%20valid%C3%A9%20%E2%80%94%20J1%20en%20cours-orange)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20(Proton)-informational)
+![Game](https://img.shields.io/badge/Risen-Steam%20x64-8a2be2)
+![Status](https://img.shields.io/badge/status-J1%20in%20validation-orange)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus)
 
 </div>
 
 > [!WARNING]
-> **Projet en développement précoce.** Aujourd’hui, le mod se charge dans le jeu, vérifie la version et lit sa configuration (jalon J0). Le multijoueur jouable (se voir, se battre ensemble) arrive avec les jalons J1 et J2. Voir la [feuille de route](#️-feuille-de-route).
+> **Early development.** The mod loads natively, hosts or joins a session, and shows the other player's avatar moving and animating (milestone J1). This has been validated in-game on one machine against a scripted fake guest. The two-machine validation and co-op combat (J2) are next. See the [roadmap](#️-roadmap).
 
 > [!IMPORTANT]
-> Projet de fan, **non affilié** à Piranha Bytes, THQ Nordic ou Plaion. Le dépôt ne contient **aucun fichier du jeu**. Il faut posséder Risen sur Steam pour l’utiliser.
+> Fan project, **not affiliated** with Piranha Bytes, THQ Nordic or Plaion. The repository contains **no game files**. You need to own Risen on Steam to use it.
 
 ---
 
-## 📖 Sommaire
+## 📖 Contents
 
-- [Le projet](#-le-projet)
-- [Fonctionnalités](#-fonctionnalités)
-- [Installation (joueurs)](#-installation-joueurs)
+- [The project](#-the-project)
+- [Features](#-features)
+- [Installation (players)](#-installation-players)
 - [Configuration](#️-configuration)
-- [Jouer à deux](#-jouer-à-deux)
-- [Dépannage](#-dépannage)
-- [Compiler depuis les sources](#️-compiler-depuis-les-sources)
+- [Playing together](#-playing-together)
+- [Troubleshooting](#-troubleshooting)
+- [Building from source](#️-building-from-source)
+- [Testing without a second player](#-testing-without-a-second-player)
 - [Architecture](#️-architecture)
-- [Rétro-ingénierie : ce qu’on sait](#-rétro-ingénierie--ce-quon-sait)
-- [Feuille de route](#️-feuille-de-route)
-- [Reprendre ou contribuer au projet](#-reprendre-ou-contribuer-au-projet)
-- [Licence](#-licence)
+- [Reverse engineering: what we know](#-reverse-engineering-what-we-know)
+- [Roadmap](#️-roadmap)
+- [Taking over or contributing](#-taking-over-or-contributing)
+- [License](#-license)
 
 ---
 
-## 🎯 Le projet
+## 🎯 The project
 
-_Risen_ n’a jamais eu de mode multijoueur, et aucune tentative n’est connue sur son moteur (Genome). Ce mod vise une **coop à exactement deux joueurs** :
+_Risen_ never had a multiplayer mode, and there is no known attempt on its engine (Genome). This mod aims at **co-op for exactly two players**:
 
-- **L’hôte** joue sa partie. Son jeu fait autorité pour le monde, les PNJ et les combats.
-- **L’invité** rejoint la partie de l’hôte. Il apparaît à côté de lui avec son propre héros.
-- Les deux partent d’une **sauvegarde préparée en zone neutre**, hors de la trame principale : pas de faction, pas d’Inquisition. On explore, on fait des quêtes annexes, on combat.
+- **The host** plays their own game. Their game is authoritative for the world, NPCs and combat.
+- **The guest** joins the host's game and appears next to them with their own hero.
+- Both start from a **save prepared in a neutral area**, outside the main storyline: no faction, no Inquisition. You explore, do side quests and fight.
 
-C’est un **projet plaisir**, publié en open source pour que d’autres puissent le reprendre.
+This is a **hobby project**, released as open source so that others can pick it up.
 
-## ✨ Fonctionnalités
+## ✨ Features
 
-| | Fonctionnalité | Jalon | État |
+| | Feature | Milestone | Status |
 |---|---|---|---|
-| 🔌 | Chargement natif par le jeu, sans injecteur ni option de lancement | J0 | ✅ Validé en jeu (Proton) |
-| 🛡️ | Vérification de la version du jeu : sur une version inconnue, le mod se désactive proprement | J0 | ✅ |
-| 📝 | Fichier de config `multiplayer.ini` + log horodaté | J0 | ✅ |
-| 👥 | L’hôte héberge, l’invité rejoint par IP, chacun voit l’autre bouger et s’animer | J1 | 🚧 En cours |
-| ⚔️ | Combat coop en mêlée contre les mêmes monstres (PV partagés, hôte autoritaire) | J2 | 📋 Prévu |
-| 💬 | Dialogues des PNJ joués chez les deux joueurs | J3 | 💭 Plus tard |
-| 💾 | Profil de l’invité persistant (équipement, XP, loot), quêtes annexes partagées | J4 | 💭 Plus tard |
-| 🩹 | Relever un allié à terre | J5 | 💭 Plus tard |
+| 🔌 | Native loading by the game, no injector or launch option | J0 | ✅ Validated in-game (Proton) |
+| 🛡️ | Game version check: on an unknown version, the mod disables itself cleanly | J0 | ✅ |
+| 📝 | `multiplayer.ini` config file + timestamped log | J0 | ✅ |
+| 🔗 | Host listens, guest joins by IP; version/fingerprint checks; clean session end (quit, reload, death) | J1 | ✅ Validated in-game |
+| 👥 | Each player sees the other's avatar: appears next to the host, moves smoothly (20 Hz, interpolated), replays gestures (walk, run, jump, draw, attacks, death) | J1 | ✅ Validated on one machine — two-machine test pending |
+| ⚔️ | Melee co-op combat against the same monsters (shared HP, host-authoritative) | J2 | 📋 Planned |
+| 💬 | NPC dialogues played on both sides | J3 | 💭 Later |
+| 💾 | Persistent guest profile (gear, XP, loot), shared side quests | J4 | 💭 Later |
+| 🩹 | Reviving a downed ally | J5 | 💭 Later |
 
-## 📦 Installation (joueurs)
+**Known J1 limitations** (tracked in [`deferred-work.md`](_bmad-output/implementation-artifacts/deferred-work.md)):
+- the avatar has no physics or collisions in your world (you and NPCs walk through it) — planned for the J2 spike;
+- the walk → stop transition is not very smooth, and the walk animation can occasionally stall for a moment;
+- no weapon in hand yet (drawing is animation only) — J2.
 
-**Prérequis :** _Risen_ sur **Steam**, version actuelle (64 bits, mise à jour de janvier 2023), sous Windows ou sous Linux avec Proton.
+## 📦 Installation (players)
 
-1. Récupérer `Script_Multiplayer.dll` (pas encore de release : voir [Compiler depuis les sources](#️-compiler-depuis-les-sources)).
-2. Copier la DLL dans `<Steam>/steamapps/common/Risen/bin/scripts/`. C’est le dossier qui contient déjà `Script_Game.dll`.
-3. Copier [`client/multiplayer.example.ini`](client/multiplayer.example.ini) au même endroit sous le nom `multiplayer.ini`, puis l’adapter (voir ci-dessous).
-4. Lancer Risen **normalement** depuis Steam. Aucune option de lancement n’est nécessaire, même sous Proton.
-5. Vérifier `bin/scripts/Script_Multiplayer.log` : la dernière ligne doit être `mod actif`.
+**Requirements:** _Risen_ on **Steam**, current version (64-bit, January 2023 update), on Windows or on Linux with Proton.
 
-**Désinstallation :** supprimer `Script_Multiplayer.dll`, `multiplayer.ini` et `Script_Multiplayer.log`.
+1. Get `Script_Multiplayer.dll` (no release yet: see [Building from source](#️-building-from-source)).
+2. Copy the DLL into `<Steam>/steamapps/common/Risen/bin/scripts/`. This is the folder that already contains `Script_Game.dll`.
+3. Copy [`client/multiplayer.example.ini`](client/multiplayer.example.ini) to the same folder as `multiplayer.ini`, then edit it (see below).
+4. **On Linux/Proton, disable the Steam overlay for Risen** (Properties → General → "Enable the Steam Overlay while in-game"). Otherwise the game can freeze during a session (see [Troubleshooting](#-troubleshooting)).
+5. Launch Risen **normally** from Steam. No launch option is needed, even with Proton.
+6. Check `bin/scripts/Script_Multiplayer.log`: you should see `mod actif`, then `hooks de session installés`.
+
+**Uninstall:** delete `Script_Multiplayer.dll`, `multiplayer.ini` and `Script_Multiplayer.log`.
 
 > [!NOTE]
-> Comment ça marche ? Risen charge de lui-même toutes les DLL de `bin/scripts/` et appelle leur fonction `ScriptInit`. Le mod utilise ce mécanisme officiel, donc il n’y a rien à « injecter ».
+> How does it work? Risen loads every DLL in `bin/scripts/` by itself and calls its `ScriptInit` function. The mod uses this official mechanism, so there is nothing to "inject".
 
 ## ⚙️ Configuration
 
-`multiplayer.ini`, à placer à côté de la DLL :
+`multiplayer.ini`, next to the DLL:
 
 ```ini
-; Rôle de ce joueur : host (héberge la partie) ou guest (rejoint l'hôte).
+; This player's role: host (hosts the game) or guest (joins the host).
 role = guest
-; IP ou nom de l'hôte. Obligatoire pour un invité, ignoré pour l'hôte.
+; Host IPv4 address. Required for a guest, ignored for the host (no hostname, no IPv6).
 host_ip = 192.168.1.10
-; Port UDP, entre 1 et 65535. Défaut : 27960.
+; UDP port, 1 to 65535. Default: 27960.
 port = 27960
-; Pseudo affiché, 1 à 32 octets (UTF-8). Défaut : Joueur.
+; Display name, 1 to 32 bytes (UTF-8). Default: Joueur.
 nickname = Leo
+; debug writes diagnostics (snapshots, animations, locomotion) every few seconds. Default: info.
+log_level = info
+; Reverse-engineering probe (J1 spike). Keep 0 to play.
+probe = 0
 ```
 
-- Les commentaires (`;` ou `#`) se mettent **sur leur propre ligne**. En fin de ligne, ils deviendraient une partie de la valeur.
-- Une config absente ou invalide laisse le mod **inactif**, et le jeu reste jouable en solo. Le log indique le champ fautif.
+- Comments (`;` or `#`) go **on their own line**. At the end of a line, they would become part of the value.
+- A missing or invalid config leaves the mod **inactive**, and the game stays playable solo. The log names the faulty field.
 
-## 🌐 Jouer à deux
+## 🌐 Playing together
 
 ```mermaid
 graph LR
-  G["🎮 Invité<br/>role = guest"] <-->|UDP · port 27960| H["🏠 Hôte<br/>role = host"]
+  G["🎮 Guest<br/>role = guest"] <-->|UDP · port 27960| H["🏠 Host<br/>role = host"]
 ```
 
-- **Il n’y a pas de serveur à lancer.** La partie de l’hôte *est* le serveur.
-- L’invité doit pouvoir joindre l’hôte en UDP. Trois cas :
-  - **Même réseau local :** utiliser l’IP locale de l’hôte (`192.168.x.x`).
-  - **Par Internet :** ouvrir le port UDP (27960 par défaut) sur la box de l’hôte.
-  - **Plus simple :** un VPN de jeu comme [Tailscale](https://tailscale.com/) ou [ZeroTier](https://www.zerotier.com/), puis utiliser l’IP du VPN.
-- L’hôte et l’invité doivent avoir **la même version du mod**. Sinon la connexion est refusée et le log en donne la raison.
-- Pour se parler, utilisez Discord : il n’y a pas de chat en jeu.
+- **There is no server to run.** The host's game *is* the server. Strictly two players: a third client is refused ("session pleine").
+- The session starts by itself once a save is loaded. The guest's hero is teleported 2 m in front of the host.
+- The guest must be able to reach the host over UDP. Three options:
+  - **Same local network:** use the host's local IP (`192.168.x.x`).
+  - **Over the Internet:** forward the UDP port (27960 by default) on the host's router.
+  - **Easiest:** a gaming VPN such as [Tailscale](https://tailscale.com/) or [ZeroTier](https://www.zerotier.com/), then use the VPN IP.
+- Host and guest must run **the same mod version** and the same game build. Otherwise the connection is refused and the log says why.
+- Reloading, going back to the menu, or the host dying ends the session; the host is ready again right away, the guest reconnects on their next loaded save.
+- Use Discord to talk: there is no in-game chat.
 
-## 🩺 Dépannage
+## 🩺 Troubleshooting
 
-Tout passe par `bin/scripts/Script_Multiplayer.log`, réécrit à chaque lancement :
+Everything goes through `bin/scripts/Script_Multiplayer.log`, rewritten at every launch (messages are in French):
 
-| Message dans le log | Cause | Solution |
+| Log message | Cause | Fix |
 |---|---|---|
-| Pas de fichier log | La DLL n’est pas dans `bin/scripts/`, ou le dossier n’est pas inscriptible | Vérifier l’emplacement et les droits du dossier |
-| `version non supportée` | Risen a été mis à jour, ou ce n’est pas la version Steam x64 | Attendre une mise à jour du mod |
-| `config absente` | Pas de `multiplayer.ini` à côté de la DLL | Copier l’exemple et le renommer |
-| `config invalide : champ « … »` | Valeur incorrecte | Corriger le champ indiqué |
-| `mod actif` | Tout va bien ✅ | — |
+| No log file | The DLL is not in `bin/scripts/`, or the folder is not writable | Check the location and folder permissions |
+| `version non supportée` | Risen was updated, or this is not the Steam x64 build | Wait for a mod update |
+| `config absente` | No `multiplayer.ini` next to the DLL | Copy the example and rename it |
+| `config invalide : champ « … »` | Wrong value | Fix the named field |
+| `Reject … (1)` / `(2)` / `(3)` | Different protocol, mod version or game build | Install the same mod build on both sides |
+| `hôte injoignable` | The guest cannot reach the host | Check the IP, port forwarding or VPN |
+| The game freezes during a session (Proton) | The Steam overlay stops answering, which blocks rendering | Disable the Steam overlay for Risen |
+| `[watchdog] pile …` | A frame did not finish for 4 s while an avatar existed | Attach the log to an issue: it contains the stack of the game thread |
+| `mod actif` | All good ✅ | — |
 
-## 🛠️ Compiler depuis les sources
+## 🛠️ Building from source
 
-Le projet se compile **depuis Linux** vers Windows avec `clang-cl`, `lld-link` et [xwin](https://github.com/Jake-Shadle/xwin). Ce choix est volontaire : le jeu est compilé avec MSVC, et MinGW/GCC gère mal certaines conventions d’appel MSVC dont on a besoin (voir [Rétro-ingénierie](#-rétro-ingénierie--ce-quon-sait)).
+The project is built **from Linux** for Windows with `clang-cl`, `lld-link` and [xwin](https://github.com/Jake-Shadle/xwin). This is deliberate: the game is compiled with MSVC, and MinGW/GCC mishandles some MSVC calling conventions we rely on (see [Reverse engineering](#-reverse-engineering-what-we-know)).
 
-**Prérequis (Fedora) :**
+**Requirements (Fedora):**
 
 ```bash
-sudo dnf install clang lld llvm cmake ninja-build
-# CRT + SDK Windows de Microsoft (licence Microsoft à accepter), extraits dans ~/.xwin :
+sudo dnf install clang lld llvm cmake ninja-build golang gcc
+# Microsoft Windows CRT + SDK (Microsoft license to accept), extracted to ~/.xwin:
 xwin --accept-license --arch x86_64 splat --output ~/.xwin
 ```
 
-**Build et tests :**
+**Build and tests:**
 
 ```bash
-# 1. DLL Windows x64
+# 1. Windows x64 DLL
 cmake -S client -B client/build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/clang-cl-xwin.cmake
 cmake --build client/build                # → client/build/Script_Multiplayer.dll
 
-# 2. Tests unitaires (natifs Linux) + scénarios d'intégration sous Wine
+# 2. Native Linux tests, fake-guest scenarios, and Wine integration tests
 cmake -S client -B client/build-tests
 cmake --build client/build-tests && ctest --test-dir client/build-tests
+
+# 3. Fake guest (Go)
+cd tools/fake-guest && go vet ./... && go test ./... && go build
 ```
 
-- **Les scénarios Wine** (`wine_scenarios`) chargent les **vraies DLL du jeu**. Il faut une copie locale de `<Steam>/steamapps/common/Risen/` dans `risen_ori/`, un dossier ignoré par git et **jamais commité**. Sans cette copie, seuls les tests unitaires tournent.
-- **Sous Windows**, la même chose fonctionne avec MSVC ou clang-cl, sans le fichier de toolchain.
+- `ctest` runs 6 tests: unit tests (`core/`, `net/`, portable parts of `sync/` and `game/`), protocol vectors, the Go fake guest, a Linux host against the fake guest (end-to-end scenarios), and two Wine benches.
+- **The Wine benches** (`wine_scenarios`, `wine_net`) load the **real game DLLs**. They need a local copy of `<Steam>/steamapps/common/Risen/` in `risen_ori/`, a folder ignored by git and **never committed**. Without it, the other tests still run.
+- **On Windows**, the same works with MSVC or clang-cl, without the toolchain file.
 
-Plus de détails : [`client/README.md`](client/README.md).
+More details: [`client/README.md`](client/README.md) (in French), including the step-by-step in-game test procedures for each story.
+
+## 🧪 Testing without a second player
+
+Two copies of Risen cannot run on the same machine, so the repository ships a **fake guest** written in Go ([`tools/fake-guest/`](tools/fake-guest/README.md), never shipped to players). Run Risen as host, then:
+
+```bash
+# Join, hold the session 20 s, leave cleanly
+tools/fake-guest/fake-guest --host 127.0.0.1 --duration 20s
+# Avatar follows a scripted path (circles, back-and-forth, sharp turns) with 100 ms ± 20 ms latency
+tools/fake-guest/fake-guest --host 127.0.0.1 --duration 60s --scenario tools/fake-guest/scenarios/mixte.txt --delay 100ms --jitter 20ms
+# Echo: the avatar mirrors YOUR moves and gestures with a short delay
+tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s --echo
+```
+
+Scenarios can also contain timed animations (`anim`), a death (`mort`) and locomotion settings (`param`); faults can be simulated with `--drop`, `--kill`, `--dup-hello` and `--bad-version`.
 
 ## 🏗️ Architecture
 
 ```mermaid
 graph TD
-  win["win/ — ScriptInit, hooks, log"] --> sync
-  sync["sync/ — session, avatars, PNJ, boucle par frame"] --> game
+  win["win/ — ScriptInit, hooks, watchdog"] --> sync
+  sync["sync/ — session driver, avatars, animation filter"] --> game
   sync --> net
-  game["game/ — adaptateur ABI Risen (seul à appeler le jeu)"] --> core
-  net["net/ — UDP + KCP"] --> core
-  core["core/ — logique pure, testée sous Linux"]
+  game["game/ — Risen ABI adapter (the only code that calls the game)"] --> core
+  net["net/ — UDP + KCP, network thread"] --> core
+  core["core/ — pure logic (protocol, session, clock, interpolation), tested on Linux"]
 ```
 
-- **L’hôte fait autorité.** Son jeu simule le monde, les PNJ et les combats. L’invité affiche des répliques et envoie des **intentions** (« j’ai touché ce loup »), jamais des changements d’état.
-- **Réseau :**
-  - un socket UDP, avec un octet de canal en tête de chaque paquet ;
-  - [KCP](https://github.com/skywind3000/kcp) pour les événements fiables ;
-  - des snapshots non fiables à 20 Hz pour les positions et les animations ;
-  - un affichage interpolé avec 150 ms de retard.
-- **Thread principal uniquement :** tout appel au jeu se fait depuis un hook ([MinHook](https://github.com/TsudaKageyu/minhook)) sur `eCApplication::OnProcess`, appelé une fois par frame.
-- **Animations synchronisées** par nom ou par état (choix fixé par un spike en J1), grâce à l’API de script du jeu (`Entity::StartPlayAni`, `Entity::GetAni`).
+- **The host is authoritative.** Each player's game simulates their own hero; the other side shows a **replica** (avatar) driven by the network.
+- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v6**):
+  - one UDP socket, a channel byte at the start of every datagram;
+  - channel 2: handshake (`Hello`, `Welcome`, `Reject`);
+  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`;
+  - channel 1: unreliable full-state snapshots at 20 Hz;
+  - display delayed by 150 ms, Hermite interpolation, extrapolation ≤ 250 ms;
+  - every message has binary test vectors checked by both the C++ and Go codecs.
+- **Main thread only:** every game call happens from a [MinHook](https://github.com/TsudaKageyu/minhook) hook on `eCApplication::OnProcess`, called once per frame.
+- **Animations replayed by name:** the local hero's `eCAnimation_PS::PlayMotion` calls are captured, sent as `Motion` events, and replayed on the avatar (`GetMotion` → `SetMotion` → `PlayMotion`). The engine is blocked from animating the avatar by itself.
 
-Les décisions détaillées (AD-1 à AD-11) sont dans la [spine d’architecture](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md).
+The detailed decisions (AD-1 to AD-11) are in the [architecture spine](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md) (in French).
 
-### Organisation du dépôt
+### Repository layout
 
 ```text
-client/                 DLL C++ (Script_Multiplayer.dll)
-  src/core/             logique pure : config, version, protocole
-  src/win/              ScriptInit, log, ABI du jeu
-  tests/                tests unitaires + banc d'intégration Wine
-  cmake/                toolchain clang-cl + xwin
-protocol/               PROTOCOL.md — contrat réseau (à venir avec J1)
-_bmad-output/           documents de conception (recherche, brief, PRD, architecture, specs)
-risen_ori/              copie locale du jeu — IGNORÉE, jamais commitée
+client/                 C++ DLL (Script_Multiplayer.dll)
+  src/core/             pure logic: config, version, protocol, session, clock, interpolation
+  src/net/              UDP socket, KCP transport, network thread
+  src/game/             Risen ABI adapter (entities, animation, EMotionFX wrapper)
+  src/sync/             session driver, avatars, animation filter, RE probe
+  src/win/              ScriptInit, hooks, watchdog
+  tests/                unit tests, Linux test host, Wine benches
+  cmake/                clang-cl + xwin toolchain
+protocol/               PROTOCOL.md (network contract) and binary test vectors
+tools/fake-guest/       scriptable fake guest (Go) for single-machine testing
+docs/re/                reverse-engineering notes
+_bmad-output/           design documents (research, brief, PRD, architecture, specs)
+risen_ori/              local copy of the game — IGNORED, never committed
 ```
 
-## 🔬 Rétro-ingénierie : ce qu’on sait
+## 🔬 Reverse engineering: what we know
 
-Ces points ont été établis sur le build Steam x64. Ils seront précieux pour quiconque reprend le projet.
+Established on the Steam x64 build. Useful for anyone picking up the project.
 
-- **Les DLL du moteur exportent des dizaines de milliers de symboles C++ décorés** (`Engine.dll`, `Game.dll`, `Script.dll`, `SharedBase.dll`). On appelle les fonctions par leur nom (`GetProcAddress`) au lieu de chercher des signatures. Pour les lister : `objdump -p <dll>`. Pour les démangler : `llvm-undname`.
-- **Le chargeur de scripts** (`gCScriptAdmin::LoadScriptDLL`, `Game.dll`) :
-  - il charge chaque `bin/scripts/*.dll` puis appelle `ScriptInit()`, qui ne prend aucun argument ;
-  - `ScriptInit` retourne 4 tables `{T* data; int count; int cap}` : AIState, AIFunction, AICallback, Script ;
-  - chaque entrée fait `0x18` octets : `bCString` nom, `bCString`, pointeur de fonction ;
-  - si les 4 tables sont vides, le module est **rejeté en silence**.
-- **Le piège de l’ABI MSVC :** une méthode d’instance qui retourne un objet par valeur (par exemple `Entity::GetPose → bCMatrix`) reçoit un pointeur de retour caché **après** `this` (RCX = this, RDX = retour). Plus de 1 300 exports sont concernés. Il faut les appeler sous la forme `Ret* (*)(This*, Ret* out, …)`.
-- **L’API de script `Entity`** (`Script.dll`) : `Spawn`, `GetPlayer`, `GetPose`/`SetPose`, `MoveTo`, `StartPlayAni`, `GetAni`, `Kill`… C’est la base pour créer et animer l’avatar de l’autre joueur.
-- **L’empreinte de version** : `TimeDateStamp` et `SizeOfImage` de `Game.dll` et `Engine.dll` (liste blanche dans `client/src/core/version.cpp`).
+- **The engine DLLs export tens of thousands of decorated C++ symbols** (`Engine.dll`, `Game.dll`, `Script.dll`, `SharedBase.dll`). Functions are called by name (`GetProcAddress`) instead of signature scanning. List them with `objdump -p <dll>`, demangle with `llvm-undname`.
+- **The script loader** (`gCScriptAdmin::LoadScriptDLL`, `Game.dll`) loads every `bin/scripts/*.dll` and calls `ScriptInit()` (no arguments), which returns 4 tables `{T* data; int count; int cap}` (AIState, AIFunction, AICallback, Script) of `0x18`-byte entries. If all 4 tables are empty, the module is **silently rejected**.
+- **The MSVC ABI trap:** an instance method returning an object by value (e.g. `Entity::GetPose → bCMatrix`) receives a hidden return pointer **after** `this` (RCX = this, RDX = return). Over 1,300 exports are affected; call them as `Ret* (*)(This*, Ret* out, …)`.
+- **Entities** (`Script.dll`): `Entity::Spawn(template, pose, temporary)` creates the avatar (a copy of the local hero), `Entity::MoveTo` places it every frame, `Entity::Kill` destroys it (deferred, through a list in `eCSceneAdmin`).
+- **Animation:** `eCAnimation_PS::PlayMotion(type 0..7, desc, flag)` reads the motion resource at `this + 0x120 + type*0x10`; its name comes from `eCResource2::GetFileTitleA()`, and `eCResource2::GetMotion(name)` finds it back. Only 7 scalars of the 0x60-byte playback descriptor are read. Death goes through the ragdoll (`SetRagDollEnabled`), not through `PlayMotion`.
+- **Locomotion** is not driven by `PlayMotion` alone: `gCCharacterMovement_PS` (`Game.dll`) adjusts weights, play speeds, fade-outs and stops every frame through `eCWrapper_emfx3ActorInstance::SetTargetWeight` / `SetPlaySpeed` / `SwitchFadeOut` / `StopMotion`, based on the character's animation velocity. `MoveTo` resets that velocity (`OnUpdatedWorldMatrix`), so the avatar's own controller thinks it is standing still: its settings are blocked and the local hero's are replicated instead.
+- **The version fingerprint:** `TimeDateStamp` and `SizeOfImage` of `Game.dll` and `Engine.dll` (allow-list in `client/src/core/version.cpp`).
 
-**Outils utilisés :** objdump (binutils), [Hopper](https://www.hopperapp.com/) via REA, Ghidra. Les notes complètes sont dans la [recherche technique](_bmad-output/planning-artifacts/research/technical-faisabilite-multijoueur-risen-2026-10-15/research.md) et la [spec J0](_bmad-output/implementation-artifacts/spec-j0-chargement-mod.md).
+**Tools:** objdump (binutils), gdb (thread states of a frozen game), Ghidra, and a built-in in-game probe (`probe = 1`). Full notes: [`docs/re/`](docs/re/), the [technical research](_bmad-output/planning-artifacts/research/technical-faisabilite-multijoueur-risen-2026-10-15/research.md) and the specs in `_bmad-output/implementation-artifacts/` (in French).
 
-## 🗺️ Feuille de route
+## 🗺️ Roadmap
 
-- [x] **J0 — Ça charge :** chargement natif, version, config, log (validé en jeu sous Proton)
-- [ ] **J1 — Je te vois :** connexion hôte/invité, avatar de l’autre joueur qui bouge et s’anime
-- [ ] **J2 — On se bat ensemble :** PNJ pilotés par l’hôte, combat coop en mêlée ← **objectif du MVP**
-- [ ] J3 — Dialogues en miroir
-- [ ] J4 — Profil invité persistant, quêtes annexes partagées
-- [ ] J5 — Relever un allié à terre
-- [ ] Plus tard : arc et magie en coop, laisse entre joueurs, version GOG
+- [x] **J0 — It loads:** native loading, version check, config, log
+- [ ] **J1 — I can see you:** host/guest session ✅, avatar that appears, moves and animates ✅ (one machine) — two-machine validation pending
+- [ ] **J2 — We fight together:** host-driven NPCs, melee co-op combat, avatar collisions, weapon in hand ← **MVP goal**
+- [ ] J3 — Mirrored dialogues
+- [ ] J4 — Persistent guest profile, shared side quests
+- [ ] J5 — Reviving a downed ally
+- [ ] Later: co-op archery and magic, leash between players, GOG version
 
-## 🤝 Reprendre ou contribuer au projet
+## 🤝 Taking over or contributing
 
-Le projet est conçu pour être repris. Voici par où commencer :
+The project is designed to be picked up. Where to start:
 
-1. **Lire les documents de conception** dans `_bmad-output/planning-artifacts/`, dans l’ordre :
-   - [recherche technique](_bmad-output/planning-artifacts/research/technical-faisabilite-multijoueur-risen-2026-10-15/research.md) : faisabilité, sources ;
-   - [brief](_bmad-output/planning-artifacts/briefs/brief-risen-multiplayer-2026-10-15/brief.md) : vision, périmètre ;
-   - [PRD](_bmad-output/planning-artifacts/prds/prd-risen-multiplayer-2026-10-15/prd.md) : exigences FR-1 à FR-12 ;
-   - [architecture](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md) : les règles à respecter ;
-   - `_bmad-output/implementation-artifacts/` : une spec par livraison.
-2. **Respecter les invariants de l’architecture** (AD-1 à AD-11), surtout :
-   - seul `game/` appelle le jeu ;
-   - tout appel au jeu se fait sur le thread principal ;
-   - aucun pointeur ne circule sur le réseau ;
-   - chaque nouveau message réseau met à jour `PROTOCOL.md`.
-3. **Ne jamais commiter de fichier du jeu.** `risen_ori/` est ignoré. Gardez-le ainsi.
-4. **Après une mise à jour Steam de Risen :** revérifier les exports utilisés, puis ajouter la nouvelle empreinte dans `client/src/core/version.cpp`.
-5. **Méthode :** le projet suit [BMAD](https://github.com/bmad-code-org/BMAD-METHOD) (Analyste → PM → Architecte → Dev). Les fichiers `.memlog.md` gardent l’historique des décisions.
+1. **Read the design documents** in `_bmad-output/planning-artifacts/` (in French), in order:
+   - [technical research](_bmad-output/planning-artifacts/research/technical-faisabilite-multijoueur-risen-2026-10-15/research.md): feasibility, sources;
+   - [brief](_bmad-output/planning-artifacts/briefs/brief-risen-multiplayer-2026-10-15/brief.md): vision, scope;
+   - [PRD](_bmad-output/planning-artifacts/prds/prd-risen-multiplayer-2026-10-15/prd.md): requirements FR-1 to FR-12;
+   - [architecture](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md): the rules to follow;
+   - `_bmad-output/implementation-artifacts/`: one spec per delivery, plus `deferred-work.md` for known follow-ups.
+2. **Respect the architecture invariants** (AD-1 to AD-11), especially:
+   - only `game/` calls the game;
+   - every game call happens on the main thread;
+   - no pointer ever goes over the network;
+   - every new network message updates `PROTOCOL.md`, bumps the protocol version and adds test vectors.
+3. **Never commit game files.** `risen_ori/` is ignored. Keep it that way.
+4. **After a Steam update of Risen:** re-check the exports in use, then add the new fingerprint to `client/src/core/version.cpp`.
+5. **Method:** the project follows [BMAD](https://github.com/bmad-code-org/BMAD-METHOD) (Analyst → PM → Architect → Dev).
 
-Les issues et les pull requests sont bienvenues. Pensez à décrire votre plateforme (Windows ou Proton) et à joindre le `Script_Multiplayer.log`.
+Issues and pull requests are welcome. Please describe your platform (Windows or Proton) and attach `Script_Multiplayer.log`.
 
-## 📜 Licence
+## 📜 License
 
-Distribué sous licence **GNU GPL v3.0** : voir [`LICENSE`](LICENSE). Quiconque reprend le projet le garde ouvert.
+Released under the **GNU GPL v3.0**: see [`LICENSE`](LICENSE). Anyone who picks up the project keeps it open.
 
-_Risen_ est une marque de ses ayants droit. Ce projet ne redistribue aucun contenu du jeu.
+_Risen_ is a trademark of its respective owners. This project redistributes no game content.
