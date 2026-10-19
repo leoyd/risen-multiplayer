@@ -194,6 +194,10 @@ int main(int argc, char** argv) {
                     print("INFO", "[test] PlayAvatarMotion NetId " + std::to_string(pm->net_id) + " « " + pm->name +
                                       " » type " + std::to_string(pm->motion.type) + " ms " +
                                       std::to_string(pm->motion.ms));
+                } else if (const auto* pp = std::get_if<PlayAvatarParam>(&cmd)) {
+                    print("INFO", "[test] PlayAvatarParam NetId " + std::to_string(pp->net_id) + " type " +
+                                      std::to_string(pp->param.type) + " nature " + std::to_string(pp->param.kind) +
+                                      " valeur " + std::to_string(pp->param.value));
                 } else if (const auto* ad = std::get_if<AvatarDeath>(&cmd)) {
                     print("INFO", "[test] AvatarDeath NetId " + std::to_string(ad->net_id));
                 } else if (const auto* sa = std::get_if<SpawnAvatar>(&cmd)) {

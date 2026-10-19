@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 5
+# Protocole Risen Multiplayer — version 6
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -6,7 +6,7 @@ et le codec Go le suivent, et les vecteurs de `protocol/vectors/` en sont tirés
 
 La v1 couvrait **uniquement la session** (poignée de main, présence, fin de session). La v2
 (story 2.1) ajoute `Motion`, la v3 (story 2.2) `Spawn` et `Despawn`, la v4 (story 2.3) le
-snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`. Les combats arrivent avec les stories
+snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) `MotionParam`. Les combats arrivent avec les stories
 suivantes et incrémenteront la version.
 
 ## 1. Règles générales
@@ -48,7 +48,8 @@ suivantes et incrémenteront la version.
 | 20 | `Spawn` | fiable | les deux sens : apparition d'une entité dont l'émetteur a l'autorité (v3) |
 | 21 | `Despawn` | fiable | les deux sens : retrait d'une entité annoncée par `Spawn` (v3) |
 | 24 | `Death` | fiable | les deux sens : mort d'une entité dont l'émetteur a l'autorité ; le récepteur met la réplique en ragdoll (v5) |
-| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v5** |
+| 26 | `MotionParam` | fiable | les deux sens : réglage de locomotion (poids cible, vitesse de lecture) d'une entité animée (v6) |
+| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v6** |
 
 Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -60,7 +61,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `5` en v5 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `6` en v6 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -182,6 +183,23 @@ Taille : 5 octets.
 
 Taille : 5 octets. Le récepteur met la réplique en ragdoll (`SetRagDollEnabled(1, 0, nul)`).
 
+### `MotionParam` (26) — fiable — v6
+
+Un réglage de l'enveloppe EMotionFX (`eCWrapper_emfx3ActorInstance`) que Risen applique chaque
+frame à la locomotion : il démarre une animation avec un poids presque nul (`PlayMotion`), puis
+fait monter ce poids et règle sa vitesse de lecture.
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `net_id` | `u32` | entité animée (AD-6) |
+| `ms` | `u32` | même base que `Motion.ms` |
+| `type` | `u8` | `eEMotionType`, **0 à 7** |
+| `nature` | `u8` | `0` = `SetTargetWeight(type, valeur, durée)` ; `1` = `SetPlaySpeed(type, valeur)` ; autre → `BadValue` |
+| `valeur` | `f32` | poids cible ou vitesse de lecture, **dans [0, 100]** (sinon `BadValue`) |
+| `durée` | `f32` | durée du fondu (s) pour `SetTargetWeight`, **dans [0, 60]** ; **exactement 0** pour `SetPlaySpeed` (sinon `BadValue`) |
+
+Taille : 19 octets.
+
 **Raison inconnue** (`Reject` ou `SessionEnd`) : le message se décode quand même ; la valeur
 brute est conservée et l'appelant la journalise telle quelle (« raison inconnue (200) »).
 
@@ -215,13 +233,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide), ou que les `nombre` entités d'un snapshot |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle, ≠ 1 pour un snapshot |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 5 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 6 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) |
 | `TrailingBytes` | octets restants après la fin du message |
-| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; snapshot : `nombre` > 54) |
+| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 1, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 5, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 6, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -253,13 +271,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=5`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=6`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0500 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0600 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -269,7 +287,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `05 00` | `version_protocole` = 5 |
+| 0x02 | `06 00` | `version_protocole` = 6 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -428,6 +446,26 @@ sonde).
 00000000: 1802 0000 00                             .....
 ```
 
+#### `motion_param.bin` — `MotionParam` (fiable, sans octet de canal), 19 octets
+
+`net_id=2`, `ms=1234`, `type=0`, `nature=0` (poids cible), `valeur=1.0`, `durée=0.25`.
+
+<!-- vector: motion_param.bin -->
+```text
+00000000: 1a02 0000 00d2 0400 0000 0000 0080 3f00  ..............?.
+00000010: 0080 3e                                  ..>
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `1a` | `MsgType` MotionParam (26) |
+| 0x01 | `02 00 00 00` | `net_id` = 2 |
+| 0x05 | `d2 04 00 00` | `ms` = 1234 |
+| 0x09 | `00` | `type` = 0 |
+| 0x0a | `00` | `nature` = 0 (poids cible) |
+| 0x0b | `00 00 80 3f` | `valeur` = 1.0 |
+| 0x0f | `00 00 80 3e` | `durée` = 0.25 |
+
 #### `snapshot.bin` — snapshot (canal 1), 28 octets
 
 `tick=1234`, une entité : `net_id=2`, position `(100.0, -50.5, 2000.0)`, `lacet=1.5`, `pv=75`.
@@ -472,11 +510,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 5.
+`Truncated` ; `peek_hello_version` → 6.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0500 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0600 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -486,7 +524,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0500 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0600 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -523,6 +561,16 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 00000000: 1207 0000                                ....
 ```
 
+#### `motion_param_bad.bin` — `MotionParam` de nature 2, 19 octets
+
+`motion_param.bin` avec `nature` = 2 (offset 0x0a) → `BadValue`.
+
+<!-- vector: motion_param_bad.bin -->
+```text
+00000000: 1a02 0000 00d2 0400 0000 0200 0080 3f00  ..............?.
+00000010: 0080 3e                                  ..>
+```
+
 #### `snapshot_truncated.bin` — snapshot annonçant 2 entités, 28 octets
 
 `snapshot.bin` avec `nombre` = 2 (offset 0x05) : une seule entité suit → `Truncated`.
@@ -535,7 +583,7 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`). Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`). Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -600,6 +648,13 @@ d'appels.
   - il rejoue chaque `Motion` quand son temps d'affichage (horloge distante − 150 ms, comme les
     snapshots) atteint `ms` ; un `Motion` en retard (ou reçu avant tout snapshot) part aussitôt ;
     parmi ceux qui partent à la même frame, seul le plus récent des types 0 et 1 est rejoué.
+- **Réglages de locomotion** (v6) : l'émetteur envoie un `MotionParam` quand le poids cible ou la
+  vitesse de lecture d'un type change chez son héros (écart de plus de 0,01, durée différente de
+  plus de 0,005 s, valeur finale exacte de 0 ou 1, ou premier réglage après un `Motion` de ce type),
+  en session seulement. Le récepteur l'accepte aux
+  mêmes conditions qu'un `Motion` et le rejoue sur l'avatar au même instant d'affichage, dans l'ordre
+  d'arrivée ; parmi ceux qui partent à la même frame, un réglage des types 0/1 placé avant le
+  `Motion` gardé de son type est écarté (il visait l'animation remplacée).
 - **Mort** (v5) : quand le jeu déclare le héros mort (`Entity::IsDead` passe à 1), l'émetteur
   envoie `Death{son NetId}`, une fois par mort (à nouveau après un retour à la vie). Un ragdoll sans
   mort (chute, renversement) n'envoie rien.
@@ -646,4 +701,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v5).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v6).

@@ -90,6 +90,8 @@ type sessionResult struct {
 	SnapshotsBad int // snapshots illisibles
 	MotionsTx    int // Motion envoyés (scénario ou écho, v5)
 	MotionsRx    int // Motion reçus de l'hôte
+	ParamsTx     int // MotionParam envoyés (scénario ou écho, v6)
+	ParamsRx     int // MotionParam reçus de l'hôte
 	AniNamesRx   int // AniName reçus de l'hôte
 	DeathsRx     int // Death reçus de l'hôte
 	DespawnsRx   int // Despawn reçus de l'hôte (v3)
@@ -150,6 +152,7 @@ type guest struct {
 	lastEventMs    float64
 	deathSent      bool
 	motionRxPeriod int
+	paramRxPeriod  int
 	endAt          time.Time // fin de --duration (zéro = aucune)
 	extraHello     bool      // --dup-hello : Hello supplémentaire encore à envoyer
 	incoming       chan datagram
@@ -213,12 +216,13 @@ func (g *guest) run(ctx context.Context) sessionResult {
 			g.sendSnapshot(now)
 			g.playEvents(now)
 			if !now.Before(g.nextHBLog) {
-				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d",
+				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d ; MotionParam reçus=%d",
 					g.hbTxPeriod, g.hbRxPeriod, g.res.HeartbeatsTx, g.res.HeartbeatsRx, g.snapTxPeriod, g.snapRxPeriod,
-					g.motionRxPeriod)
+					g.motionRxPeriod, g.paramRxPeriod)
 				g.hbTxPeriod, g.hbRxPeriod = 0, 0
 				g.snapTxPeriod, g.snapRxPeriod = 0, 0
 				g.motionRxPeriod = 0
+				g.paramRxPeriod = 0
 				g.nextHBLog = now.Add(time.Second)
 			}
 			g.kcp.Update(g.nowMs())
@@ -311,6 +315,14 @@ func (g *guest) sendMotion(now time.Time, name string, m protocol.Motion) {
 	g.res.MotionsTx++
 }
 
+// sendParam envoie un MotionParam daté depuis l'entrée en session, sous le NetId de l'invité.
+func (g *guest) sendParam(now time.Time, p protocol.MotionParam) {
+	p.NetId = protocol.GuestNetId
+	p.Ms = uint32(now.Sub(g.sessionStart).Milliseconds())
+	g.sendReliable(p)
+	g.res.ParamsTx++
+}
+
 // playEvents envoie les gestes du scénario dont l'instant est passé depuis l'itération précédente.
 func (g *guest) playEvents(now time.Time) {
 	if g.cfg.Scenario == nil {
@@ -318,6 +330,10 @@ func (g *guest) playEvents(now time.Time) {
 	}
 	ms := float64(now.Sub(g.sessionStart)) / float64(time.Millisecond)
 	for _, ev := range g.cfg.Scenario.due(g.lastEventMs, ms) {
+		if ev.param != nil {
+			g.sendParam(now, *ev.param)
+			continue
+		}
 		if ev.death {
 			if !g.deathSent {
 				g.deathSent = true
@@ -610,6 +626,12 @@ func (g *guest) drain() (sessionResult, bool) {
 			g.motionRxPeriod++
 			if name, ok := g.hostNames[m.AniId]; ok && g.cfg.Echo && m.NetId == protocol.HostNetId {
 				g.sendMotion(time.Now(), name, m)
+			}
+		case protocol.MotionParam:
+			g.res.ParamsRx++
+			g.paramRxPeriod++
+			if g.cfg.Echo && m.NetId == protocol.HostNetId {
+				g.sendParam(time.Now(), m)
 			}
 		case protocol.Death:
 			g.res.DeathsRx++

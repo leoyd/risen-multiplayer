@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 5 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 6 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 5;
+inline constexpr std::uint16_t kProtocolVersion = 6;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -50,6 +50,7 @@ enum class MsgType : std::uint8_t {
     Spawn = 20,    // v3 (story 2.2)
     Despawn = 21,  // v3 (story 2.2)
     Death = 24,    // v5 (story 2.4)
+    MotionParam = 26,  // v6 (story 2.4b)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -168,8 +169,26 @@ struct Death {
     std::uint32_t net_id = 0;
 };
 
+// Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,
+// valeur, durée) ou SetPlaySpeed(type, valeur). Daté comme Motion, rejoué au même instant.
+enum class MotionParamKind : std::uint8_t {
+    TargetWeight = 0,
+    PlaySpeed = 1,
+};
+inline constexpr std::uint8_t kMotionParamKindCount = 2;
+inline constexpr float kMaxMotionParamValue = 100.0f;  // poids ou vitesse : [0, 100]
+inline constexpr float kMaxMotionParamTime = 60.0f;    // durée de fondu : [0, 60] s ; 0 pour une vitesse
+struct MotionParam {
+    std::uint32_t net_id = 0;
+    std::uint32_t ms = 0;
+    std::uint8_t type = 0;  // 0 à 7
+    std::uint8_t kind = 0;  // MotionParamKind
+    float value = 0.0f;
+    float time = 0.0f;      // durée du fondu (TargetWeight), 0 pour PlaySpeed
+};
+
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
-using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death>;
+using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,
@@ -179,7 +198,7 @@ enum class DecodeError : std::uint8_t {
     UnsupportedVersion,  // Hello d'une autre version du protocole (lire peek_hello_version)
     BadLength,           // longueur de texte hors bornes
     TrailingBytes,       // octets après la fin du message
-    BadValue,            // champ hors de son domaine (Motion : type, bits de flags, scalaires sans descripteur)
+    BadValue,            // champ hors de son domaine (Motion, MotionParam, nombre d'entités d'un snapshot)
 };
 
 template <typename Message>

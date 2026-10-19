@@ -64,3 +64,21 @@ TEST("captures : ragdoll → rien (la mort part sur Entity::IsDead)") {
     c.ragdoll_on = false;
     CHECK(!local_input(c, "Hero").has_value());
 }
+
+TEST("captures : réglage de locomotion → LocalParam (type, nature, valeur, durée) ; type hors 0..7 → rien") {
+    Capture c;
+    c.kind = CaptureKind::Param;
+    c.type = 1;
+    c.param_kind = 0;
+    c.value = 0.75f;
+    c.time = 0.3f;
+    auto in = local_input(c, "");
+    const auto* lp = in ? std::get_if<cs::LocalParam>(&*in) : nullptr;
+    CHECK(lp != nullptr && lp->type == 1 && lp->kind == 0 && lp->value == 0.75f && lp->time == 0.3f);
+    c.param_kind = 1;
+    in = local_input(c, "");
+    lp = in ? std::get_if<cs::LocalParam>(&*in) : nullptr;
+    CHECK(lp != nullptr && lp->kind == 1);
+    c.type = 8;
+    CHECK(!local_input(c, "").has_value());
+}

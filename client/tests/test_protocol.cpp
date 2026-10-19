@@ -6,6 +6,8 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <limits>
+#include <cmath>
 #include <vector>
 
 using namespace mp::protocol;
@@ -126,7 +128,8 @@ Bytes enc(const ReliableMessage& m) {
 
 const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
 const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin", "spawn.bin",
-                                      "despawn.bin",   "aniname.bin",     "death.bin"};
+                                      "despawn.bin",   "aniname.bin",     "death.bin",
+                                      "motion_param.bin"};
 
 }  // namespace
 
@@ -341,14 +344,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v5 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v6 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 5);
+    CHECK_EQ(version, 6);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 5);
+    CHECK_EQ(version, 6);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -359,12 +362,12 @@ TEST("protocole : peek_hello_version sur v5 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 5") {
+TEST("protocole : l'encodeur refuse une version autre que 6") {
     Hello h = sample_hello();
-    h.protocol_version = 4;
+    h.protocol_version = 5;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 6;
+    h.protocol_version = 7;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -490,7 +493,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 5);
+    CHECK_EQ(kProtocolVersion, 6);
     CHECK_EQ(static_cast<int>(Channel::Reliable), 0);
     CHECK_EQ(static_cast<int>(Channel::Snapshot), 1);
     CHECK_EQ(static_cast<int>(Channel::Control), 2);
@@ -504,6 +507,7 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::Despawn), 21);
     CHECK_EQ(static_cast<int>(MsgType::AniName), 18);
     CHECK_EQ(static_cast<int>(MsgType::Death), 24);
+    CHECK_EQ(static_cast<int>(MsgType::MotionParam), 26);
     CHECK_EQ(kHostNetId, 1u);
     CHECK_EQ(kGuestNetId, 2u);
     CHECK_EQ(static_cast<int>(RejectReason::Protocol), 1);
@@ -628,4 +632,61 @@ TEST("protocole : AniName — 255 octets acceptés, vide ou 256 refusés à l'en
     m.name.assign(kMaxAniName + 1, 'a');
     CHECK(!encode_reliable(m, out));
     CHECK(out == Bytes{0xAA});
+}
+
+// --- MotionParam (story 2.4b) ---------------------------------------------------------
+
+TEST("protocole : vecteurs motion_param.bin et motion_param_bad.bin") {
+    const Bytes b = load_vector("motion_param.bin");
+    const auto d = dr(b);
+    const MotionParam* got = std::get_if<MotionParam>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->net_id == 2 && got->ms == 1234 && got->type == 0 && got->kind == 0 &&
+          got->value == 1.0f && got->time == 0.25f);
+    if (got != nullptr) CHECK(enc(*got) == b);
+    CHECK(dr(load_vector("motion_param_bad.bin")).error == DecodeError::BadValue);
+}
+
+TEST("protocole : MotionParam — type 8, nature 2, NaN ou Inf refusés (encodage et décodage)") {
+    MotionParam m;
+    m.kind = static_cast<std::uint8_t>(MotionParamKind::PlaySpeed);
+    m.value = 0.5f;
+    Bytes out = {0xAA};
+    m.type = 8;
+    CHECK(!encode_reliable(m, out));
+    m.type = 7;
+    m.kind = 2;
+    CHECK(!encode_reliable(m, out));
+    m.kind = 1;
+    m.value = std::nanf("");
+    CHECK(!encode_reliable(m, out));
+    m.value = 0.5f;
+    m.time = std::numeric_limits<float>::infinity();
+    CHECK(!encode_reliable(m, out));
+    CHECK(out == Bytes{0xAA});
+    m.time = 0.0f;
+    const auto d = dr(enc(m));
+    CHECK(d.ok() && std::get_if<MotionParam>(&d.message) != nullptr);
+    Bytes nan = load_vector("motion_param.bin");
+    const float f = std::nanf("");
+    std::memcpy(nan.data() + 0x0b, &f, 4);
+    CHECK(dr(nan).error == DecodeError::BadValue);
+}
+
+TEST("protocole : MotionParam — domaine : [0, 100], durée [0, 60], vitesse sans durée ; décodage aussi") {
+    auto bad_decoded = [](float value, float time, std::uint8_t kind, std::uint8_t type) {
+        Bytes b = load_vector("motion_param.bin");
+        b[0x09] = type;
+        b[0x0a] = kind;
+        std::memcpy(b.data() + 0x0b, &value, 4);
+        std::memcpy(b.data() + 0x0f, &time, 4);
+        return decode_reliable(b.data(), b.size()).error == DecodeError::BadValue;
+    };
+    CHECK(bad_decoded(1.0f, 0.25f, 0, 8));
+    CHECK(bad_decoded(1.0f, std::numeric_limits<float>::infinity(), 0, 0));
+    CHECK(bad_decoded(-0.5f, 0.25f, 0, 0));
+    CHECK(bad_decoded(101.0f, 0.25f, 0, 0));
+    CHECK(bad_decoded(1.0f, 61.0f, 0, 0));
+    CHECK(bad_decoded(1.0f, 0.1f, 1, 0));  // vitesse avec durée
+    CHECK(!bad_decoded(1.8f, 0.0f, 1, 7));
+    CHECK(decode_control(Bytes{2, 26}.data(), 2).error == DecodeError::UnknownType);
 }

@@ -34,6 +34,7 @@ struct Entry {
     void* player = nullptr;        // héros local à la création : le monde de l'avatar
     bool move_error_logged = false;
     bool dead = false;  // en ragdoll (Death) : plus de pose ni d'animation imposées
+    bool param_error_logged = false;
 };
 std::vector<Entry> g_table;
 
@@ -54,6 +55,15 @@ struct WrapperStats {
 };
 std::mutex g_stats_mutex;
 WrapperStats g_stats;
+// Dernier réglage capturé par (type, nature), sous g_stats_mutex : un réglage strictement
+// identique n'entre pas dans l'anneau (le moteur en lance des centaines par seconde). Invalidé
+// par un PlayMotion du héros sur ce type, et au changement d'enveloppe.
+struct LastCapture {
+    bool valid = false;
+    float value = 0.0f;
+    float time = 0.0f;
+};
+LastCapture g_last_capture[8][2];
 ULONGLONG g_next_stats_log = 0;
 
 void log_wrapper_stats() {
@@ -232,6 +242,25 @@ void play(std::uint32_t net_id, const std::string& name, const protocol::Motion&
     }
 }
 
+void play_param(std::uint32_t net_id, const protocol::MotionParam& param) {
+    for (Entry& e : g_table) {
+        if (e.net_id != net_id) continue;
+        if (e.dead || e.wrapper == nullptr) return;
+        bool ok = false;
+        {
+            AnimFilter::ReplayGuard guard;  // le hook laisse passer ce réglage sur la réplique
+            ok = param.kind == static_cast<std::uint8_t>(protocol::MotionParamKind::TargetWeight)
+                     ? game::set_target_weight(e.wrapper, param.type, param.value, param.time)
+                     : game::set_play_speed(e.wrapper, param.type, param.value);
+        }
+        if (!ok && !e.param_error_logged) {
+            e.param_error_logged = true;
+            log::error("[sync] avatar " + std::to_string(net_id) + " : réglage de locomotion a levé une exception (SEH)");
+        }
+        return;
+    }
+}
+
 void die(std::uint32_t net_id) {
     for (Entry& e : g_table) {
         if (e.net_id != net_id || e.dead) continue;
@@ -277,6 +306,10 @@ bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcep
         case AnimFilter::Verdict::Block: return false;  // le moteur n'anime jamais un avatar (AD-8)
         case AnimFilter::Verdict::Capture: break;
     }
+    if (type >= 0 && type < 8) {  // nouvelle animation : ses réglages repartiront, même identiques
+        std::lock_guard<std::mutex> lock(g_stats_mutex);
+        for (LastCapture& lc : g_last_capture[type]) lc.valid = false;
+    }
     Capture c;
     c.type = type;
     c.flag = flag;
@@ -292,16 +325,41 @@ void track_local(void* animation_ps) {
     void* wrapper = nullptr;
     if (animation_ps != nullptr && !game::get_actor_wrapper(animation_ps, wrapper)) wrapper = nullptr;
     g_local_wrapper.store(wrapper);
+    std::lock_guard<std::mutex> lock(g_stats_mutex);
+    for (auto& per_type : g_last_capture) {
+        for (LastCapture& lc : per_type) lc = LastCapture{};
+    }
 }
 
-bool on_wrapper_call(void* wrapper, WrapperCall call, int type, float value) noexcept {
+bool on_wrapper_call(void* wrapper, WrapperCall call, int type, float value, float time) noexcept {
     const int k = static_cast<int>(call);
     if (wrapper != nullptr && wrapper == g_local_wrapper.load()) {
-        std::lock_guard<std::mutex> lock(g_stats_mutex);
-        ++g_stats.hero[k];
-        if (type == 0 || type == 1) {
-            if (call == WrapperCall::PlaySpeed) g_stats.hero_speed[type] = value;
-            if (call == WrapperCall::TargetWeight) g_stats.hero_weight[type] = value;
+        {
+            std::lock_guard<std::mutex> lock(g_stats_mutex);
+            ++g_stats.hero[k];
+            if (type == 0 || type == 1) {
+                if (call == WrapperCall::PlaySpeed) g_stats.hero_speed[type] = value;
+                if (call == WrapperCall::TargetWeight) g_stats.hero_weight[type] = value;
+            }
+        }
+        // Story 2.4b : poids cible et vitesse de lecture partent en MotionParam (même anneau que
+        // les PlayMotion : l'ordre est conservé).
+        if ((call == WrapperCall::TargetWeight || call == WrapperCall::PlaySpeed) && type >= 0 && type < 8) {
+            const int kind = call == WrapperCall::TargetWeight ? 0 : 1;
+            const float t = kind == 0 ? time : 0.0f;
+            {
+                std::lock_guard<std::mutex> lock(g_stats_mutex);
+                LastCapture& last = g_last_capture[type][kind];
+                if (last.valid && last.value == value && last.time == t) return true;
+                last = LastCapture{true, value, t};
+            }
+            Capture c;
+            c.kind = CaptureKind::Param;
+            c.type = type;
+            c.param_kind = static_cast<std::uint8_t>(kind);
+            c.value = value;
+            c.time = t;
+            anim_filter().push(c);
         }
         return true;
     }

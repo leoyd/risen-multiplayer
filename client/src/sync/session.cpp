@@ -167,6 +167,10 @@ void execute(cs::Output out) {
                 avatar::play(pm->net_id, pm->name, pm->motion);
                 continue;
             }
+            if (const auto* pp = std::get_if<cs::PlayAvatarParam>(&cmd)) {
+                avatar::play_param(pp->net_id, pp->param);
+                continue;
+            }
             if (const auto* ad = std::get_if<cs::AvatarDeath>(&cmd)) {
                 avatar::die(ad->net_id);
                 continue;

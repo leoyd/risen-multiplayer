@@ -268,8 +268,16 @@ Prérequis : `role = host`, `probe = 0`, `log_level = debug`, overlay Steam dés
    tools/fake-guest/scenarios/mort.txt` : à 2 s (plus 150 ms), l'avatar s'effondre en ragdoll et
    ne bouge plus (`[sync] avatar 2 en ragdoll (mort)` au log).
 4. Fournir `Script_Multiplayer.log` : le bilan `[sync] snapshots (5 s)` se termine par
-   `Motion : envoyés …, rejoués …, écrasés …, ignorés …, jetés …` ; une ligne `« … » non rejoué`
-   signale un nom que `GetMotion` ne trouve pas.
+   `Motion : envoyés …, rejoués …, écrasés …, ignorés …, jetés … ; MotionParam : envoyés …, rejoués …,
+   ignorés …` ; une ligne `« … » non rejoué` signale un nom que `GetMotion` ne trouve pas.
+
+**Locomotion (story 2.4b).** Risen démarre une animation de déplacement avec un poids presque nul,
+puis en règle le poids et la vitesse de lecture à chaque frame (`SetTargetWeight`, `SetPlaySpeed`
+de l'enveloppe EMotionFX). Ces réglages du héros partent en `MotionParam` (les changements
+seulement) et sont rejoués sur l'avatar ; ceux que le contrôleur de l'avatar lancerait de lui-même
+sont bloqués (il le croit immobile, car `MoveTo` le recale). Test : en écho, démarrer, courir en
+avant puis en arrière, s'arrêter, marcher, tourner : ni T-pose au démarrage, ni blocage. La ligne
+`[sync] locomotion (1 s)` compte les réglages du héros et ceux bloqués sur l'avatar.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

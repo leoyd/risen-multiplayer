@@ -60,25 +60,25 @@ void detour_set_ragdoll_session(void* animation_ps, bool on, bool flag, const fl
 
 // Story 2.4b : réglages de locomotion de l'enveloppe EMotionFX (bloqués sur l'avatar).
 void detour_set_play_speed(void* wrapper, int type, float speed) {
-    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::PlaySpeed, type, speed)) {
+    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::PlaySpeed, type, speed, 0.0f)) {
         g_original_set_play_speed(wrapper, type, speed);
     }
 }
 
 void detour_set_target_weight(void* wrapper, int type, float weight, float time) {
-    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::TargetWeight, type, weight)) {
+    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::TargetWeight, type, weight, time)) {
         g_original_set_target_weight(wrapper, type, weight, time);
     }
 }
 
 void detour_switch_fade_out(void* wrapper, int type, bool on, float time) {
-    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::FadeOut, type, time)) {
+    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::FadeOut, type, time, time)) {
         g_original_switch_fade_out(wrapper, type, on, time);
     }
 }
 
 void detour_wrapper_stop_motion(void* wrapper, int type, float time, bool flag) {
-    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::StopMotion, type, time)) {
+    if (sync::avatar::on_wrapper_call(wrapper, sync::avatar::WrapperCall::StopMotion, type, time, time)) {
         g_original_wrapper_stop_motion(wrapper, type, time, flag);
     }
 }

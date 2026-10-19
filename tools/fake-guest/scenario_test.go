@@ -225,8 +225,38 @@ func TestEcho(t *testing.T) {
 	if len(rec.aniNames) != 1 || rec.aniNames[0].Name != "Host_Run" {
 		t.Fatalf("AniName renvoyés : %+v", rec.aniNames)
 	}
+	if len(rec.params) < 5 || rec.params[0].NetId != protocol.GuestNetId || rec.params[0].Value != 1 || rec.params[0].Time != 0.25 {
+		t.Fatalf("MotionParam renvoyés : %d, premier %+v", len(rec.params), rec.params)
+	}
 	if len(rec.motions) < 5 || rec.motions[0].D0C != 0 || rec.motions[0].NetId != protocol.GuestNetId {
 		t.Fatalf("Motion renvoyés : %d, premier %+v", len(rec.motions), rec.motions)
 	}
 	expectLog(t, r, "<- AniName id=0 nom=Host_Run", "Motion reçus=")
+}
+
+func TestScenarioParam(t *testing.T) {
+	sc, err := parseScenario(strings.NewReader("pause 1\nanim 0.1 0 Run\nparam 0.2 0 poids 1 0.25\nparam 0.3 1 vitesse 0.5\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.events) != 3 || sc.events[1].param == nil || *sc.events[1].param != (protocol.MotionParam{Kind: 0, Param: protocol.ParamTargetWeight, Value: 1, Time: 0.25}) ||
+		sc.events[2].param == nil || *sc.events[2].param != (protocol.MotionParam{Kind: 1, Param: protocol.ParamPlaySpeed, Value: 0.5}) {
+		t.Fatalf("événements : %+v", sc.events)
+	}
+	for _, bad := range []string{"pause 1\nparam 0 8 poids 1\n", "pause 1\nparam 0 0 force 1\n", "pause 1\nparam 0 0 vitesse 1 0.2\n",
+		"pause 1\nparam 0 0 poids\n", "pause 1\nparam 0 0 poids 1 -1\n"} {
+		if _, err := parseScenario(strings.NewReader(bad)); err == nil {
+			t.Errorf("%q accepté", bad)
+		}
+	}
+	host := startHost(t, defaultHost())
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 600 * time.Millisecond
+	cfg.Scenario = sc
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	rec := host.record()
+	if len(rec.params) < 2 || rec.params[0].NetId != protocol.GuestNetId || rec.params[0].Param != protocol.ParamTargetWeight {
+		t.Fatalf("MotionParam reçus : %+v", rec.params)
+	}
 }

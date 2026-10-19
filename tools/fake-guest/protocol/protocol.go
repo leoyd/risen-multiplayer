@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 5, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 6, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 5
+	ProtocolVersion   = 6
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -39,16 +39,17 @@ const (
 type MsgType uint8
 
 const (
-	TypeHello      MsgType = 1
-	TypeWelcome    MsgType = 2
-	TypeReject     MsgType = 3
-	TypeHeartbeat  MsgType = 16
-	TypeSessionEnd MsgType = 17
-	TypeSpawn      MsgType = 20 // v3
-	TypeDespawn    MsgType = 21 // v3
-	TypeAniName    MsgType = 18 // v5
-	TypeMotion     MsgType = 19 // v2
-	TypeDeath      MsgType = 24 // v5
+	TypeHello       MsgType = 1
+	TypeWelcome     MsgType = 2
+	TypeReject      MsgType = 3
+	TypeHeartbeat   MsgType = 16
+	TypeSessionEnd  MsgType = 17
+	TypeSpawn       MsgType = 20 // v3
+	TypeDespawn     MsgType = 21 // v3
+	TypeAniName     MsgType = 18 // v5
+	TypeMotion      MsgType = 19 // v2
+	TypeDeath       MsgType = 24 // v5
+	TypeMotionParam MsgType = 26 // v6
 )
 
 // NetId (AD-6) et type de Spawn.
@@ -165,6 +166,39 @@ type Motion struct {
 
 type Death struct{ NetId uint32 }
 
+// MotionParam : réglage de locomotion (v6). Nature 0 = SetTargetWeight(type, valeur, durée),
+// 1 = SetPlaySpeed(type, valeur).
+type MotionParam struct {
+	NetId uint32
+	Ms    uint32
+	Kind  uint8 // type de motion, 0 à 7 (champ `type` du §4)
+	Param uint8 // nature
+	Value float32
+	Time  float32
+}
+
+const (
+	ParamTargetWeight = 0
+	ParamPlaySpeed    = 1
+)
+
+func finite32(v float32) bool { return !math.IsNaN(float64(v)) && !math.IsInf(float64(v), 0) }
+
+const (
+	MaxMotionParamValue = 100 // poids ou vitesse : [0, 100]
+	MaxMotionParamTime  = 60  // durée de fondu : [0, 60] s ; 0 pour une vitesse
+)
+
+func validMotionParam(m MotionParam) bool {
+	if m.Kind >= MotionTypeCount || m.Param > ParamPlaySpeed || !finite32(m.Value) || !finite32(m.Time) {
+		return false
+	}
+	if m.Value < 0 || m.Value > MaxMotionParamValue || m.Time < 0 || m.Time > MaxMotionParamTime {
+		return false
+	}
+	return m.Param != ParamPlaySpeed || m.Time == 0
+}
+
 const (
 	MinAniName      = 1
 	MaxAniName      = 255
@@ -181,16 +215,17 @@ func validMotion(m Motion) bool {
 		math.Float32bits(m.D0C)|m.D10|math.Float32bits(m.D14)|m.D18) == 0
 }
 
-func (Hello) Type() MsgType      { return TypeHello }
-func (Welcome) Type() MsgType    { return TypeWelcome }
-func (Reject) Type() MsgType     { return TypeReject }
-func (Heartbeat) Type() MsgType  { return TypeHeartbeat }
-func (SessionEnd) Type() MsgType { return TypeSessionEnd }
-func (Spawn) Type() MsgType      { return TypeSpawn }
-func (Despawn) Type() MsgType    { return TypeDespawn }
-func (AniName) Type() MsgType    { return TypeAniName }
-func (Motion) Type() MsgType     { return TypeMotion }
-func (Death) Type() MsgType      { return TypeDeath }
+func (Hello) Type() MsgType       { return TypeHello }
+func (Welcome) Type() MsgType     { return TypeWelcome }
+func (Reject) Type() MsgType      { return TypeReject }
+func (Heartbeat) Type() MsgType   { return TypeHeartbeat }
+func (SessionEnd) Type() MsgType  { return TypeSessionEnd }
+func (Spawn) Type() MsgType       { return TypeSpawn }
+func (Despawn) Type() MsgType     { return TypeDespawn }
+func (AniName) Type() MsgType     { return TypeAniName }
+func (Motion) Type() MsgType      { return TypeMotion }
+func (Death) Type() MsgType       { return TypeDeath }
+func (MotionParam) Type() MsgType { return TypeMotionParam }
 
 // --- Encodage ------------------------------------------------------------------------
 
@@ -264,6 +299,13 @@ func (w *writer) message(m Message) {
 		w.u32(m.D18)
 	case Death:
 		w.u32(m.NetId)
+	case MotionParam:
+		w.u32(m.NetId)
+		w.u32(m.Ms)
+		w.u8(m.Kind)
+		w.u8(m.Param)
+		w.f32(m.Value)
+		w.f32(m.Time)
 	}
 }
 
@@ -288,7 +330,7 @@ func EncodeControl(m Message) ([]byte, error) {
 }
 
 // EncodeReliable rend le message [MsgType][charge] d'un message fiable (Heartbeat, SessionEnd,
-// Spawn, Despawn, AniName, Motion, Death), sans octet de canal.
+// Spawn, Despawn, AniName, Motion, Death, MotionParam), sans octet de canal.
 func EncodeReliable(m Message) ([]byte, error) {
 	switch m := m.(type) {
 	case AniName:
@@ -297,6 +339,10 @@ func EncodeReliable(m Message) ([]byte, error) {
 		}
 	case Motion:
 		if !validMotion(m) {
+			return nil, ErrOutOfBounds
+		}
+	case MotionParam:
+		if !validMotionParam(m) {
 			return nil, ErrOutOfBounds
 		}
 	case Heartbeat, SessionEnd, Spawn, Despawn, Death:
@@ -486,6 +532,15 @@ func DecodeReliable(b []byte) (Message, error) {
 			return nil, err
 		}
 		if !validMotion(m) {
+			return nil, ErrBadValue
+		}
+		return m, nil
+	case TypeMotionParam:
+		m := MotionParam{NetId: r.u32(), Ms: r.u32(), Kind: r.u8(), Param: r.u8(), Value: r.f32(), Time: r.f32()}
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		if !validMotionParam(m) {
 			return nil, ErrBadValue
 		}
 		return m, nil

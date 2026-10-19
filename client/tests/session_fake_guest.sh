@@ -244,6 +244,7 @@ cat > "$work/gestes.txt" <<'EOS'
 pause 3
 anim 0.2 0 Hero_Run
 anim 0.6 0 Hero_Jump
+param 0.7 0 poids 1 0.25
 anim 1.0 2 Hero_Attack 0.1 0 0 1 -1 1 1
 mort 2.0
 EOS
@@ -256,8 +257,9 @@ if start_host gestes $p 30000; then
     expect_count "gestes : course rejouée" "$h" "PlayAvatarMotion NetId 2 « Hero_Run » type 0" 1
     expect_count "gestes : saut rejoué" "$h" "PlayAvatarMotion NetId 2 « Hero_Jump » type 0" 1
     expect_count "gestes : attaque rejouée" "$h" "PlayAvatarMotion NetId 2 « Hero_Attack » type 2" 1
-    order=$(grep -- "PlayAvatarMotion" "$h" | grep -oE "« Hero_(Run|Jump|Attack) »" | tr -d '«» ' | tr '\n' ,)
-    if [[ $order == "Hero_Run,Hero_Jump,Hero_Attack," ]]; then ok "gestes : dans l'ordre"; else ko "gestes : ordre $order"; fi
+    order=$(grep -E "PlayAvatar(Motion|Param)" "$h" | sed -E 's/.*« (Hero_[A-Za-z]+) ».*/\1/; s/.*PlayAvatarParam.*/Param/' | tr '\n' ,)
+    if [[ $order == "Hero_Run,Hero_Jump,Param,Hero_Attack," ]]; then ok "gestes : dans l'ordre (réglage compris)"; else ko "gestes : ordre $order"; fi
+    expect_log "gestes : réglage de locomotion rejoué" "$h" "PlayAvatarParam NetId 2 type 0 nature 0 valeur 1.000000"
     expect_log "gestes : mort de l'avatar" "$h" "AvatarDeath NetId 2"
     expect_log "gestes : Death reçu" "$h" "Death reçu : avatar 2 (invité) en ragdoll"
     expect_count "gestes : rien d'ignoré" "$h" "Motion d'AniId" 0

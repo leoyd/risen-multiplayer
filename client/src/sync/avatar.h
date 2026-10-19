@@ -29,6 +29,9 @@ void move(std::uint32_t net_id, const core::session::Pose& pose);
 // Rejoue un Motion du pair (AD-8) : GetMotion(nom) → SetMotion → PlayMotion avec le
 // descripteur reconstruit, sous ReplayGuard. Un échec est journalisé une fois par nom.
 void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion);
+// Rejoue un réglage de locomotion du pair (story 2.4b) sur l'enveloppe EMotionFX de l'avatar,
+// sous ReplayGuard. Un échec est journalisé une fois par avatar.
+void play_param(std::uint32_t net_id, const protocol::MotionParam& param);
 // Met l'avatar en ragdoll (Death du pair) : il n'est plus déplacé ni animé jusqu'au retrait.
 void die(std::uint32_t net_id);
 // Un avatar existe-t-il ? (sentinelle de diagnostic)
@@ -42,9 +45,10 @@ void teleport_player(const core::session::Pose& pose);
 bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept;
 // Story 2.4b : réglages de locomotion de l'enveloppe EMotionFX (SetPlaySpeed, SetTargetWeight,
 // SwitchFadeOut, StopMotion). Ceux que le moteur applique à l'avatar sont bloqués (son
-// contrôleur le croit immobile) ; ceux du héros local sont comptés pour le diagnostic.
+// contrôleur le croit immobile) ; ceux du héros local sont comptés, et SetTargetWeight /
+// SetPlaySpeed sont capturés (AnimFilter) pour être transmis en MotionParam.
 enum class WrapperCall { PlaySpeed, TargetWeight, FadeOut, StopMotion };
-bool on_wrapper_call(void* wrapper, WrapperCall call, int type, float value) noexcept;
+bool on_wrapper_call(void* wrapper, WrapperCall call, int type, float value, float time) noexcept;
 // Frame : enveloppe du héros local (pour le diagnostic), d'après son PS.
 void track_local(void* animation_ps);
 bool on_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) noexcept;

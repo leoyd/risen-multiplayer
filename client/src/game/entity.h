@@ -75,6 +75,10 @@ void* switch_fade_out_address();
 void* wrapper_stop_motion_address();
 // eCAnimation_PS::GetActorWrapper : enveloppe EMotionFX du PS (nul possible).
 bool get_actor_wrapper(void* animation_ps, void*& out);
+// Rejeu des réglages de locomotion (story 2.4b) ; passent par le hook (ReplayGuard requis sur
+// une réplique). Sous SEH.
+bool set_target_weight(void* wrapper, int type, float weight, float time);
+bool set_play_speed(void* wrapper, int type, float speed);
 
 bool get_player(Entity& out);  // out.ptr == nullptr : pas de joueur (menu, chargement)
 bool get_pose(const Entity& e, Matrix& out);

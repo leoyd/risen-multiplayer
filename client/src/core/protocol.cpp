@@ -2,6 +2,7 @@
 
 #include "core/config.h"
 
+#include <cmath>
 #include <cstring>
 
 namespace mp::protocol {
@@ -120,6 +121,23 @@ void write(Writer& w, const Spawn& m) {
     w.f32(m.y);
     w.f32(m.z);
     w.f32(m.yaw);
+}
+
+bool valid(const MotionParam& m) {
+    if (m.type >= kMotionTypeCount || m.kind >= kMotionParamKindCount) return false;
+    if (!std::isfinite(m.value) || !std::isfinite(m.time)) return false;
+    if (m.value < 0.0f || m.value > kMaxMotionParamValue || m.time < 0.0f || m.time > kMaxMotionParamTime) return false;
+    return m.kind != static_cast<std::uint8_t>(MotionParamKind::PlaySpeed) || m.time == 0.0f;
+}
+
+void write(Writer& w, const MotionParam& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::MotionParam));
+    w.u32(m.net_id);
+    w.u32(m.ms);
+    w.u8(m.type);
+    w.u8(m.kind);
+    w.f32(m.value);
+    w.f32(m.time);
 }
 
 void write(Writer& w, const AniName& m) {
@@ -272,6 +290,18 @@ DecodeError read(Reader& r, Spawn& m) {
     return r.finish();
 }
 
+DecodeError read(Reader& r, MotionParam& m) {
+    m.net_id = r.u32();
+    m.ms = r.u32();
+    m.type = r.u8();
+    m.kind = r.u8();
+    m.value = r.f32();
+    m.time = r.f32();
+    const DecodeError e = r.finish();
+    if (e != DecodeError::None) return e;
+    return valid(m) ? DecodeError::None : DecodeError::BadValue;
+}
+
 DecodeError read(Reader& r, AniName& m) {
     m.ani_id = r.u16();
     r.str8(m.name, kMinAniName, kMaxAniName);
@@ -312,6 +342,7 @@ bool encode_control(const ControlMessage& message, std::vector<std::uint8_t>& ou
 
 bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& out) {
     if (const Motion* motion = std::get_if<Motion>(&message); motion != nullptr && !valid(*motion)) return false;
+    if (const MotionParam* p = std::get_if<MotionParam>(&message); p != nullptr && !valid(*p)) return false;
     if (const AniName* a = std::get_if<AniName>(&message);
         a != nullptr && !in_bounds(a->name, kMinAniName, kMaxAniName)) {
         return false;
@@ -351,6 +382,7 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
         case MsgType::Despawn: return decode_as<Despawn, ReliableMessage>(r);
         case MsgType::AniName: return decode_as<AniName, ReliableMessage>(r);
         case MsgType::Death: return decode_as<Death, ReliableMessage>(r);
+        case MsgType::MotionParam: return decode_as<MotionParam, ReliableMessage>(r);
         default: return {DecodeError::UnknownType, {}};
     }
 }

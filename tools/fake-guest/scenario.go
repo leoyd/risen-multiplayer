@@ -11,6 +11,8 @@ package main
 //	                                         Motion à cet instant de la boucle (story 2.4) ;
 //	                                         scalaires par défaut : 0.2 0 0 1 1 1 1 (d10 = -1 : 0xFFFFFFFF)
 //	mort <instant s>                         Death à cet instant (une seule fois)
+//	param <instant s> <type> <poids|vitesse> <valeur> [durée s]
+//	                                         MotionParam à cet instant (story 2.4b)
 //	# commentaire (ligne entière)
 //
 // Axes : avant = (sin lacet, 0, cos lacet), droite = (cos lacet, 0, −sin lacet), comme la
@@ -54,7 +56,8 @@ type event struct {
 	at     float64
 	death  bool
 	name   string
-	motion protocol.Motion // Kind, Flags et scalaires ; NetId, AniId et Ms posés à l'envoi
+	motion protocol.Motion       // Kind, Flags et scalaires ; NetId, AniId et Ms posés à l'envoi
+	param  *protocol.MotionParam // directive param : Kind, Param, Value, Time ; NetId et Ms à l'envoi
 }
 
 func loadScenario(path string) (*scenario, error) {
@@ -75,7 +78,7 @@ func parseScenario(r io.Reader) (*scenario, error) {
 			continue
 		}
 		f := strings.Fields(line)
-		if f[0] == "anim" || f[0] == "mort" {
+		if f[0] == "anim" || f[0] == "mort" || f[0] == "param" {
 			ev, err := parseEvent(f)
 			if err != nil {
 				return nil, fmt.Errorf("ligne %d : %v", n, err)
@@ -134,6 +137,43 @@ func parseEvent(f []string) (event, error) {
 	at, err := num(f[1])
 	if err != nil || at < 0 {
 		return event{}, fmt.Errorf("instant %q invalide", f[1])
+	}
+	if f[0] == "param" {
+		if len(f) != 5 && len(f) != 6 {
+			return event{}, fmt.Errorf("« param <instant s> <type> <poids|vitesse> <valeur> [durée s] » attendu")
+		}
+		typ, err := strconv.Atoi(f[2])
+		if err != nil || typ < 0 || typ >= protocol.MotionTypeCount {
+			return event{}, fmt.Errorf("type %q hors de 0..7", f[2])
+		}
+		p := &protocol.MotionParam{Kind: uint8(typ)}
+		switch f[3] {
+		case "poids":
+			p.Param = protocol.ParamTargetWeight
+		case "vitesse":
+			p.Param = protocol.ParamPlaySpeed
+		default:
+			return event{}, fmt.Errorf("nature %q : « poids » ou « vitesse » attendu", f[3])
+		}
+		v, err := num(f[4])
+		if err != nil {
+			return event{}, err
+		}
+		if v < 0 || v > protocol.MaxMotionParamValue {
+			return event{}, fmt.Errorf("valeur %q hors de [0, 100]", f[4])
+		}
+		p.Value = float32(v)
+		if len(f) == 6 {
+			if p.Param == protocol.ParamPlaySpeed {
+				return event{}, fmt.Errorf("pas de durée pour une vitesse")
+			}
+			d, err := num(f[5])
+			if err != nil || d < 0 || d > protocol.MaxMotionParamTime {
+				return event{}, fmt.Errorf("durée %q invalide", f[5])
+			}
+			p.Time = float32(d)
+		}
+		return event{at: at * 1000, param: p}, nil
 	}
 	if f[0] == "mort" {
 		if len(f) != 2 {

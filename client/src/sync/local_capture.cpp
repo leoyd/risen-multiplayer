@@ -10,6 +10,11 @@ bool usable_motion_name(const std::string& name) {
 
 std::optional<core::session::Input> local_input(const Capture& capture, const std::string& name) {
     if (capture.kind == CaptureKind::Ragdoll) return std::nullopt;
+    if (capture.kind == CaptureKind::Param) {
+        if (capture.type < 0 || capture.type >= protocol::kMotionTypeCount) return std::nullopt;
+        return core::session::LocalParam{static_cast<std::uint8_t>(capture.type), capture.param_kind, capture.value,
+                                         capture.time};
+    }
     if (capture.type < 0 || capture.type >= protocol::kMotionTypeCount || !usable_motion_name(name)) {
         return std::nullopt;
     }

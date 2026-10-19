@@ -19,12 +19,13 @@
 
 namespace mp::sync {
 
-constexpr std::size_t kCaptureRing = 64;
+constexpr std::size_t kCaptureRing = 256;  // PlayMotion et réglages de locomotion (2.4b)
 constexpr std::size_t kCaptureDescSize = 0x60;  // eSMotionPlayBackDesc
 
 enum class CaptureKind : std::uint8_t {
     Motion,   // eCAnimation_PS::PlayMotion
     Ragdoll,  // eCAnimation_PS::SetRagDollEnabled (mort : story 2.1b)
+    Param,    // eCWrapper_emfx3ActorInstance::SetTargetWeight / SetPlaySpeed (story 2.4b)
 };
 
 // Un appel du héros local, copié par le hook. Les deux natures partagent l'anneau : leur
@@ -42,6 +43,10 @@ struct Capture {
     bool ragdoll_flag = false;   // second bool (non lu par le moteur sur le chemin observé)
     bool has_vector = false;     // bCVector* non nul et lisible
     float vector[3] = {};
+    // SetTargetWeight (param_kind 0) / SetPlaySpeed (param_kind 1) : `type` porte le type de motion
+    std::uint8_t param_kind = 0;
+    float value = 0.0f;
+    float time = 0.0f;
 };
 
 class AnimFilter {

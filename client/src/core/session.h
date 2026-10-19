@@ -100,7 +100,14 @@ struct LocalMotion {
     std::string name;
     protocol::Motion motion;
 };
-using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion>;
+// Un réglage de locomotion du héros local (SetTargetWeight / SetPlaySpeed, story 2.4b).
+struct LocalParam {
+    std::uint8_t type = 0;
+    std::uint8_t kind = 0;  // protocol::MotionParamKind
+    float value = 0.0f;
+    float time = 0.0f;
+};
+using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam>;
 
 using core::Pose;
 
@@ -150,8 +157,15 @@ struct PlayAvatarMotion {  // rejouer un Motion du pair sur l'avatar (nom → Ge
 struct AvatarDeath {  // mettre l'avatar en ragdoll
     std::uint32_t net_id = 0;
 };
+struct PlayAvatarParam {  // rejouer un réglage de locomotion du pair sur l'avatar (story 2.4b)
+    std::uint32_t net_id = 0;
+    protocol::MotionParam param;
+};
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
-                             DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath>;
+                             DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam>;
+
+inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un réglage
+inline constexpr float kParamTimeEpsilon = 0.005f;  // écart minimal de durée de fondu
 
 inline constexpr std::size_t kMaxPendingMotions = 256;  // Motion du pair en attente d'affichage
 inline constexpr double kMaxMotionLeadMs = 1000.0;      // au-delà, un Motion « du futur » part aussitôt
@@ -196,6 +210,9 @@ private:
     void on_local_motion(std::uint64_t now, const LocalMotion& in, Output& out);
     void send_death(const World& world, Output& out);
     void on_peer_motion(const protocol::Motion& m, Output& out);
+    void on_local_param(std::uint64_t now, const LocalParam& in, Output& out);
+    void on_peer_param(const protocol::MotionParam& p);
+    bool accepts_peer_animation(std::uint32_t net_id) const;
     void play_due_motions(std::uint64_t now, Output& out);
     void clear_peer_avatar_state();
     void send_snapshot(std::uint64_t now, const World& world, Output& out);
@@ -263,16 +280,28 @@ private:
     bool death_sent_ = false;  // Death envoyé pour la mort en cours (remis à faux au retour à la vie)
     std::unordered_map<std::uint16_t, std::string> peer_names_;  // récepteur : AniId → nom
     std::unordered_set<std::uint16_t> warned_ani_ids_;            // une ligne de log par AniId
+    // Événement d'animation du pair en attente : Motion (avec son nom) ou MotionParam.
     struct PendingMotion {
+        bool is_param = false;
         protocol::Motion motion;
         std::string name;
+        protocol::MotionParam param;
+        std::uint32_t ms() const { return is_param ? param.ms : motion.ms; }
     };
+    // Émetteur : dernier réglage envoyé par (type, nature) ; invalidé par un Motion du type.
+    struct LastParam {
+        bool valid = false;
+        float value = 0.0f;
+        float time = 0.0f;
+    };
+    LastParam last_params_[protocol::kMotionTypeCount][protocol::kMotionParamKindCount];
     std::deque<PendingMotion> pending_;
     bool avatar_dead_ = false;   // Death appliqué (AvatarDeath émis)
     bool death_pending_ = false; // Death reçu, appliqué quand le temps affiché atteint death_at_
     double death_at_ = 0.0;      // dernier temps distant connu à la réception (dernier snapshot)
     struct MotionCounters {
         unsigned sent = 0, played = 0, ignored = 0, superseded = 0, dropped = 0;
+        unsigned params_sent = 0, params_played = 0, params_ignored = 0;
     } anim_;
 
     std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)

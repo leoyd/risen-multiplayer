@@ -1806,3 +1806,144 @@ TEST("animations : Motion local à scalaire non fini ou hors domaine → rien, p
     const auto an = sent_of<proto::AniName>(out);
     CHECK(an.size() == 1 && an[0].ani_id == 0);  // X n'avait pas été interné
 }
+
+// --- Réglages de locomotion (story 2.4b) --------------------------------------------------
+
+namespace {
+
+std::vector<Input> local_param(std::uint8_t type, proto::MotionParamKind kind, float value, float time = 0.0f) {
+    return {LocalParam{type, static_cast<std::uint8_t>(kind), value, time}};
+}
+
+proto::MotionParam peer_param(std::uint32_t ms, std::uint8_t type, float value, float time = 0.25f) {
+    proto::MotionParam p;
+    p.net_id = proto::kGuestNetId;
+    p.ms = ms;
+    p.type = type;
+    p.kind = static_cast<std::uint8_t>(proto::MotionParamKind::TargetWeight);
+    p.value = value;
+    p.time = time;
+    return p;
+}
+
+}  // namespace
+
+TEST("locomotion : démarrage → Motion puis MotionParam ; 300 réglages identiques → un seul") {
+    Session s = host_with_avatar();  // t0 = 1000
+    Output out = s.tick(1200, loaded_world(), local("Move_Begin"));
+    std::vector<Input> in;
+    for (int i = 0; i < 300; ++i) in.push_back(LocalParam{0, 0, 1.0f, 0.25f});
+    out = s.tick(1210, loaded_world(), in);
+    const auto p = sent_of<proto::MotionParam>(out);
+    CHECK_EQ(p.size(), 1u);
+    if (!p.empty()) {
+        CHECK(p[0].net_id == proto::kHostNetId && p[0].ms == 210 && p[0].type == 0 && p[0].kind == 0 &&
+              p[0].value == 1.0f && p[0].time == 0.25f);
+    }
+    CHECK(sent_of<proto::MotionParam>(s.tick(1220, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f))).empty());
+    // Même valeur, autre durée → renvoyé.
+    CHECK_EQ(sent_of<proto::MotionParam>(s.tick(1230, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.5f))).size(), 1u);
+}
+
+TEST("locomotion : accélération 0,03 → 1,0 → un MotionParam par pas de plus de 0,01") {
+    Session s = host_with_avatar();
+    std::vector<Input> in;
+    for (int i = 0; i < 970; ++i) in.push_back(LocalParam{0, 1, 0.03f + 0.001f * static_cast<float>(i), 0.0f});
+    in.push_back(LocalParam{0, 1, 1.0f, 0.0f});  // fin de la rampe, exacte
+    const auto p = sent_of<proto::MotionParam>(s.tick(1200, loaded_world(), in));
+    CHECK(p.size() >= 80 && p.size() <= 100);  // ≈ 0,97 / 0,011
+    for (std::size_t i = 1; i + 1 < p.size(); ++i) CHECK(p[i].value - p[i - 1].value > kParamEpsilon);
+    if (!p.empty()) CHECK(p[0].kind == 1 && p[0].value == 0.03f && p.back().value == 1.0f);
+}
+
+TEST("locomotion : nouveau Motion du même type → le réglage identique repart ; autre type non") {
+    Session s = host_with_avatar();
+    s.tick(1200, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f));
+    s.tick(1210, loaded_world(), local_param(1, proto::MotionParamKind::TargetWeight, 0.0f, 0.25f));
+    s.tick(1220, loaded_world(), local("Run", 0));  // invalide le type 0 seulement
+    Output out = s.tick(1230, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f));
+    CHECK_EQ(sent_of<proto::MotionParam>(out).size(), 1u);
+    out = s.tick(1240, loaded_world(), local_param(1, proto::MotionParamKind::TargetWeight, 0.0f, 0.25f));
+    CHECK(sent_of<proto::MotionParam>(out).empty());
+}
+
+TEST("locomotion : valeur non finie, type 8, nature 2, hors session → rien") {
+    Session s = host_with_avatar();
+    CHECK(sent_of<proto::MotionParam>(s.tick(1200, loaded_world(), local_param(0, proto::MotionParamKind::PlaySpeed, std::nanf("")))).empty());
+    CHECK(sent_of<proto::MotionParam>(s.tick(1210, loaded_world(), {LocalParam{8, 0, 1.0f, 0.0f}})).empty());
+    CHECK(sent_of<proto::MotionParam>(s.tick(1220, loaded_world(), {LocalParam{0, 2, 1.0f, 0.0f}})).empty());
+    Session idle(host_settings());
+    idle.tick(0, loaded_world(), {});
+    CHECK(reliables_sent(idle.tick(100, loaded_world(), local_param(0, proto::MotionParamKind::PlaySpeed, 1.0f))).empty());
+}
+
+TEST("locomotion : réception → même instant que les Motion, dans l'ordre ; après un Motion écrasé, appliqué") {
+    Session s = host_with_clock();  // affiché = now − 1350
+    s.tick(1360, loaded_world(), reliable(encode_r(proto::AniName{0, "Move_Begin"})));
+    std::vector<Input> in;
+    in.push_back(ReliableIn{encode_r(peer_motion(0, 400, 0, 0.004f))});
+    in.push_back(ReliableIn{encode_r(peer_param(400, 0, 1.0f))});
+    in.push_back(ReliableIn{encode_r(peer_motion(0, 410, 0, 0.5f))});  // écrase le premier au même tick
+    in.push_back(ReliableIn{encode_r(peer_param(420, 0, 0.8f))});
+    Output out = s.tick(1370, loaded_world(), in);
+    CHECK(commands_of<PlayAvatarParam>(out).empty());  // pas encore l'heure
+    out = s.tick(1780, loaded_world(), {});            // affiché 430 : tout est dû
+    // Le Motion 0.004 est écrasé par le 0.5 ; le réglage 1.0 qui le visait aussi. Reste : M0.5, P0.8.
+    std::vector<std::string> order;
+    for (const auto& c : out.commands) {
+        if (const auto* m = std::get_if<PlayAvatarMotion>(&c)) order.push_back("M" + std::to_string(m->motion.d0c));
+        if (const auto* p = std::get_if<PlayAvatarParam>(&c)) order.push_back("P" + std::to_string(p->param.value));
+    }
+    CHECK_EQ(order.size(), 2u);
+    if (order.size() == 2) {
+        CHECK(order[0] == "M" + std::to_string(0.5f));
+        CHECK(order[1] == "P" + std::to_string(0.8f));
+    }
+    const auto params = commands_of<PlayAvatarParam>(out);
+    if (!params.empty()) CHECK(params[0]->net_id == proto::kGuestNetId && params[0]->param.time == 0.25f);
+    // Sans Motion écrasé, un réglage qui précède le Motion gardé de son type s'applique.
+    std::vector<Input> in2;
+    in2.push_back(ReliableIn{encode_r(peer_param(500, 1, 0.3f))});
+    in2.push_back(ReliableIn{encode_r(peer_motion(0, 510, 0, 0.7f))});
+    out = s.tick(1880, loaded_world(), in2);
+    CHECK_EQ(commands_of<PlayAvatarParam>(out).size(), 1u);  // type 1 : pas visé par le Motion de type 0
+}
+
+TEST("locomotion : MotionParam sans avatar, d'un autre NetId ou avatar mort → ignoré") {
+    std::uint32_t conv = 0;
+    Session none = hosting_with_a(conv);
+    CHECK(commands_of<PlayAvatarParam>(none.tick(1100, loaded_world(), reliable(encode_r(peer_param(0, 0, 1.0f))))).empty());
+    Session s = host_with_clock();
+    proto::MotionParam other = peer_param(0, 0, 1.0f);
+    other.net_id = proto::kHostNetId;
+    CHECK(commands_of<PlayAvatarParam>(s.tick(1400, loaded_world(), reliable(encode_r(other)))).empty());
+    s.tick(1410, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    s.tick(1500, loaded_world(), {});  // mort appliquée
+    CHECK(s.avatar_dead());
+    CHECK(commands_of<PlayAvatarParam>(s.tick(1510, loaded_world(), reliable(encode_r(peer_param(0, 0, 1.0f))))).empty());
+    // Despawn puis Spawn : le réglage reçu pendant la mort n'a pas été gardé en attente.
+    s.tick(1520, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
+    CHECK(commands_of<PlayAvatarParam>(s.tick(1530, loaded_world(), {})).empty());
+}
+
+TEST("locomotion : valeur finale exacte (0 ou 1) toujours envoyée ; durée comparée avec tolérance") {
+    Session s = host_with_avatar();
+    s.tick(1200, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 0.995f, 0.25f));
+    auto p = sent_of<proto::MotionParam>(s.tick(1210, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)));
+    CHECK(p.size() == 1 && p[0].value == 1.0f);
+    s.tick(1220, loaded_world(), local_param(1, proto::MotionParamKind::TargetWeight, 0.008f, 0.25f));
+    p = sent_of<proto::MotionParam>(s.tick(1230, loaded_world(), local_param(1, proto::MotionParamKind::TargetWeight, 0.0f, 0.25f)));
+    CHECK(p.size() == 1 && p[0].value == 0.0f);
+    // Durée qui varie de moins de 0,005 s : pas renvoyée.
+    CHECK(sent_of<proto::MotionParam>(s.tick(1240, loaded_world(), local_param(1, proto::MotionParamKind::TargetWeight, 0.0f, 0.252f))).empty());
+}
+
+TEST("locomotion : nouvelle session → le premier réglage repart, même identique") {
+    Session s = host_with_avatar();
+    CHECK_EQ(sent_of<proto::MotionParam>(s.tick(1200, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f))).size(), 1u);
+    s.tick(1300, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));  // fin, réarmement immédiat
+    s.tick(2400, loaded_world(), {});
+    s.tick(2500, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    CHECK(s.state() == State::InSession);
+    CHECK_EQ(sent_of<proto::MotionParam>(s.tick(2600, loaded_world(), local_param(0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f))).size(), 1u);
+}

@@ -195,6 +195,26 @@ void* set_target_weight_address() { return reinterpret_cast<void*>(g_abi.set_tar
 void* switch_fade_out_address() { return reinterpret_cast<void*>(g_abi.switch_fade_out); }
 void* wrapper_stop_motion_address() { return reinterpret_cast<void*>(g_abi.wrapper_stop_motion); }
 
+bool set_target_weight(void* wrapper, int type, float weight, float time) {
+    if (!g_resolved || wrapper == nullptr) return false;
+    __try {
+        g_abi.set_target_weight(wrapper, type, weight, time);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool set_play_speed(void* wrapper, int type, float speed) {
+    if (!g_resolved || wrapper == nullptr) return false;
+    __try {
+        g_abi.set_play_speed(wrapper, type, speed);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool get_actor_wrapper(void* animation_ps, void*& out) {
     out = nullptr;
     if (!g_resolved || animation_ps == nullptr) return false;

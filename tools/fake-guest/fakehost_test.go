@@ -60,6 +60,7 @@ type hostRecord struct {
 	snapshots    []protocol.Snapshot // snapshots reçus de l'invité (v4)
 	aniNames     []protocol.AniName  // reçus de l'invité (v5)
 	motions      []protocol.Motion
+	params       []protocol.MotionParam
 	deaths       []uint32
 	snapshotAt   []time.Time // heure de réception de chacun
 	lastDatagram time.Time   // dernier datagramme du pair de session
@@ -350,6 +351,10 @@ func (h *simHost) drain() {
 			h.mu.Lock()
 			h.rec.motions = append(h.rec.motions, m)
 			h.mu.Unlock()
+		case protocol.MotionParam:
+			h.mu.Lock()
+			h.rec.params = append(h.rec.params, m)
+			h.mu.Unlock()
 		case protocol.Death:
 			h.mu.Lock()
 			h.rec.deaths = append(h.rec.deaths, m.NetId)
@@ -424,6 +429,8 @@ func (h *simHost) tick() {
 			}
 			h.sendReliable(protocol.Motion{NetId: protocol.HostNetId, Ms: uint32(tick * 50), Kind: 0,
 				Flags: protocol.MotionFlagPlay | protocol.MotionFlagDesc, D00: 0.2, D0C: float32(tick), D10: 1, D14: 1, D18: 1})
+			h.sendReliable(protocol.MotionParam{NetId: protocol.HostNetId, Ms: uint32(tick * 50), Kind: 0,
+				Param: protocol.ParamTargetWeight, Value: 1, Time: 0.25})
 		}
 	}
 }

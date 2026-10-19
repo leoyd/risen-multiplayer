@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,7 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"despawn.bin", true, Despawn{NetId: 2}},
 		{"aniname.bin", true, AniName{AniId: 7, Name: "Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400"}},
 		{"death.bin", true, Death{NetId: 2}},
+		{"motion_param.bin", true, MotionParam{NetId: 2, Ms: 1234, Kind: 0, Param: ParamTargetWeight, Value: 1.0, Time: 0.25}},
 		{"motion.bin", true, Motion{NetId: 2, Ms: 1234, Kind: 0, AniId: 7, Flags: 3, D00: 0.25, D04: 0.5, D08: 1, D0C: 1.0,
 			D10: 0, D14: 0.75, D18: 2}},
 	}
@@ -115,7 +117,7 @@ func TestAllVectorsCovered(t *testing.T) {
 		"hello_long_nickname.bin": true, "unknown_type.bin": true, "spawn.bin": true, "despawn.bin": true,
 		"snapshot.bin": true, "snapshot_truncated.bin": true,
 		"motion.bin": true, "motion_bad_type.bin": true, "aniname.bin": true, "death.bin": true,
-		"aniname_empty.bin": true}
+		"aniname_empty.bin": true, "motion_param.bin": true, "motion_param_bad.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -271,6 +273,21 @@ func TestSnapshotVectors(t *testing.T) {
 func TestMotionAndAniNameErrors(t *testing.T) {
 	if _, err := DecodeReliable(vector(t, "motion_bad_type.bin")); !errors.Is(err, ErrBadValue) {
 		t.Fatalf("motion_bad_type.bin : %v", err)
+	}
+	if _, err := DecodeReliable(vector(t, "motion_param_bad.bin")); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("motion_param_bad.bin : %v", err)
+	}
+	if _, err := EncodeReliable(MotionParam{Kind: 8}); err == nil {
+		t.Fatal("MotionParam de type 8 encodé")
+	}
+	for _, bad := range []MotionParam{{Value: float32(math.NaN())}, {Param: 2}, {Time: float32(math.Inf(1))},
+		{Value: -1}, {Value: 101}, {Time: 61}, {Param: ParamPlaySpeed, Value: 1, Time: 0.1}} {
+		if _, err := EncodeReliable(bad); err == nil {
+			t.Fatalf("MotionParam hors domaine encodé : %+v", bad)
+		}
+	}
+	if _, err := DecodeControl([]byte{2, 26}); !errors.Is(err, ErrUnknownType) {
+		t.Fatalf("MotionParam en contrôle : %v", err)
 	}
 	if _, err := DecodeReliable(vector(t, "aniname_empty.bin")); !errors.Is(err, ErrBadLength) {
 		t.Fatalf("aniname_empty.bin : %v", err)

@@ -204,8 +204,10 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_reliable(now, *r, out);
         } else if (const auto* sn = std::get_if<SnapshotIn>(&in)) {
             on_snapshot(now, *sn, out);
+        } else if (const auto* lm = std::get_if<LocalMotion>(&in)) {
+            on_local_motion(now, *lm, out);
         } else {
-            on_local_motion(now, std::get<LocalMotion>(in), out);
+            on_local_param(now, std::get<LocalParam>(in), out);
         }
     }
     if (state_ != State::Ended) timers(now, out);
@@ -465,6 +467,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         on_peer_motion(*m, out);
         return;
     }
+    if (const auto* mp = std::get_if<proto::MotionParam>(&decoded.message)) {
+        on_peer_param(*mp);
+        return;
+    }
     if (const auto* an = std::get_if<proto::AniName>(&decoded.message)) {
         auto it = peer_names_.find(an->ani_id);
         if (it != peer_names_.end() && it->second != an->name) {
@@ -550,6 +556,9 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     snap_ = SnapshotCounters{};
     ani_ids_.clear();
     next_ani_id_ = 0;
+    for (auto& per_type : last_params_) {
+        for (LastParam& lp : per_type) lp = LastParam{};
+    }
     ani_full_logged_ = false;
     death_sent_ = false;
     peer_names_.clear();
@@ -659,6 +668,8 @@ void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& 
     if (!proto::encode_reliable(m, bytes)) return;  // validé avant l'internement : ne peut échouer
     out.commands.push_back(SendReliable{std::move(bytes)});
     ++anim_.sent;
+    // Nouvelle animation sur ce type : son premier réglage repartira, même identique (2.4b).
+    for (LastParam& lp : last_params_[m.type]) lp.valid = false;
     out.logs.push_back({Level::Debug, "[sync] Motion envoyé : " + motion_text(m) +
                                           (fresh ? " « " + in.name + " »" : std::string())});
 }
@@ -678,8 +689,51 @@ void Session::send_death(const World& world, Output& out) {
     out.logs.push_back({Level::Info, "[sync] Death envoyé : NetId " + net_id_text(own_net_id())});
 }
 
+bool Session::accepts_peer_animation(std::uint32_t net_id) const {
+    return net_id == peer_net_id() && avatar_present_ && !avatar_dead_;
+}
+
+void Session::on_local_param(std::uint64_t now, const LocalParam& in, Output& out) {
+    if (state_ != State::InSession) return;
+    proto::MotionParam p;
+    p.net_id = own_net_id();
+    p.ms = static_cast<std::uint32_t>(now - t0_);
+    p.type = in.type;
+    p.kind = in.kind;
+    p.value = in.value;
+    p.time = in.time;
+    Bytes bytes;
+    if (!proto::encode_reliable(p, bytes)) return;  // type, nature ou valeur hors domaine
+    LastParam& last = last_params_[p.type][p.kind];
+    // Seuls les changements partent ; une valeur finale exacte de 0 ou 1 (fin de fondu) part
+    // toujours, même proche de la précédente, pour que l'avatar ne reste pas à 0,99 ou 0,008.
+    const bool exact_end = (p.value == 0.0f || p.value == 1.0f) && p.value != last.value;
+    if (last.valid && std::fabs(p.value - last.value) <= kParamEpsilon &&
+        std::fabs(p.time - last.time) <= kParamTimeEpsilon && !exact_end) {
+        return;
+    }
+    last = LastParam{true, p.value, p.time};
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    ++anim_.params_sent;
+}
+
+void Session::on_peer_param(const proto::MotionParam& p) {
+    if (!accepts_peer_animation(p.net_id)) {
+        ++anim_.params_ignored;
+        return;
+    }
+    if (pending_.size() >= kMaxPendingMotions) {
+        pending_.pop_front();
+        ++anim_.dropped;
+    }
+    PendingMotion e;
+    e.is_param = true;
+    e.param = p;
+    pending_.push_back(std::move(e));
+}
+
 void Session::on_peer_motion(const proto::Motion& m, Output& out) {
-    if (m.net_id != peer_net_id() || !avatar_present_ || avatar_dead_) {
+    if (!accepts_peer_animation(m.net_id)) {
         ++anim_.ignored;
         return;
     }
@@ -697,7 +751,10 @@ void Session::on_peer_motion(const proto::Motion& m, Output& out) {
         pending_.pop_front();
         ++anim_.dropped;
     }
-    pending_.push_back(PendingMotion{m, name->second});
+    PendingMotion e;
+    e.motion = m;
+    e.name = name->second;
+    pending_.push_back(std::move(e));
 }
 
 void Session::play_due_motions(std::uint64_t now, Output& out) {
@@ -707,19 +764,30 @@ void Session::play_due_motions(std::uint64_t now, Output& out) {
     // Un Motion daté de plus de kMaxMotionLeadMs dans le futur (horloge mal recalée, pair
     // fautif) part aussitôt : il ne bloque pas ceux qui le suivent.
     std::size_t due = 0;
-    while (due < pending_.size() && (static_cast<double>(pending_[due].motion.ms) <= shown ||
-                                     static_cast<double>(pending_[due].motion.ms) > shown + kMaxMotionLeadMs)) {
+    while (due < pending_.size() && (static_cast<double>(pending_[due].ms()) <= shown ||
+                                     static_cast<double>(pending_[due].ms()) > shown + kMaxMotionLeadMs)) {
         ++due;
     }
     if (due == 0) return;
-    // Types 0 et 1 (locomotion) : seul le plus récent de chacun part.
+    // Types 0 et 1 (locomotion) : seul le plus récent de chacun part ; les réglages de ce type
+    // placés avant lui visaient l'animation qu'il remplace : écartés aussi.
     std::size_t last_of_type[2] = {due, due};
     for (std::size_t i = 0; i < due; ++i) {
+        if (pending_[i].is_param) continue;
         const std::uint8_t type = pending_[i].motion.type;
         if (type <= 1) last_of_type[type] = i;
     }
     for (std::size_t i = 0; i < due; ++i) {
         PendingMotion& p = pending_[i];
+        if (p.is_param) {
+            if (p.param.type <= 1 && last_of_type[p.param.type] != due && i < last_of_type[p.param.type]) {
+                ++anim_.superseded;
+                continue;
+            }
+            out.commands.push_back(PlayAvatarParam{peer_net_id(), p.param});
+            ++anim_.params_played;
+            continue;
+        }
         if (p.motion.type <= 1 && last_of_type[p.motion.type] != i) {
             ++anim_.superseded;
             continue;
@@ -756,14 +824,15 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
 void Session::snapshot_stats(std::uint64_t now, Output& out) {
     if (now < next_stats_) return;
     next_stats_ = now + kSnapshotStatsMs;
-    char buf[384];
+    char buf[640];
     std::snprintf(buf, sizeof buf,
                   "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
                   "frames de l'avatar : interpolées %u, extrapolées %u, figées %u ; décalage horloge %.1f ms ; "
-                  "Motion : envoyés %u, rejoués %u, écrasés %u, ignorés %u, jetés %u",
+                  "Motion : envoyés %u, rejoués %u, écrasés %u, ignorés %u, file pleine %u ; "
+                  "MotionParam : envoyés %u, rejoués %u, ignorés %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
-                  anim_.ignored, anim_.dropped);
+                  anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored);
     out.logs.push_back({Level::Debug, buf});
     const SnapshotCounters zero{};
     snap_ = zero;

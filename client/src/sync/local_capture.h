@@ -14,7 +14,8 @@ namespace mp::sync {
 // Nom de ressource utilisable : non vide, et pas un marqueur d'erreur « (…) ».
 bool usable_motion_name(const std::string& name);
 
-// PlayMotion → LocalMotion (si le nom est utilisable et le type dans 0..7). Un ragdoll ne
+// Réglage de locomotion → LocalParam (type et nature validés par core/). PlayMotion → LocalMotion
+// (si le nom est utilisable et le type dans 0..7). Un ragdoll ne
 // donne rien : la mort part sur Entity::IsDead (décision du 2026-10-19). `name` : titre de la
 // ressource de la capture.
 std::optional<core::session::Input> local_input(const Capture& capture, const std::string& name);
