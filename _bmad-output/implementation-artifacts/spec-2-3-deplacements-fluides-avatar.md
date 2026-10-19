@@ -113,6 +113,11 @@ context:
 - **Faux invité** : `--delay` et `--jitter` utilisent `time.AfterFunc` avec une copie du datagramme. Le hasard est tiré dans la boucle principale (pas d'accès concurrent à `rng`).
 - `PV = 0` (décision) ; `read_world` lit la pose dans tout monde chargé (un `GetPose` par frame).
 
+### Test en jeu (2026-10-19)
+
+- **Validé par l'utilisateur** : avec `scenarios/mixte.txt`, `--delay 100ms --jitter 20ms`, le mouvement est fluide, sans téléportation. Avec `--drop 10`, il reste aussi fluide. Avec `--duration 15s --kill`, l'avatar continue un court instant, puis il disparaît au timeout.
+- **Log** : 27 bilans de 5 s, avec environ 100 snapshots envoyés et 98 à 99 reçus par bilan. Les frames sont toutes interpolées sans perte. Avec `--drop 10`, entre 2 et 44 frames sont extrapolées sur environ 1 000 (4 % au plus). Les frames « figées » (28 à 34 par bilan) n'apparaissent qu'en début de session (avant le 2e snapshot) et après `--kill`. Aucune erreur, aucune `[watchdog]`.
+
 ## Spec Change Log
 
 ## Review Triage Log
