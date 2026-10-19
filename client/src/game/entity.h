@@ -47,7 +47,6 @@ struct Matrix {
 static_assert(sizeof(Matrix) == 64, "bCMatrix doit faire 64 octets");
 
 constexpr int kAnimationPropertySet = 0x52;  // eCAnimation_PS::GetPropertySetType
-constexpr int kCharacterMovementPropertySet = 0x15;  // gCCharacterMovement_PS::GetPropertySetType (Game.dll)
 constexpr int kMotionTypeCount = 8;          // PlayMotion ignore type > 7
 
 using OnProcessFn = void (*)(void* application);
@@ -92,19 +91,6 @@ bool get_motion(const std::string& name, void*& out);
 // Entity::Kill (Script.dll) : destruction différée par le moteur. Ne plus toucher à l'entité
 // ensuite. Jamais sur une entité déjà détruite (fin de monde) : la mémoire n'est plus valide.
 bool kill(const Entity& e);
-// Story 2.4b (expérience, piste A) : contrôleur de déplacement gCCharacterMovement_PS.
-// Champs relevés par désassemblage (Game.dll) : +0x1A0 vitesse courante (bCVector, écrite par
-// SetCurrentVelocity), +0x1B8 vitesse « animation » locale (lissée par CalcAniVelocity, d'après
-// le déplacement de l'entité depuis +0x188), +0x1D0 vitesse scalaire (GetCurrentVelocity).
-struct MovementState {
-    float velocity[3] = {};
-    float local_ani_velocity[3] = {};
-    float speed = 0.0f;
-};
-bool get_movement_ps(const Entity& e, void*& out);
-bool set_current_velocity(void* movement_ps, const float (&velocity)[3]);
-bool read_movement_state(const void* movement_ps, MovementState& out);  // lecture protégée
-
 // Entity::IsDead (Script.dll) : le PS 0x24 de l'entité, à l'offset +0xC0, vaut 12.
 bool is_dead(const Entity& e, bool& out);
 // gCSession::GetInstance() (pointeur global, nul possible) puis gCSession::IsGameRunning

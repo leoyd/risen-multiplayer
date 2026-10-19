@@ -31,17 +31,7 @@ struct Entry {
     void* player = nullptr;        // héros local à la création : le monde de l'avatar
     bool move_error_logged = false;
     bool dead = false;  // en ragdoll (Death) : plus de pose ni d'animation imposées
-    // Story 2.4b, piste A : vitesse donnée au contrôleur de déplacement, d'après les poses.
-    void* movement_ps = nullptr;
-    bool have_last = false;
-    Pose last;
-    LARGE_INTEGER last_time{};
-    bool velocity_error_logged = false;
 };
-
-// Diagnostic 2.4b : vitesses vues par les contrôleurs (héros local et avatar), chaque seconde.
-ULONGLONG g_next_movement_log = 0;
-float g_last_velocity[3] = {};
 std::vector<Entry> g_table;
 
 // Rejeu par nom : ressource de chaque nom (nul : introuvable), vidée au retrait d'un avatar ;
@@ -103,10 +93,6 @@ void spawn(std::uint32_t net_id, const Pose& pose) {
         log::error("[sync] avatar " + std::to_string(net_id) + " : Entity::Spawn a échoué, avatar non créé");
         return;
     }
-    if (!game::get_movement_ps(e.entity, e.movement_ps) || e.movement_ps == nullptr) {
-        e.movement_ps = nullptr;
-        log::warn("[sync] avatar " + std::to_string(net_id) + " : pas de gCCharacterMovement_PS (piste A sans effet)");
-    }
     if (!game::get_animation_ps(e.entity, e.animation_ps) || e.animation_ps == nullptr) {
         e.animation_ps = nullptr;
         log::warn("[sync] avatar " + std::to_string(net_id) + " : pas d'eCAnimation_PS, le moteur peut l'animer");
@@ -145,31 +131,6 @@ void despawn(std::uint32_t net_id) {
     log::debug("[sync] avatar " + std::to_string(net_id) + " absent : rien à retirer");
 }
 
-static void log_movement(const Entry& e) {
-    if (!log::debug_enabled()) return;
-    const ULONGLONG t = GetTickCount64();
-    if (t < g_next_movement_log) return;
-    g_next_movement_log = t + 1000;
-    auto text = [](const char* who, const void* ps) {
-        game::MovementState m;
-        if (ps == nullptr || !game::read_movement_state(ps, m)) return std::string(who) + " illisible";
-        char buf[200];
-        std::snprintf(buf, sizeof buf, "%s : vit=(%.0f, %.0f, %.0f) ani_locale=(%.0f, %.0f, %.0f) |v|=%.0f", who,
-                      static_cast<double>(m.velocity[0]), static_cast<double>(m.velocity[1]),
-                      static_cast<double>(m.velocity[2]), static_cast<double>(m.local_ani_velocity[0]),
-                      static_cast<double>(m.local_ani_velocity[1]), static_cast<double>(m.local_ani_velocity[2]),
-                      static_cast<double>(m.speed));
-        return std::string(buf);
-    };
-    game::Entity player;
-    void* hero_ps = nullptr;
-    if (game::get_player(player) && player.ptr != nullptr) game::get_movement_ps(player, hero_ps);
-    char given[96];
-    std::snprintf(given, sizeof given, " ; donnée à l'avatar=(%.0f, %.0f, %.0f)", static_cast<double>(g_last_velocity[0]),
-                  static_cast<double>(g_last_velocity[1]), static_cast<double>(g_last_velocity[2]));
-    log::debug("[sync] locomotion — " + text("héros", hero_ps) + " ; " + text("avatar", e.movement_ps) + given);
-}
-
 void move(std::uint32_t net_id, const Pose& pose) {
     for (Entry& e : g_table) {
         if (e.net_id != net_id) continue;
@@ -178,31 +139,7 @@ void move(std::uint32_t net_id, const Pose& pose) {
             e.move_error_logged = true;
             log::error("[sync] avatar " + std::to_string(net_id) +
                        " : Entity::MoveTo a levé une exception (SEH) : avatar plus déplacé");
-            return;
         }
-        // Piste A (story 2.4b) : le contrôleur reçoit la vitesse réelle de l'avatar (cm/s, repère
-        // du monde), pour que son calcul de locomotion ne le croie pas immobile.
-        LARGE_INTEGER now{}, freq{};
-        QueryPerformanceCounter(&now);
-        QueryPerformanceFrequency(&freq);
-        if (e.have_last && e.movement_ps != nullptr) {
-            const double dt = static_cast<double>(now.QuadPart - e.last_time.QuadPart) / static_cast<double>(freq.QuadPart);
-            if (dt > 0.0005 && dt < 0.5) {
-                const float v[3] = {static_cast<float>((pose.x - e.last.x) / dt), static_cast<float>((pose.y - e.last.y) / dt),
-                                    static_cast<float>((pose.z - e.last.z) / dt)};
-                g_last_velocity[0] = v[0];
-                g_last_velocity[1] = v[1];
-                g_last_velocity[2] = v[2];
-                if (!game::set_current_velocity(e.movement_ps, v) && !e.velocity_error_logged) {
-                    e.velocity_error_logged = true;
-                    log::error("[sync] avatar " + std::to_string(net_id) + " : SetCurrentVelocity a levé une exception (SEH)");
-                }
-            }
-        }
-        e.have_last = true;
-        e.last = pose;
-        e.last_time = now;
-        log_movement(e);
         return;
     }
 }
