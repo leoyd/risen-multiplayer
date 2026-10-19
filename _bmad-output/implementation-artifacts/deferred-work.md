@@ -120,3 +120,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-4b-locomotion-avatar.md`
   summary: Réduire le trafic de `MotionParam` (environ 600/s, 11 Ko/s) : regrouper les réglages par frame, ou les porter dans le snapshot.
   evidence: Bilans `[sync] snapshots (5 s)` du 2026-10-20 : 2 500 à 3 400 `MotionParam` envoyés par 5 s.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4b-locomotion-avatar.md`
+  summary: Spike J2 (story 3.0, question ouverte 6 de la spine) — rendre l'avatar « solide » dans le monde local : corps de collision cinématique (suit la pose imposée, sans gravité, repousse héros et PNJ), pour que le héros local ne le traverse plus et que les PNJ puissent le toucher (AD-9, combat coop).
+  evidence: Constat de l'utilisateur en jeu (2026-10-20) : l'avatar n'est soumis ni à la physique ni aux collisions. Attendu en J1 (réplique placée par `MoveTo`, physique calculée chez son joueur ; en écho, le décalage de 2 m le fait traverser les murs). Hypothèse : le recalage de `MoveTo` (`OnUpdatedWorldMatrix`) neutralise aussi son corps physique. Décision de l'utilisateur : attendre J2.
