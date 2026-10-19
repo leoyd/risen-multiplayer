@@ -111,3 +111,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-4-animations-avatar.md`
   summary: Story 2.4b, locomotion de l'avatar — la course se ralentit ou se bloque, parce que le mélange et la vitesse de locomotion viennent de `gCCharacterMovement_PS` (vitesse du personnage), pas de `PlayMotion`. Pistes : A) donner chaque frame la vitesse interpolée (`SetCurrentVelocity`) ; B) piloter l'avatar comme un PNJ (`SetGoalPose`) sans bloquer sa locomotion ; C) transmettre les poids de locomotion.
   evidence: Test en jeu du 2026-10-19 en écho (log « Motion envoyé / rejoué ») : rejeu à l'heure, mais en course `PlayMotion` ne fait que démarrer `Move_Run_N_Fwd`. Piste A retenue par l'utilisateur.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4b-locomotion-avatar.md`
+  summary: Transition marche → arrêt de l'avatar peu fluide (acceptée pour la première version).
+  evidence: Test en jeu du 2026-10-20 (utilisateur). À regarder avec le fondu et l'arrêt transmis : poids et durées rejoués par rapport à ceux du héros.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4b-locomotion-avatar.md`
+  summary: Blocage ponctuel de la marche de l'avatar (puis T-pose, puis reprise), vu à la première descente d'escalier ; piste : assouplir la règle d'AD-8 « seul le plus récent des types 0/1 par frame », qui écarte des enchaînements groupés, maintenant que les réglages sont transmis.
+  evidence: Log du 2026-10-20 : rafale de 69 `Motion` dont 155 écrasés en 5 s pendant la descente.
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4b-locomotion-avatar.md`
+  summary: Réduire le trafic de `MotionParam` (environ 600/s, 11 Ko/s) : regrouper les réglages par frame, ou les porter dans le snapshot.
+  evidence: Bilans `[sync] snapshots (5 s)` du 2026-10-20 : 2 500 à 3 400 `MotionParam` envoyés par 5 s.

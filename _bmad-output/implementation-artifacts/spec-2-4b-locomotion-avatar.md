@@ -115,6 +115,11 @@ La raison : Risen démarre une animation de locomotion avec un poids presque nul
 - **Test** (utilisateur, écho) : marche et marche arrière OK, course et démarrage OK. Restaient deux défauts : aucune transition à l'arrêt, et une T-pose dans les escaliers, l'avatar reprenant une marche correcte quelques pas après. Log : 1 000 à 2 500 `MotionParam` par 5 s, aucune erreur.
 - **Extension** (décision consignée dans le bloc figé) : `MotionParam` natures 2 et 3 (`SwitchFadeOut`, `StopMotion`), capturées, dédupliquées et rejouées ; seuil de la vitesse porté à 0,02. Vecteur `motion_param_bad.bin` passé en nature 4. Directive `param … fondu|arret` dans le faux invité. Tests : déduplication et rejeu du fondu et de l'arrêt, domaine (valeur 0 ou 1).
 
+### Second test en jeu (2026-10-20) : validée comme première version
+
+- **Utilisateur** : escaliers sans T-pose ; transition marche → arrêt acceptable pour une première version, mais pas très fluide ; une fois, à la première descente d'escalier, blocage de la marche puis T-pose, puis reprise normale.
+- **Log** : environ 3 000 `MotionParam` par 5 s (environ 11 Ko/s), et une rafale de 69 `Motion` dont 155 écrasés pendant la descente. Piste : la règle d'AD-8 « seul le plus récent des types 0/1 » écarte des enchaînements arrivés groupés. Elle est reportée.
+
 ## Spec Change Log
 
 ## Review Triage Log
