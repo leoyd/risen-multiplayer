@@ -63,6 +63,9 @@ expect_log "nominal : sonde désactivée par défaut" "$d" "sonde désactivée"
 expect_log "nominal : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX)"
 expect_no_log "nominal : pas de hooks de la sonde" "$d" "hooks installés (OnProcess, PlayMotion"
 expect_log "nominal : session prête" "$d" "\[sync\] session prête (rôle invité)"
+# Story 3.2 (AD-3) : symboles d'inventaire résolus en tout ou rien à l'installation de la session.
+expect_log "nominal : inventaire de session résolu" "$d" "\[hooks\] inventaire de session résolu (arme de l'avatar)"
+expect_no_log "nominal : aucun symbole d'inventaire manquant" "$d" "symbole d'inventaire introuvable"
 expect_no_log "nominal : log_level=info, aucune ligne DEBUG" "$d" "DEBUG"
 
 # Spike J1 : sonde explicitement désactivée (hooks de session), puis activée (hooks posés sur les vraies
@@ -81,6 +84,7 @@ d=$(setup sonde_on $'role = host\nprobe = 1')
 run "sonde on" "$d"
 expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, PlayMotion, SetRagDollEnabled)"
 expect_log "probe = 1 : mod actif" "$d" "mod actif"
+expect_no_log "probe = 1 : inventaire de session non résolu" "$d" "inventaire de session résolu"
 expect_no_log "probe = 1 : pas de hook de session" "$d" "hooks de session installés"
 expect_no_log "probe = 1 : aucune session" "$d" "\[sync\]"
 # Spike J2 (story 3.0) : hooks facultatifs. Le banc ne charge jamais Script_Game.dll (et le mod
@@ -95,6 +99,18 @@ for sym in '?Kill@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' '?Defeat@@YA_JPEAV
         echo "[ OK ] Script_Game.dll exporte $sym"
     else
         echo "[ÉCHEC] Script_Game.dll : $sym introuvable"; failures=$((failures + 1))
+    fi
+done
+
+# Story 3.2 : symboles d'inventaire de la session présents dans la Script.dll du jeu.
+for sym in '?GetRightHoldStack@PSInventory@@QEBAHXZ' '?GetRightHoldItem@PSInventory@@QEBA?AVEntity@@XZ' \
+    '?CreateItems@PSInventory@@QEAAHAEBVTemplate@@HW4gEStackType@@@Z' '?HoldRightStack@PSInventory@@QEAA_NH@Z' \
+    '?EquipStack@PSInventory@@QEAA_NH@Z' '?GetName@Entity@@QEBA?AVbCString@@XZ' '??0Template@@QEAA@PEBD@Z' \
+    '?IsValid@Template@@QEBA_NXZ' '?FindStackIndex@PSInventory@@QEBAHAEBVTemplate@@H_N@Z'; do
+    if grep -qaF -- "$sym" "$risen_bin/Script.dll"; then
+        echo "[ OK ] Script.dll exporte $sym"
+    else
+        echo "[ÉCHEC] Script.dll : $sym introuvable"; failures=$((failures + 1))
     fi
 done
 
@@ -120,6 +136,7 @@ expect_log "session impossible : symbole nommé" "$d" "session inactive : symbol
 expect_log "session impossible : retour au solo" "$d" "session impossible"
 expect_no_log "session impossible : aucun hook" "$d" "hooks installés"
 expect_no_log "session impossible : pas de session prête" "$d" "session prête"
+expect_no_log "session impossible : inventaire non résolu" "$d" "inventaire de session résolu"
 expect_log "session impossible : mod actif" "$d" "mod actif"
 
 d=$(setup absente)

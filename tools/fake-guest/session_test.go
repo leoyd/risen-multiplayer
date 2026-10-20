@@ -146,7 +146,8 @@ func TestNominal(t *testing.T) {
 	if len(rec.despawns) != 1 || rec.despawns[0] != protocol.GuestNetId {
 		t.Errorf("Despawn reçus par l'hôte : %v", rec.despawns)
 	}
-	wantOrder := []protocol.MsgType{protocol.TypeSpawn, protocol.TypeDespawn, protocol.TypeSessionEnd}
+	// Weapon (v7) juste après le Spawn : ici arme rangée (config de test sans --weapon).
+	wantOrder := []protocol.MsgType{protocol.TypeSpawn, protocol.TypeWeapon, protocol.TypeDespawn, protocol.TypeSessionEnd}
 	if fmt.Sprint(rec.order) != fmt.Sprint(wantOrder) {
 		t.Errorf("ordre reçu par l'hôte : %v, attendu %v", rec.order, wantOrder)
 	}
@@ -447,6 +448,7 @@ func TestCLI(t *testing.T) {
 		{"--host", "127.0.0.1", "--port", "70000"},
 		{"--host", "127.0.0.1", "--bogus"},
 		{"--host", "127.0.0.1", "extra"},
+		{"--host", "127.0.0.1", "--weapon", strings.Repeat("w", 256)},
 	}
 	for _, args := range bad {
 		if code := run(args, &out, &errOut); code != exitError {
@@ -468,7 +470,8 @@ func TestParseConfig(t *testing.T) {
 	}
 	if cfg.Host != netip.MustParseAddrPort("10.0.0.7:27960") || cfg.Hello.Nickname != "Invite" ||
 		cfg.Hello.ModVersion != "0.1.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != protocol.ProtocolVersion ||
-		cfg.Duration != 0 || cfg.Kill || cfg.Drop != 0 || cfg.Seed != 1 || cfg.DupHello || cfg.BadVersion {
+		cfg.Duration != 0 || cfg.Kill || cfg.Drop != 0 || cfg.Seed != 1 || cfg.DupHello || cfg.BadVersion ||
+		cfg.Weapon != "It_1H_Sword" {
 		t.Errorf("config par défaut : %+v", cfg)
 	}
 
@@ -487,6 +490,8 @@ func TestParseConfig(t *testing.T) {
 		{[]string{"--kill", "--duration", "2s"}, func(c sessionConfig) bool { return c.Kill }},
 		{[]string{"--dup-hello"}, func(c sessionConfig) bool { return c.DupHello }},
 		{[]string{"--bad-version"}, func(c sessionConfig) bool { return c.BadVersion }},
+		{[]string{"--weapon", "It_2H_Axe"}, func(c sessionConfig) bool { return c.Weapon == "It_2H_Axe" }},
+		{[]string{"--weapon", "-"}, func(c sessionConfig) bool { return c.Weapon == "" }},
 	}
 	for _, c := range cases {
 		cfg, code := parseConfig(append(append([]string{}, base...), c.args...), &errOut)

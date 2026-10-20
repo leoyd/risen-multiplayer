@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 6
+# Protocole Risen Multiplayer — version 7
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -6,8 +6,8 @@ et le codec Go le suivent, et les vecteurs de `protocol/vectors/` en sont tirés
 
 La v1 couvrait **uniquement la session** (poignée de main, présence, fin de session). La v2
 (story 2.1) ajoute `Motion`, la v3 (story 2.2) `Spawn` et `Despawn`, la v4 (story 2.3) le
-snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) `MotionParam`. Les combats arrivent avec les stories
-suivantes et incrémenteront la version.
+snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) `MotionParam`, la v7 (story 3.2) `Weapon`. Les combats arrivent avec les
+stories suivantes et incrémenteront la version.
 
 ## 1. Règles générales
 
@@ -49,7 +49,8 @@ suivantes et incrémenteront la version.
 | 21 | `Despawn` | fiable | les deux sens : retrait d'une entité annoncée par `Spawn` (v3) |
 | 24 | `Death` | fiable | les deux sens : mort d'une entité dont l'émetteur a l'autorité ; le récepteur met la réplique en ragdoll (v5) |
 | 26 | `MotionParam` | fiable | les deux sens : réglage de locomotion (poids cible, vitesse de lecture) d'une entité animée (v6) |
-| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v6** |
+| 27 | `Weapon` | fiable | les deux sens : arme en main d'une entité dont l'émetteur a l'autorité, vide si rangée (v7) |
+| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v7** |
 
 Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -61,7 +62,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `6` en v6 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `7` en v7 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -200,6 +201,18 @@ fait monter ce poids et règle sa vitesse de lecture.
 
 Taille : 19 octets.
 
+### `Weapon` (27) — fiable — v7
+
+Arme que tient en main droite une entité dont l'émetteur a l'autorité. Il n'y a pas de mode de
+combat à transmettre : la posture est dans le nom des animations rejouées (`AniName`).
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `net_id` | `u32` | entité armée (AD-6) |
+| `nom` | `str8` | **0 à 255** octets : nom de l'objet en main (`Entity::GetName` de `PSInventory::GetRightHoldItem`), ex. `It_1H_Sword` ; **vide** = arme rangée |
+
+Taille : 6 à 261 octets.
+
 **Raison inconnue** (`Reject` ou `SessionEnd`) : le message se décode quand même ; la valeur
 brute est conservée et l'appelant la journalise telle quelle (« raison inconnue (200) »).
 
@@ -233,13 +246,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide), ou que les `nombre` entités d'un snapshot |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle, ≠ 1 pour un snapshot |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 6 (la suite n'est pas lue) |
-| `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 7 (la suite n'est pas lue) |
+| `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) ; l'encodeur refuse aussi un nom de `Weapon` de plus de 255 octets |
 | `TrailingBytes` | octets restants après la fin du message |
 | `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 6, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 7, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -277,7 +290,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0600 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0700 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -287,7 +300,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `06 00` | `version_protocole` = 6 |
+| 0x02 | `07 00` | `version_protocole` = 7 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -466,6 +479,31 @@ sonde).
 | 0x0b | `00 00 80 3f` | `valeur` = 1.0 |
 | 0x0f | `00 00 80 3e` | `durée` = 0.25 |
 
+#### `weapon.bin` — `Weapon` (fiable, sans octet de canal), 17 octets
+
+`net_id=2`, `nom="It_1H_Sword"` (11 octets, relevé par la sonde du spike J2).
+
+<!-- vector: weapon.bin -->
+```text
+00000000: 1b02 0000 000b 4974 5f31 485f 5377 6f72  ......It_1H_Swor
+00000010: 64                                       d
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `1b` | `MsgType` Weapon (27) |
+| 0x01 | `02 00 00 00` | `net_id` = 2 |
+| 0x05 | `0b` `49 74 … 64` | `nom` = "It_1H_Sword" |
+
+#### `weapon_sheathed.bin` — `Weapon` arme rangée (fiable, sans octet de canal), 6 octets
+
+`net_id=2`, `nom=""` (longueur 0 : arme rangée).
+
+<!-- vector: weapon_sheathed.bin -->
+```text
+00000000: 1b02 0000 0000                           ......
+```
+
 #### `snapshot.bin` — snapshot (canal 1), 28 octets
 
 `tick=1234`, une entité : `net_id=2`, position `(100.0, -50.5, 2000.0)`, `lacet=1.5`, `pv=75`.
@@ -510,11 +548,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 6.
+`Truncated` ; `peek_hello_version` → 7.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0600 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0700 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -524,7 +562,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0600 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0700 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -583,7 +621,7 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`). Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`). Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -664,6 +702,18 @@ d'appels.
   ni déplacé ni animé jusqu'à son retrait (un `Spawn` suivant lève cet état). En pratique, seul
   l'invité envoie `Death` : la mort de l'hôte termine la session (raison 3) avant tout envoi, et
   l'invité retire alors l'avatar.
+- **Arme en main** (v7) : à chaque frame, l'émetteur lit l'objet que tient son héros en main
+  droite (`PSInventory::GetRightHoldStack` ≥ 0, puis le nom de `GetRightHoldItem`) ; il envoie
+  `Weapon{son NetId, nom}` quand ce nom change (vide : arme rangée), en session seulement, et une
+  fois à l'entrée en session, juste **après** son `Spawn` (dernier nom lu, vide compris). Une
+  lecture en échec garde le dernier état et n'envoie rien.
+  Le récepteur n'accepte un `Weapon` que du `NetId` de l'avatar du pair, avatar présent et
+  vivant, sans `Death` en attente d'affichage (sinon ignoré, journalisé en debug). Il l'applique au même instant d'affichage qu'un `Death`
+  (celui du dernier snapshot reçu), pour que les gestes suivants se rejouent arme en main : nom
+  non vide → l'objet de ce nom est créé dans l'inventaire de l'avatar s'il n'y est pas, une seule
+  fois par nom et par avatar, puis tenu en main (`HoldRightStack`) ; nom vide → l'objet en main
+  est rangé (`EquipStack`), sans effet si la main est vide. Un nom que le jeu ne connaît pas est
+  journalisé une fois et laisse l'avatar inchangé.
 - **Avatars** (v3) :
   - à l'entrée en session, chaque pair envoie le `Spawn` de son héros : l'hôte `Spawn{1, 0, sa
     pose du Welcome}` juste après le `Welcome`, l'invité `Spawn{2, 0, sa pose}` dès le `Welcome`
@@ -702,4 +752,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v6).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v7).

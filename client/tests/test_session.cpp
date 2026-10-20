@@ -1965,3 +1965,134 @@ TEST("locomotion : fondu et arrêt (natures 2 et 3) — envoyés si différents,
     const auto played = commands_of<PlayAvatarParam>(r.tick(1400, loaded_world(), reliable(encode_r(p))));
     CHECK(played.size() == 1 && played[0]->param.kind == 2 && played[0]->param.time == 0.3f);
 }
+
+// --- Arme de l'avatar (story 3.2) -----------------------------------------------------------
+
+namespace {
+
+std::vector<Input> local_weapon(const std::string& name) { return {LocalWeapon{name}}; }
+
+}  // namespace
+
+TEST("arme : LocalWeapon en session → Weapon au changement seulement ; rangée → nom vide") {
+    Session s = host_with_avatar();
+    Output out = s.tick(1200, loaded_world(), local_weapon("It_1H_Sword"));
+    auto w = sent_of<proto::Weapon>(out);
+    CHECK(w.size() == 1 && w[0].net_id == proto::kHostNetId && w[0].name == "It_1H_Sword");
+    CHECK(has_log(out, "Weapon envoyé : NetId 1 (hôte), « It_1H_Sword »"));
+    CHECK(sent_of<proto::Weapon>(s.tick(1210, loaded_world(), local_weapon("It_1H_Sword"))).empty());
+    w = sent_of<proto::Weapon>(s.tick(1220, loaded_world(), local_weapon("")));
+    CHECK(w.size() == 1 && w[0].name.empty());
+    w = sent_of<proto::Weapon>(s.tick(1230, loaded_world(), local_weapon("It_2H_Axe")));
+    CHECK(w.size() == 1 && w[0].name == "It_2H_Axe");
+}
+
+TEST("arme : retenue hors session, envoyée à l'entrée en session juste après le Spawn") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), local_weapon("It_1H_Sword"));  // Inactive → Hosting
+    CHECK(sent_of<proto::Weapon>(s.tick(100, loaded_world(), {})).empty());
+    const Output out = s.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    const auto sent = reliables_sent(out);
+    CHECK_EQ(sent.size(), 3u);  // Spawn, Weapon, Heartbeat
+    if (sent.size() >= 2) {
+        CHECK(std::holds_alternative<proto::Spawn>(sent[0]));
+        const auto* w = std::get_if<proto::Weapon>(&sent[1]);
+        CHECK(w != nullptr && w->net_id == proto::kHostNetId && w->name == "It_1H_Sword");
+    }
+    // Invité : idem, sous NetId 2, arme rangée comprise.
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), local_weapon(""));
+    const auto gw = sent_of<proto::Weapon>(g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0)))));
+    CHECK(gw.size() == 1 && gw[0].net_id == proto::kGuestNetId && gw[0].name.empty());
+}
+
+TEST("arme : jamais lue → pas de Weapon à l'entrée ; nouvelle session → renvoyée") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    // hosting_with_a n'a reçu aucun LocalWeapon : rien n'est parti.
+    s.tick(1100, loaded_world(), local_weapon("It_1H_Sword"));
+    s.tick(1300, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));  // fin, réarmement immédiat
+    s.tick(2400, loaded_world(), {});
+    const auto w = sent_of<proto::Weapon>(s.tick(2500, loaded_world(), control_from(kGuestA, encode(make_hello()))));
+    CHECK(w.size() == 1 && w[0].name == "It_1H_Sword");
+    Session fresh(host_settings());
+    fresh.tick(0, loaded_world(), {});
+    CHECK(sent_of<proto::Weapon>(fresh.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())))).empty());
+}
+
+TEST("arme : Weapon du pair → AvatarWeapon à l'instant d'affichage, avant les gestes du même tick") {
+    Session s = host_with_clock();  // dernier snapshot : 150 ms ; affiché = now − 1350
+    Output out = s.tick(1400, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));
+    CHECK(commands_of<AvatarWeapon>(out).empty());  // affiché 50 < 150
+    CHECK(has_log(out, "Weapon reçu : avatar 2 (invité), « It_1H_Sword »"));
+    s.tick(1410, loaded_world(), reliable2(proto::AniName{0, "Hero_Attack"}, peer_motion(0, 150, 2)));
+    CHECK(commands_of<AvatarWeapon>(s.tick(1499, loaded_world(), {})).empty());
+    out = s.tick(1500, loaded_world(), {});
+    const auto aw = commands_of<AvatarWeapon>(out);
+    CHECK(aw.size() == 1 && aw[0]->net_id == proto::kGuestNetId && aw[0]->name == "It_1H_Sword");
+    CHECK(index_of<AvatarWeapon>(out) < index_of<PlayAvatarMotion>(out));
+    // Arme rangée : nom vide transmis tel quel.
+    out = s.tick(1510, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, ""})));
+    const auto sheathed = commands_of<AvatarWeapon>(out);
+    CHECK(sheathed.size() == 1 && sheathed[0]->name.empty());
+}
+
+TEST("arme : avant tout snapshot (apparition), AvatarWeapon part aussitôt, après SpawnAvatar") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    const Output out = s.tick(1100, loaded_world(),
+                              reliable2(spawn_of(proto::kGuestNetId), proto::Weapon{proto::kGuestNetId, "It_1H_Sword"}));
+    CHECK_EQ(commands_of<AvatarWeapon>(out).size(), 1u);
+    CHECK(index_of<SpawnAvatar>(out) < index_of<AvatarWeapon>(out));
+}
+
+TEST("arme : Weapon sans avatar, d'un autre NetId ou avatar mort → ignoré (debug) ; retrait → file vidée") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    Output out = s.tick(1100, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));
+    CHECK(commands_of<AvatarWeapon>(out).empty());
+    bool debug = false;
+    for (const auto& l : out.logs) {
+        if (l.text.find("Weapon reçu") != std::string::npos && l.text.find("pas d'avatar") != std::string::npos) {
+            debug = l.level == Level::Debug;
+        }
+    }
+    CHECK(debug);
+    Session c = host_with_clock();
+    out = c.tick(1400, loaded_world(), reliable(encode_r(proto::Weapon{proto::kHostNetId, "X"})));
+    CHECK(has_log(out, "pas l'avatar du pair"));
+    c.tick(1410, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));  // en attente
+    c.tick(1420, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
+    for (std::uint64_t t = 1430; t < 3000; t += 100) CHECK(commands_of<AvatarWeapon>(c.tick(t, loaded_world(), {})).empty());
+    Session d = host_with_clock();
+    d.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    d.tick(1500, loaded_world(), {});  // ragdoll appliqué
+    CHECK(d.avatar_dead());
+    out = d.tick(1510, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));
+    CHECK(has_log(out, "avatar mort"));
+    CHECK(commands_of<AvatarWeapon>(d.tick(3000, loaded_world(), {})).empty());
+}
+
+TEST("arme : Weapon tronqué → message fiable illisible, ignoré") {
+    Session s = host_with_avatar();
+    Bytes b = encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"});
+    b.pop_back();
+    const Output out = s.tick(1200, loaded_world(), reliable(b));
+    CHECK(commands_of<AvatarWeapon>(out).empty());
+    CHECK(has_log(out, "message fiable illisible : message tronqué"));
+}
+
+TEST("arme : Weapon reçu pendant qu'un Death attend l'affichage → ignoré (debug), jamais appliqué") {
+    Session s = host_with_clock();  // affiché = now − 1350 ; Death appliqué à 1500
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    const Output out = s.tick(1410, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));
+    bool debug = false;
+    for (const auto& l : out.logs) {
+        if (l.text.find("Weapon reçu") != std::string::npos && l.text.find("mort de l'avatar en attente") != std::string::npos) {
+            debug = l.level == Level::Debug;
+        }
+    }
+    CHECK(debug);
+    for (std::uint64_t t = 1420; t < 3000; t += 40) CHECK(commands_of<AvatarWeapon>(s.tick(t, loaded_world(), {})).empty());
+    CHECK(s.avatar_dead());
+}

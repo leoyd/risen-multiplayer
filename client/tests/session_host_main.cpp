@@ -2,13 +2,16 @@
 // avec un monde simulé chargé. Même boucle que le pilote Windows (sync/session) : lire le
 // monde, vider poll(), tick, exécuter les commandes, écrire les logs.
 //
-// Usage : session_host --port N [--max-ms T] [--ends E]
+// Usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM]
 // Sort après la E-ième fin de session (défaut 1), une fois le maintien terminé (Ended →
 // Inactive), ou après T ms (défaut 30000). Log sur stdout ; la dernière ligne est
 // « état final : <état> ». Code de sortie : 0, ou 1 sur erreur d'usage.
 //
 // Signaux (story 1.5) : SIGUSR1 = fin de monde (rechargement : le joueur change d'adresse
 // et revit) ; SIGUSR2 = mort du héros de l'hôte.
+//
+// Arme (story 3.2) : --weapon NOM met cette arme dans la main du héros de l'hôte dès le départ
+// (LocalWeapon) ; SIGHUP la range ou la ressort.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -35,9 +38,11 @@ using Clock = std::chrono::steady_clock;
 
 volatile std::sig_atomic_t g_reload_requests = 0;
 volatile std::sig_atomic_t g_death_requested = 0;
+volatile std::sig_atomic_t g_weapon_toggles = 0;
 
 extern "C" void on_sigusr1(int) { g_reload_requests = g_reload_requests + 1; }
 extern "C" void on_sigusr2(int) { g_death_requested = 1; }
+extern "C" void on_sighup(int) { g_weapon_toggles = g_weapon_toggles + 1; }
 
 void print(const char* level, const std::string& text) {
     const auto now = std::chrono::system_clock::now();
@@ -67,17 +72,20 @@ int main(int argc, char** argv) {
     long port = -1;
     long max_ms = 30000;
     long max_ends = 1;
+    std::string weapon;
     for (int i = 1; i + 1 < argc; i += 2) {
+        if (std::strcmp(argv[i], "--weapon") == 0) weapon = argv[i + 1];
         if (std::strcmp(argv[i], "--port") == 0) port = std::strtol(argv[i + 1], nullptr, 10);
         else if (std::strcmp(argv[i], "--max-ms") == 0) max_ms = std::strtol(argv[i + 1], nullptr, 10);
         else if (std::strcmp(argv[i], "--ends") == 0) max_ends = std::strtol(argv[i + 1], nullptr, 10);
     }
     if (port <= 0 || port > 65535 || max_ms <= 0 || max_ends <= 0 || argc % 2 == 0) {
-        std::fprintf(stderr, "usage : session_host --port N [--max-ms T] [--ends E]\n");
+        std::fprintf(stderr, "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM]\n");
         return 1;
     }
     std::signal(SIGUSR1, on_sigusr1);
     std::signal(SIGUSR2, on_sigusr2);
+    std::signal(SIGHUP, on_sighup);
 
     Settings settings;
     settings.role = mp::Role::Host;
@@ -126,6 +134,9 @@ int main(int argc, char** argv) {
     };
     long ends = 0;  // transitions Ended → Inactive (fin du maintien)
     std::sig_atomic_t reloads_seen = 0;
+    std::sig_atomic_t toggles_seen = 0;
+    bool weapon_out = !weapon.empty();
+    bool weapon_pushed = false;
     while (now_ms() < static_cast<std::uint64_t>(max_ms)) {
         if (g_reload_requests != reloads_seen) {
             reloads_seen = g_reload_requests;
@@ -139,6 +150,16 @@ int main(int argc, char** argv) {
             print("INFO", "[test] mort du héros de l'hôte simulée");
         }
         inputs.clear();
+        if (g_weapon_toggles != toggles_seen && !weapon.empty()) {
+            toggles_seen = g_weapon_toggles;
+            weapon_out = !weapon_out;
+            weapon_pushed = false;
+            print("INFO", std::string("[test] arme de l'hôte ") + (weapon_out ? "sortie" : "rangée"));
+        }
+        if (!weapon.empty() && !weapon_pushed) {
+            weapon_pushed = true;
+            inputs.push_back(LocalWeapon{weapon_out ? weapon : std::string()});
+        }
         mp::net::Event ev;
         while (transport.poll(ev)) {
             if (auto* c = std::get_if<mp::net::ControlReceived>(&ev)) {
@@ -198,6 +219,8 @@ int main(int argc, char** argv) {
                     print("INFO", "[test] PlayAvatarParam NetId " + std::to_string(pp->net_id) + " type " +
                                       std::to_string(pp->param.type) + " nature " + std::to_string(pp->param.kind) +
                                       " valeur " + std::to_string(pp->param.value));
+                } else if (const auto* aw = std::get_if<AvatarWeapon>(&cmd)) {
+                    print("INFO", "[test] AvatarWeapon NetId " + std::to_string(aw->net_id) + " « " + aw->name + " »");
                 } else if (const auto* ad = std::get_if<AvatarDeath>(&cmd)) {
                     print("INFO", "[test] AvatarDeath NetId " + std::to_string(ad->net_id));
                 } else if (const auto* sa = std::get_if<SpawnAvatar>(&cmd)) {

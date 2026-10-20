@@ -46,6 +46,8 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"despawn.bin", true, Despawn{NetId: 2}},
 		{"aniname.bin", true, AniName{AniId: 7, Name: "Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400"}},
 		{"death.bin", true, Death{NetId: 2}},
+		{"weapon.bin", true, Weapon{NetId: 2, Name: "It_1H_Sword"}},
+		{"weapon_sheathed.bin", true, Weapon{NetId: 2, Name: ""}},
 		{"motion_param.bin", true, MotionParam{NetId: 2, Ms: 1234, Kind: 0, Param: ParamTargetWeight, Value: 1.0, Time: 0.25}},
 		{"motion.bin", true, Motion{NetId: 2, Ms: 1234, Kind: 0, AniId: 7, Flags: 3, D00: 0.25, D04: 0.5, D08: 1, D0C: 1.0,
 			D10: 0, D14: 0.75, D18: 2}},
@@ -117,7 +119,8 @@ func TestAllVectorsCovered(t *testing.T) {
 		"hello_long_nickname.bin": true, "unknown_type.bin": true, "spawn.bin": true, "despawn.bin": true,
 		"snapshot.bin": true, "snapshot_truncated.bin": true,
 		"motion.bin": true, "motion_bad_type.bin": true, "aniname.bin": true, "death.bin": true,
-		"aniname_empty.bin": true, "motion_param.bin": true, "motion_param_bad.bin": true}
+		"aniname_empty.bin": true, "motion_param.bin": true, "motion_param_bad.bin": true,
+		"weapon.bin": true, "weapon_sheathed.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -319,5 +322,31 @@ func TestMotionAndAniNameErrors(t *testing.T) {
 		if _, err := DecodeReliable([]byte{typ}); !errors.Is(err, ErrUnknownType) {
 			t.Fatalf("type réservé %d : %v", typ, err)
 		}
+	}
+}
+
+func TestWeaponBounds(t *testing.T) {
+	max := Weapon{NetId: 0xffffffff, Name: strings.Repeat("w", MaxWeaponName)}
+	b, err := EncodeReliable(max)
+	if err != nil || len(b) != 261 {
+		t.Fatalf("Weapon maximal : %d octets, %v", len(b), err)
+	}
+	if got, err := DecodeReliable(b); err != nil || got != max {
+		t.Fatalf("Weapon maximal décodé : %v, %v", got, err)
+	}
+	if _, err := EncodeReliable(Weapon{Name: strings.Repeat("w", MaxWeaponName+1)}); !errors.Is(err, ErrOutOfBounds) {
+		t.Fatalf("Weapon de 256 octets : %v", err)
+	}
+	raw := vector(t, "weapon.bin")
+	for n := 0; n < len(raw); n++ {
+		if _, err := DecodeReliable(raw[:n]); !errors.Is(err, ErrTruncated) {
+			t.Fatalf("weapon.bin coupé à %d : %v", n, err)
+		}
+	}
+	if _, err := DecodeReliable(append(append([]byte{}, raw...), 0)); !errors.Is(err, ErrTrailingBytes) {
+		t.Fatalf("weapon.bin + 1 octet : %v", err)
+	}
+	if _, err := DecodeControl([]byte{2, 27}); !errors.Is(err, ErrUnknownType) {
+		t.Fatalf("Weapon en contrôle : %v", err)
 	}
 }

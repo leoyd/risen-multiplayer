@@ -153,6 +153,12 @@ void write(Writer& w, const Death& m) {
     w.u32(m.net_id);
 }
 
+void write(Writer& w, const Weapon& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::Weapon));
+    w.u32(m.net_id);
+    w.str8(m.name);
+}
+
 void write(Writer& w, const Despawn& m) {
     w.u8(static_cast<std::uint8_t>(MsgType::Despawn));
     w.u32(m.net_id);
@@ -315,6 +321,12 @@ DecodeError read(Reader& r, Death& m) {
     return r.finish();
 }
 
+DecodeError read(Reader& r, Weapon& m) {
+    m.net_id = r.u32();
+    r.str8(m.name, 0, kMaxWeaponName);
+    return r.finish();
+}
+
 DecodeError read(Reader& r, Despawn& m) {
     m.net_id = r.u32();
     return r.finish();
@@ -347,6 +359,9 @@ bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& 
     if (const MotionParam* p = std::get_if<MotionParam>(&message); p != nullptr && !valid(*p)) return false;
     if (const AniName* a = std::get_if<AniName>(&message);
         a != nullptr && !in_bounds(a->name, kMinAniName, kMaxAniName)) {
+        return false;
+    }
+    if (const Weapon* wp = std::get_if<Weapon>(&message); wp != nullptr && !in_bounds(wp->name, 0, kMaxWeaponName)) {
         return false;
     }
     std::vector<std::uint8_t> buf;
@@ -385,6 +400,7 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
         case MsgType::AniName: return decode_as<AniName, ReliableMessage>(r);
         case MsgType::Death: return decode_as<Death, ReliableMessage>(r);
         case MsgType::MotionParam: return decode_as<MotionParam, ReliableMessage>(r);
+        case MsgType::Weapon: return decode_as<Weapon, ReliableMessage>(r);
         default: return {DecodeError::UnknownType, {}};
     }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4, 1.5, 2.2 et 2.3 : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4 et 3.2 : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -274,6 +274,57 @@ if start_host echo $p 30000; then
     expect_code "écho : invité" 0 $rc "$work/echo.guest.log"
     expect_log "écho : snapshots renvoyés" "$work/echo.guest.log" "snapshots envoyés=[1-9][0-9]* reçus=[1-9]"
     expect_log "écho : avatar déplacé" "$h" "\[test\] avatar (retrait) : [1-9][0-9]* déplacements"
+fi
+
+# --- Story 3.2 : arme — Weapon dans les deux sens, après le Spawn, puis rangée ------------
+p=$((base_port + 14))
+cat > "$work/arme.txt" <<'EOS'
+pause 3
+weapon 1.0 -
+weapon 1.5 It_2H_Axe
+EOS
+start_host_weapon() {  # comme start_host, avec --weapon
+    "$host_bin" --port "$2" --max-ms "$3" --weapon "$4" > "$work/$1.host.log" 2>&1 &
+    host_pid=$!
+    for _ in $(seq 100); do
+        grep -q "transport démarré" "$work/$1.host.log" && return 0
+        sleep 0.05
+    done
+    ko "$1 : l'hôte n'a pas démarré (scénario sauté)"; sed 's/^/    /' "$work/$1.host.log"
+    kill "$host_pid" 2>/dev/null; wait "$host_pid" 2>/dev/null
+    return 1
+}
+if start_host_weapon arme $p 30000 Host_Sword; then
+    h=$work/arme.host.log
+    "$guest" --host 127.0.0.1 --port $p --duration 2500ms --quit --weapon It_1H_Sword --scenario "$work/arme.txt" \
+        > "$work/arme.guest.log" 2>&1 &
+    g_pid=$!
+    if wait_count "$work/arme.guest.log" '<- Weapon netid=1 nom="Host_Sword"' 1; then
+        kill -HUP $host_pid  # l'hôte range son arme
+    else
+        ko "arme : Weapon de l'hôte non reçu"
+    fi
+    wait $g_pid; rc=$?
+    wait $host_pid
+    g=$work/arme.guest.log
+    expect_code "arme : invité" 0 $rc "$g"
+    expect_log "arme : Weapon de l'hôte envoyé" "$h" "Weapon envoyé : NetId 1 (hôte), « Host_Sword »"
+    expect_log "arme : Weapon rangé de l'hôte reçu" "$g" '<- Weapon netid=1 nom=""'
+    l_spawn=$(grep -n -- "<- Spawn netid=1" "$g" | head -1 | cut -d: -f1)
+    l_weapon=$(grep -n -- "<- Weapon netid=1" "$g" | head -1 | cut -d: -f1)
+    if [[ -n $l_spawn && -n $l_weapon && $l_spawn -lt $l_weapon ]]; then
+        ok "arme : Weapon de l'hôte après son Spawn"
+    else
+        ko "arme : Weapon de l'hôte après son Spawn (lignes ${l_spawn:-?} et ${l_weapon:-?})"; sed 's/^/    /' "$g"
+    fi
+    expect_count "arme : épée de l'invité appliquée" "$h" "AvatarWeapon NetId 2 « It_1H_Sword »" 1
+    expect_count "arme : arme de l'invité rangée" "$h" "AvatarWeapon NetId 2 «  »" 1
+    expect_count "arme : hache de l'invité" "$h" "AvatarWeapon NetId 2 « It_2H_Axe »" 1
+    order=$(grep -o "AvatarWeapon NetId 2 « [^»]* »" "$h" | sed -E 's/.*« (.*) »/\1/' | tr '\n' ,)
+    if [[ $order == "It_1H_Sword,,It_2H_Axe," ]]; then ok "arme : dans l'ordre"; else ko "arme : ordre $order"; fi
+    l_sa=$(grep -n -- "SpawnAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
+    l_aw=$(grep -n -- "AvatarWeapon NetId 2" "$h" | head -1 | cut -d: -f1)
+    if [[ -n $l_sa && -n $l_aw && $l_sa -lt $l_aw ]]; then ok "arme : avatar armé après son apparition"; else ko "arme : SpawnAvatar puis AvatarWeapon (lignes ${l_sa:-?} et ${l_aw:-?})"; fi
 fi
 
 # --- Story 1.5 : mort de l'hôte en session → SessionEnd{3} ----------------------------

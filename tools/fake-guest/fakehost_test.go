@@ -28,7 +28,8 @@ type hostConfig struct {
 	SessionEndReason   uint8
 	HeartbeatInterval  time.Duration
 	PeerTimeout        time.Duration
-	SendMotions        bool // AniName{0,"Host_Run"} puis un Motion toutes les 100 ms (story 2.4)
+	SendMotions        bool   // AniName{0,"Host_Run"} puis un Motion toutes les 100 ms (story 2.4)
+	SendWeapon         string // non vide : Weapon{1, nom} juste après le Spawn (story 3.2)
 }
 
 func defaultHost() hostConfig {
@@ -56,15 +57,16 @@ type hostRecord struct {
 	sessionEnds  []uint8
 	spawns       []protocol.Spawn    // Spawn reçus de l'invité (v3)
 	despawns     []uint32            // NetId des Despawn reçus
-	order        []protocol.MsgType  // Spawn, Despawn et SessionEnd, dans l'ordre de réception
+	order        []protocol.MsgType  // Spawn, Weapon, Despawn et SessionEnd, dans l'ordre de réception
 	snapshots    []protocol.Snapshot // snapshots reçus de l'invité (v4)
 	aniNames     []protocol.AniName  // reçus de l'invité (v5)
 	motions      []protocol.Motion
 	params       []protocol.MotionParam
 	deaths       []uint32
-	snapshotAt   []time.Time // heure de réception de chacun
-	lastDatagram time.Time   // dernier datagramme du pair de session
-	timeoutAt    time.Time   // fin « timeout » constatée
+	weapons      []protocol.Weapon // reçus de l'invité (v7)
+	snapshotAt   []time.Time       // heure de réception de chacun
+	lastDatagram time.Time         // dernier datagramme du pair de session
+	timeoutAt    time.Time         // fin « timeout » constatée
 	ended        string
 }
 
@@ -318,6 +320,9 @@ func (h *simHost) openSession(peer netip.AddrPort) {
 	h.welcome = protocol.Welcome{Conv: conv, X: 1, Y: 2, Z: 3, Yaw: 0.5}
 	h.sendControl(peer, h.welcome)
 	h.sendReliable(protocol.Spawn{NetId: protocol.HostNetId, Kind: protocol.SpawnTypeHero, X: 1, Y: 2, Z: 3, Yaw: 0.5})
+	if h.cfg.SendWeapon != "" {
+		h.sendReliable(protocol.Weapon{NetId: protocol.HostNetId, Name: h.cfg.SendWeapon})
+	}
 	if h.cfg.SilentAfterWelcome {
 		h.silent = true
 	}
@@ -358,6 +363,11 @@ func (h *simHost) drain() {
 		case protocol.Death:
 			h.mu.Lock()
 			h.rec.deaths = append(h.rec.deaths, m.NetId)
+			h.mu.Unlock()
+		case protocol.Weapon:
+			h.mu.Lock()
+			h.rec.weapons = append(h.rec.weapons, m)
+			h.rec.order = append(h.rec.order, protocol.TypeWeapon)
 			h.mu.Unlock()
 		case protocol.Despawn:
 			h.mu.Lock()

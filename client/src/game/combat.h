@@ -51,6 +51,11 @@ using RoutineOnProcessFn = void (*)(void* routine_ps);
 // Résout en bloc les symboles du combat (Script.dll, Engine.dll, Game.dll, SharedBase.dll).
 // Indépendante de resolve_entities (à appeler après). False et `missing` au premier échec.
 bool resolve_combat(const char*& missing);
+// Symboles d'inventaire de la session (story 3.2, AD-3) : arme en main du héros et de l'avatar.
+// Script.dll et SharedBase.dll, en tout ou rien, indépendants de resolve_combat (sonde). Les
+// enveloppes d'inventaire ci-dessous marchent après l'une ou l'autre. False et `missing` au
+// premier échec. Après resolve_entities (destroy_template).
+bool resolve_inventory(const char*& missing);
 // Kill et Defeat (Script_Game.dll), facultatifs : module déjà chargé par le jeu, jamais par
 // nous. False et `missing` (module ou symbole) en cas d'échec.
 bool resolve_script_game(const char*& missing);
@@ -69,6 +74,14 @@ bool hold_right_stack(const Entity& e, int stack, bool& out);
 bool equip_stack(const Entity& e, int stack, bool& out);
 bool get_combat_mode(const Entity& e, int& out);
 bool get_entity_name(const Entity& e, std::string& out);   // Entity::GetName
+// Template(const char* nom) (Script.dll) puis Template::IsValid. `out` est construit dès que
+// l'appel rend true, même invalide : à détruire (destroy_template). resolve_inventory seulement.
+bool template_from_name(const char* name, Template& out, bool& valid);
+// PSInventory::FindStackIndex(Template const&, int après, bool hors emplacement) : première pile de
+// ce template d'index > `après` (-1 : depuis 0) ; `bool` vrai saute les piles posées dans un
+// emplacement (gCInventorySlot::GetSlot ≠ 0). Désassemblage (Steam x64, janvier 2023). Appelé
+// avec (-1, false) : n'importe quelle pile. -1 : aucune. resolve_inventory seulement.
+bool find_stack_index(const Entity& e, const Template& t, int& out);
 
 // --- Q6 : collisions --------------------------------------------------------------------
 bool get_collision_group(const Entity& e, int& out);

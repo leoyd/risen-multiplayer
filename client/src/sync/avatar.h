@@ -37,6 +37,14 @@ void play_param(std::uint32_t net_id, const protocol::MotionParam& param);
 // Met l'avatar en ragdoll (Death du pair) : corps rendu à la physique et gravité rétablie
 // d'abord, pour qu'il tombe ; il n'est plus déplacé ni animé jusqu'au retrait.
 void die(std::uint32_t net_id);
+// Arme de l'avatar (story 3.2, Weapon du pair) : nom non vide → objet de ce nom créé dans son
+// inventaire s'il n'y est pas (CreateItems, une fois par nom), puis tenu (HoldRightStack) ; nom
+// vide → objet en main rangé (EquipStack), sans effet si la main est vide. Nom inconnu du jeu :
+// journalisé une fois par nom, avatar inchangé.
+void set_weapon(std::uint32_t net_id, const std::string& name);
+// Arme en main du héros local : nom de l'objet tenu (GetRightHoldStack ≥ 0, GetRightHoldItem,
+// Entity::GetName), vide si rien. False sur SEH ou sans héros : `name` est alors sans valeur.
+bool local_weapon(std::string& name);
 // Un avatar existe-t-il ? (sentinelle de diagnostic)
 bool present();
 // Déplace le héros local (invité, à l'entrée en session) par Entity::MoveTo.

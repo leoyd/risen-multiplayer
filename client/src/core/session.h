@@ -27,6 +27,10 @@
 // d'affichage que les snapshots, puis deviennent PlayAvatarMotion. Le ragdoll du héros
 // (IsDead passe à 1) envoie Death, une fois par mort ; celle du pair met l'avatar en ragdoll
 // (AvatarDeath), au même instant d'affichage que la pose.
+//
+// Arme (story 3.2) : le nom de l'objet en main du héros local (LocalWeapon, vide si l'arme est
+// rangée) part en Weapon à chaque changement, et une fois à l'entrée en session, après le Spawn.
+// Celui du pair devient AvatarWeapon au même instant d'affichage qu'un Death.
 #pragma once
 
 #include <array>
@@ -107,7 +111,13 @@ struct LocalParam {
     float value = 0.0f;
     float time = 0.0f;
 };
-using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam>;
+// Arme en main du héros local (story 3.2), poussée par l'appelant quand elle change (et à la
+// première lecture dans un monde) : nom de l'objet tenu, vide si l'arme est rangée. Retenue dans
+// tous les états ; envoyée en session seulement.
+struct LocalWeapon {
+    std::string name;
+};
+using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon>;
 
 using core::Pose;
 
@@ -161,14 +171,20 @@ struct PlayAvatarParam {  // rejouer un réglage de locomotion du pair sur l'ava
     std::uint32_t net_id = 0;
     protocol::MotionParam param;
 };
+struct AvatarWeapon {  // faire tenir (nom non vide) ou ranger (nom vide) l'arme de l'avatar (story 3.2)
+    std::uint32_t net_id = 0;
+    std::string name;
+};
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
-                             DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam>;
+                             DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
+                             AvatarWeapon>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
 inline constexpr float kParamTimeEpsilon = 0.005f;  // écart minimal de durée de fondu
 
 inline constexpr std::size_t kMaxPendingMotions = 256;  // Motion du pair en attente d'affichage
+inline constexpr std::size_t kMaxPendingWeapons = 16;   // Weapon du pair en attente d'affichage
 inline constexpr double kMaxMotionLeadMs = 1000.0;      // au-delà, un Motion « du futur » part aussitôt
 inline constexpr std::uint32_t kAniIdCount = 0x10000;   // AniId u16
 
@@ -213,6 +229,10 @@ private:
     void on_peer_motion(const protocol::Motion& m, Output& out);
     void on_local_param(std::uint64_t now, const LocalParam& in, Output& out);
     void on_peer_param(const protocol::MotionParam& p);
+    void on_local_weapon(const LocalWeapon& in, Output& out);
+    void send_weapon(Output& out);
+    void on_peer_weapon(const protocol::Weapon& w, Output& out);
+    void apply_due_weapons(std::uint64_t now, Output& out);
     bool accepts_peer_animation(std::uint32_t net_id) const;
     void play_due_motions(std::uint64_t now, Output& out);
     void clear_peer_avatar_state();
@@ -304,6 +324,18 @@ private:
         unsigned sent = 0, played = 0, ignored = 0, superseded = 0, dropped = 0;
         unsigned params_sent = 0, params_played = 0, params_ignored = 0;
     } anim_;
+
+    // Arme (story 3.2). Héros local : dernier nom connu (gardé d'une session à l'autre : c'est
+    // l'état du héros) ; dernier nom envoyé au pair, remis à zéro à chaque entrée en session.
+    bool local_weapon_known_ = false;
+    std::string local_weapon_;
+    bool weapon_sent_valid_ = false;
+    std::string weapon_sent_;
+    struct PendingWeapon {
+        double at = 0.0;  // temps distant à atteindre (dernier snapshot connu à la réception)
+        std::string name;
+    };
+    std::deque<PendingWeapon> pending_weapons_;  // pair : vidée au retrait de l'avatar
 
     std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)
     std::uint64_t linger_until_ = 0;   // Ended : fin du maintien du KCP

@@ -4,12 +4,12 @@
 
 ## Goal
 
-Les deux joueurs combattent les mêmes monstres en mêlée (jalon J2, ligne d’arrivée du MVP : nettoyer à deux un camp de monstres sans désynchronisation visible ni crash). L’avatar de l’autre joueur devient solide et armé. L’invité porte l’équipement de sa config. Chez l’invité, les PNJ proches suivent l’hôte sans IA locale. Ses coups blessent les monstres chez l’hôte, ceux des monstres le blessent dans son propre jeu, et aucun coup ne compte deux fois. À zéro PV, il tombe à terre puis réapparaît près de l’hôte, PV pleins, sans quitter la session. Le spike J2 (3.0) est fait : ses conclusions sont intégrées aux invariants ci-dessous, et les détails de rétro-ingénierie sont dans `docs/re/spike-j2.md`.
+Les deux joueurs combattent les mêmes monstres en mêlée (jalon J2, ligne d’arrivée du MVP : nettoyer à deux un camp de monstres sans désynchronisation visible ni crash). L’avatar de l’autre joueur est armé ; il reste traversable, mais les monstres le ciblent et le frappent. L’invité porte l’équipement de sa config. Chez l’invité, les PNJ proches suivent l’hôte sans IA locale. Ses coups blessent les monstres chez l’hôte, ceux des monstres le blessent dans son propre jeu, et aucun coup ne compte deux fois. À zéro PV, il tombe à terre puis réapparaît près de l’hôte, PV pleins, sans quitter la session. Le spike J2 (3.0) est fait : ses conclusions sont intégrées aux invariants ci-dessous, et les détails de rétro-ingénierie sont dans `docs/re/spike-j2.md`.
 
 ## Stories
 
 - Story 3.0 : Spike J2 *(fait)*
-- Story 3.1 : Avatar solide et registre des entités
+- Story 3.1 : Registre des entités (avatar solide abandonné) *(fait)*
 - Story 3.2 : Équipement et arme de l’avatar
 - Story 3.3 : Répliques des PNJ : apparition, position et PV
 - Story 3.4 : Répliques des PNJ : animations et mort
@@ -30,7 +30,7 @@ Les deux joueurs combattent les mêmes monstres en mêlée (jalon J2, ligne d’
 ## Technical Decisions
 
 - **Base réutilisée** : les enveloppes ABI du combat (`game/combat`) et les détours `Kill`, `DownOrDeadBy*` et `gCScriptRoutine_PS::OnProcess` existent déjà, réservés à la sonde (`probe = 1`). Les stories les reprennent pour la session. Sonde et session sont exclusives pour tous les détours.
-- **Avatar solide** : `SetCollisionGroup(4)`, `EnableCollision(true)`, DCC activé ; `PSRigidBody::AddBodyFlag(0x81)` et gravité coupée. Il est placé à chaque frame par `Entity::SetPose` puis `PSRigidBody::SetPose`, sans `MoveTo`, `StopMovement` ni `SetGoalPose`. Hypothèse : l’équipement suit en mode cinématique ; c’est à vérifier en premier, sinon la story s’arrête et le constat remonte dans la spine.
+- **Avatar traversable** : il est placé à chaque frame par `Entity::MoveTo(bCMatrix)` (`SetPose` seul laisse le contrôleur de personnage et l’équipement sur place). La recette « solide » du spike (groupe 4, collision, DCC, `AddBodyFlag(0x81)`, gravité coupée) est **abandonnée** : elle décroche le modèle animé, seule l’arme suivant la pose réseau, quel que soit le placement. Les PNJ de l’hôte ciblent et frappent l’avatar sans elle. Ne pas la réintroduire dans l’Epic 3.
 - **Registre unique des entités** : extension de `sync::AnimFilter`, même verrou. Il stocke `{entité, PS d’animation, PS de routine, rôle}`, avec les rôles héros local / avatar / réplique de PNJ. Seul le module propriétaire l’écrit (`sync/avatar`, `sync/npc`) ; les détours ne font que le lire. Une entité en sort avant d’être oubliée ou libérée.
 - **Liste fermée des hooks**, tous posés par `win/hooks` : `OnProcess`, `PlayMotion`, `SetRagDollEnabled`, les quatre réglages de locomotion, `gCScriptRoutine_PS::OnProcess`, les trois `DownOrDeadBy*` et le point d’accroche des dégâts (à trancher). Un seul détour par fonction, qui délègue à `sync/` selon le rôle. Ajouter un hook exige de mettre la liste à jour dans la spine.
 - **PNJ de l’invité = ses PNJ natifs** (même sauvegarde). Ils sont appariés par le GUID de 16 octets de `GetID` (+ 4 octets nuls), retrouvé par `gCRuntimeInfo::GetEntity`. Le `NetId` ≥ 1000 est attribué par l’hôte et reste lié à son GUID toute la session. L’IA est figée PNJ par PNJ par le hook de routine ; `EnableClassProcessing` est **interdit** (il fige tous les PNJ). À `Ended`, une réplique est libérée (IA rendue), jamais détruite. Chez l’invité, `sync/npc` est le seul à écrire l’état des répliques, PV compris.
@@ -42,7 +42,7 @@ Les deux joueurs combattent les mêmes monstres en mêlée (jalon J2, ligne d’
 
 ## Cross-Story Dependencies
 
-- **3.1** fournit le registre et l’avatar solide, dont dépendent toutes les stories suivantes. Les détours existants (`PlayMotion`, ragdoll, locomotion) passent sur le registre sans changer de comportement (banc Wine et tests 2.4b au vert).
+- **3.1** (faite) fournit le registre des entités, dont dépendent toutes les stories suivantes ; l’avatar y est resté traversable. Les détours existants (`PlayMotion`, ragdoll, locomotion) passent sur le registre sans changer de comportement (banc Wine et tests 2.4b au vert).
 - **3.2** fixe le format de `guest_equipment` et la transmission de l’arme sortie ou rangée (Q14). `DoDamage` côté hôte (3.5) a besoin de l’arme en main de l’avatar.
 - **3.3** fixe le repli pour un GUID introuvable (Q10, PNJ créés en cours de partie) et doit vérifier que les GUID sont identiques d’un PC à l’autre. Elle fournit les `NetId` de PNJ et le gel d’IA dont dépendent 3.4 à 3.6.
 - **3.4** fixe le budget de `Motion`/`MotionParam` des PNJ (Q12) et la mort d’une réplique (Q11 : sans `Kill` natif ? butin et XP de l’invité ?).

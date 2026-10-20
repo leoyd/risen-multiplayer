@@ -22,7 +22,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v3, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v7, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte.
 
@@ -32,7 +32,9 @@ Options :
 const exitCodesText = `
 Fautes : --drop, --delay, --jitter, --quit, --kill, --dup-hello, --bad-version (cumulables, sauf --quit/--kill).
 Trajectoire : --scenario <fichier> (snapshots à 20 Hz, gestes horodatés ; sans lui, pose fixe),
-ou --echo (l'avatar refait les gestes et les déplacements du joueur hôte, 150 ms plus tard).
+ou --echo (l'avatar refait les gestes, les déplacements et l'arme du joueur hôte, 150 ms plus tard).
+Arme : --weapon <nom> part en Weapon juste après le Spawn (« - » : arme rangée) ; directive de
+scénario « weapon [instant s] <nom|-> ».
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :
@@ -85,6 +87,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	delay := fs.Duration("delay", 0, "latence ajoutée à chaque datagramme sortant, ex. 100ms")
 	jitter := fs.Duration("jitter", 0, "gigue ± ajoutée à --delay, ex. 20ms")
 	badVersion := fs.Bool("bad-version", false, "envoie le Hello de hello_future.bin (version 0xFFFF) au lieu du Hello courant")
+	weapon := fs.String("weapon", "It_1H_Sword", "arme en main de l'invité, envoyée en Weapon après le Spawn (« - » : arme rangée)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
 		fs.PrintDefaults()
@@ -130,6 +133,13 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	if *echo && *scenarioPath != "" {
 		return usageError("--echo et --scenario sont exclusifs")
 	}
+	weaponName := *weapon
+	if weaponName == "-" {
+		weaponName = ""
+	}
+	if len(weaponName) > protocol.MaxWeaponName {
+		return usageError("--weapon : nom de plus de %d octets", protocol.MaxWeaponName)
+	}
 	var sc *scenario
 	if *scenarioPath != "" {
 		var err error
@@ -160,6 +170,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 		Delay:      *delay,
 		Jitter:     *jitter,
 		Echo:       *echo,
+		Weapon:     weaponName,
 	}
 	defaultTimings(&cfg)
 	return cfg, parseOK

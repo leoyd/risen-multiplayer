@@ -220,6 +220,12 @@ bool install_session() {
         log::error(std::string("[hooks] session inactive : symbole introuvable : ") + missing);
         return false;
     }
+    // Story 3.2 (AD-3) : arme en main du héros et de l'avatar, en tout ou rien.
+    if (!game::resolve_inventory(missing)) {
+        log::error(std::string("[hooks] session inactive : symbole d'inventaire introuvable : ") + missing);
+        return false;
+    }
+    log::info("[hooks] inventaire de session résolu (arme de l'avatar)");
     MH_STATUS s = MH_Initialize();
     if (s != MH_OK) {
         log::error(std::string("[hooks] session inactive : MH_Initialize : ") + MH_StatusToString(s));

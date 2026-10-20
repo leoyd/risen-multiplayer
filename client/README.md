@@ -84,6 +84,8 @@ dossier ; il n'est enregistré que si `go` est trouvé (cgo demande aussi `gcc`)
 (`src/core/session`) avec le vrai transport (`src/net`) et un monde simulé chargé. Il sort
 après `--ends E` fins de session (défaut 1) ou `--max-ms T`. `SIGUSR1` simule une fin de monde
 (rechargement : le héros change d'adresse) et `SIGUSR2` la mort du héros de l'hôte.
+`--weapon NOM` met une arme dans la main du héros de l'hôte (story 3.2), que `SIGHUP` range ou
+ressort.
 `tests/session_fake_guest.sh` le lance face au faux invité (compilé à la volée par `go build`)
 et vérifie les codes de sortie et les logs : nominal, `--dup-hello`, `--bad-version`, deux
 invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte), puis
@@ -94,9 +96,12 @@ rejoint le même monde) et la mort de l'hôte (`SessionEnd{3}`), puis (story 2.2
 deux avatars (`avatars présents=2` absent du log), `Despawn` avant `SessionEnd`, enfin (story 2.3)
 un cercle avec 100 ms ± 20 ms de latence et 10 % de pertes : l'avatar parcourt plus de 8 m, avec
 un saut max (du `Spawn` au dernier `MoveAvatar`) de moins de 10 cm ; (story 2.4) des gestes
-horodatés et une mort rejoués dans l'ordre (`PlayAvatarMotion`, `AvatarDeath`), et `--echo`. Le test CTest
+horodatés et une mort rejoués dans l'ordre (`PlayAvatarMotion`, `AvatarDeath`), et `--echo` ;
+(story 3.2) l'arme dans les deux sens : `Weapon` de l'hôte reçu après son `Spawn` puis rangé, et
+celle du faux invité (`--weapon It_1H_Sword`, puis rangée et changée par le scénario) appliquée
+dans l'ordre (`AvatarWeapon`), après `SpawnAvatar`. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
-55 s. Lancement à la main :
+70 s. Lancement à la main :
 
 ```bash
 client/tests/session_fake_guest.sh client/build-tests/session_host tools/fake-guest
@@ -258,8 +263,8 @@ Prérequis : `role = host`, `probe = 0`, `log_level = debug`, overlay Steam dés
 1. **Écho** : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s --echo`. Le faux
    invité renvoie tes déplacements et tes gestes comme les siens : l'avatar, 2 m devant toi au
    départ, **t'imite avec un léger retard** (150 ms d'affichage, plus l'aller-retour vers le faux
-   invité ; il ne renvoie pas la mort, puisque celle de l'hôte termine la session). Marcher, courir, sauter, dégainer (l'arme reste au
-   fourreau : J2), frapper à vide, parer. Attendu : mêmes gestes, calés sur le déplacement, plus
+   invité ; il ne renvoie pas la mort, puisque celle de l'hôte termine la session). Marcher, courir, sauter, dégainer (l'arme
+   suit depuis la story 3.2), frapper à vide, parer. Attendu : mêmes gestes, calés sur le déplacement, plus
    de T-pose.
 2. **Scénario** : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 60s --scenario
    tools/fake-guest/scenarios/gestes.txt`. L'avatar court sur un cercle de 3 m, saute à 2 s,
@@ -290,6 +295,42 @@ réseau, que le placement soit `SetPose` + `PSRigidBody::SetPose` ou `MoveTo` (t
 Story 3.1 : l'`AnimFilter` devient le registre des entités d'AD-12 (entité, PS d'animation, PS de
 routine, enveloppe, rôle). Les verdicts des détours sont inchangés ; seuls les tests Linux et le
 banc Wine le vérifient. Rien de nouveau à tester en jeu.
+
+### Arme de l'avatar en jeu (story 3.2, une machine)
+
+L'arme que le héros tient en main droite (nom de l'objet, ex. `It_1H_Sword`) part en `Weapon` à
+chaque changement, et une fois à l'entrée en session, juste après le `Spawn` ; une arme rangée
+part avec un nom vide. Chez le pair, au même retard que les gestes (150 ms), l'avatar crée cette
+arme dans son inventaire si elle manque (une seule fois par nom), puis la tient
+(`HoldRightStack`) ; un nom vide la range (`EquipStack`). Pas de mode de combat transmis : la
+posture est dans le nom des animations rejouées. L'équipement et l'armure viendront avec la
+story 3.2b.
+
+Prérequis : `role = host`, `probe = 0`, overlay Steam désactivé ; `log_level = debug` pour voir
+aussi les lectures de l'arme du héros (`[sync] arme du héros : …`). Au démarrage, le log doit
+contenir `[hooks] inventaire de session résolu (arme de l'avatar)` ; sinon la cause est nommée
+(`symbole d'inventaire introuvable : …`) et la session reste inactive.
+
+1. **Avatar armé dès l'apparition** : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 60s
+   --weapon It_1H_Sword`. Attendu : l'avatar apparaît l'épée en main. Log :
+   `[sync] Weapon reçu : avatar 2 (invité), « It_1H_Sword » …`, puis
+   `[sync] arme : avatar 2 tient « It_1H_Sword » (pile N créée, HoldRightStack → true)`.
+2. **Arme de l'hôte** (même commande) : sortir son arme, puis la ranger. Attendu côté faux
+   invité : `<- Weapon netid=1 nom="It_…"` puis `<- Weapon netid=1 nom=""` ; côté hôte,
+   `[sync] Weapon envoyé : NetId 1 (hôte), « It_… »` puis `…, arme rangée`.
+3. **Attaques arme en main** : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s --echo`.
+   Le faux invité renvoie aussi ton arme : sortir l'arme, frapper, parer, ranger, changer d'arme.
+   Attendu : l'avatar sort et range l'arme avec toi (dans la seconde) et ses attaques se font
+   arme en main ; une arme déjà vue est reprise (`pile N trouvée`), jamais recréée.
+4. **Nom lu = nom accepté** : avec l'écho (étape 3), sortir une vraie arme (épée, hache, bâton…).
+   Vérifier que le faux invité journalise `<- Weapon netid=1 nom="…"` avec ce nom, que l'hôte
+   l'applique ensuite à l'avatar (`[sync] arme : avatar 2 tient « … »`) et que le log de l'hôte ne
+   contient **aucune** ligne `template « … » inconnu du jeu` pour ce nom : le nom lu par
+   `Entity::GetName` sur l'objet en main doit être accepté par `Template(const char*)`. Répéter avec
+   2 ou 3 armes différentes.
+5. **Nom inconnu** : `--weapon It_Inexistant`. Attendu : une seule ligne
+   `[sync] arme : avatar 2 : template « It_Inexistant » inconnu du jeu, avatar inchangé`.
+6. Rapporter les lignes `[sync] arme …`, `[sync] Weapon …` et le côté faux invité (`<- Weapon`).
 
 ### Fin de session en jeu (story 1.5, une machine)
 

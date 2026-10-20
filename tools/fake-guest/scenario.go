@@ -14,6 +14,8 @@ package main
 //	param <instant s> <type> <poids|vitesse|fondu|arret> <valeur> [durée s]
 //	                                         (fondu, arret : valeur 0 ou 1)
 //	                                         MotionParam à cet instant (story 2.4b)
+//	weapon [instant s] <nom|->               Weapon à cet instant (story 3.2), « - » = arme rangée ;
+//	                                         sans instant : 0
 //	# commentaire (ligne entière)
 //
 // Axes : avant = (sin lacet, 0, cos lacet), droite = (cos lacet, 0, −sin lacet), comme la
@@ -59,6 +61,7 @@ type event struct {
 	name   string
 	motion protocol.Motion       // Kind, Flags et scalaires ; NetId, AniId et Ms posés à l'envoi
 	param  *protocol.MotionParam // directive param : Kind, Param, Value, Time ; NetId et Ms à l'envoi
+	weapon *string               // directive weapon : nom de l'arme, vide = rangée
 }
 
 func loadScenario(path string) (*scenario, error) {
@@ -79,7 +82,7 @@ func parseScenario(r io.Reader) (*scenario, error) {
 			continue
 		}
 		f := strings.Fields(line)
-		if f[0] == "anim" || f[0] == "mort" || f[0] == "param" {
+		if f[0] == "anim" || f[0] == "mort" || f[0] == "param" || f[0] == "weapon" {
 			ev, err := parseEvent(f)
 			if err != nil {
 				return nil, fmt.Errorf("ligne %d : %v", n, err)
@@ -131,6 +134,27 @@ func parseEvent(f []string) (event, error) {
 			return 0, fmt.Errorf("%q n'est pas un nombre", s)
 		}
 		return v, nil
+	}
+	if f[0] == "weapon" {
+		if len(f) != 2 && len(f) != 3 {
+			return event{}, fmt.Errorf("« weapon [instant s] <nom|-> » attendu")
+		}
+		at := 0.0
+		if len(f) == 3 {
+			v, err := num(f[1])
+			if err != nil || v < 0 {
+				return event{}, fmt.Errorf("instant %q invalide", f[1])
+			}
+			at = v
+		}
+		name := f[len(f)-1]
+		if name == "-" {
+			name = ""
+		}
+		if len(name) > protocol.MaxWeaponName {
+			return event{}, fmt.Errorf("nom d'arme de plus de 255 octets")
+		}
+		return event{at: at * 1000, weapon: &name}, nil
 	}
 	if len(f) < 2 {
 		return event{}, fmt.Errorf("instant manquant")

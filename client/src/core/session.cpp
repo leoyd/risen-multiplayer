@@ -112,6 +112,9 @@ void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t loc
     }
     transition(State::Ended, reason + " ; retour au solo", out, level);
     remove_avatar("fin de session", out);  // AD-11 : la transition unique vers Ended retire l'avatar
+    pending_weapons_.clear();              // story 3.2 : rien ne survit à la session
+    weapon_sent_valid_ = false;
+    weapon_sent_.clear();
     linger_until_ = now + kLingerMs;  // le KCP reste ouvert pour laisser partir le SessionEnd
     wait_new_world_ = !rearm_now;
     track_world(world_, false);  // fin de monde : le monde a déjà changé
@@ -171,6 +174,13 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
     Output out;
     const bool revived = world_.dead && !world.dead;  // world_ = monde du tick précédent
     world_ = world;
+    // Arme du héros local : retenue dans tous les états (envoyée à l'entrée en session).
+    for (const Input& in : inputs) {
+        if (const auto* lw = std::get_if<LocalWeapon>(&in)) {
+            local_weapon_known_ = true;
+            local_weapon_ = lw->name;
+        }
+    }
     if (state_ == State::Ended) {
         track_world(world, revived);
         if (now < linger_until_) return out;  // maintien : entrées et monde sans objet
@@ -206,6 +216,8 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_snapshot(now, *sn, out);
         } else if (const auto* lm = std::get_if<LocalMotion>(&in)) {
             on_local_motion(now, *lm, out);
+        } else if (const auto* lw = std::get_if<LocalWeapon>(&in)) {
+            on_local_weapon(*lw, out);
         } else {
             on_local_param(now, std::get<LocalParam>(in), out);
         }
@@ -482,6 +494,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
                                               an->name + " »"});
         return;
     }
+    if (const auto* wp = std::get_if<proto::Weapon>(&decoded.message)) {
+        on_peer_weapon(*wp, out);
+        return;
+    }
     if (const auto* de = std::get_if<proto::Death>(&decoded.message)) {
         if (de->net_id != peer_net_id() || !avatar_present_ || avatar_dead_ || death_pending_) {
             out.logs.push_back({Level::Warn, "[sync] Death reçu (NetId " + net_id_text(de->net_id) + ") : ignoré (" +
@@ -565,6 +581,8 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     warned_ani_ids_.clear();
     clear_peer_avatar_state();
     anim_ = MotionCounters{};
+    weapon_sent_valid_ = false;
+    weapon_sent_.clear();
     proto::Spawn spawn;
     spawn.net_id = own_net_id();
     spawn.x = own.x;
@@ -577,6 +595,8 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
         out.logs.push_back({Level::Info, "[sync] Spawn envoyé : NetId " + net_id_text(spawn.net_id) + ", " +
                                              pose_text(own.x, own.y, own.z, own.yaw)});
     }
+    // Arme déjà connue (sortie ou rangée) : après le Spawn, pour que l'avatar apparaisse armé.
+    if (local_weapon_known_) send_weapon(out);
 }
 
 void Session::on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& /*out*/) {
@@ -622,6 +642,7 @@ void Session::send_snapshot(std::uint64_t now, const World& world, Output& out) 
 
 void Session::clear_peer_avatar_state() {
     pending_.clear();
+    pending_weapons_.clear();
     avatar_dead_ = false;
     death_pending_ = false;
     death_at_ = 0.0;
@@ -691,6 +712,60 @@ void Session::send_death(const World& world, Output& out) {
 
 bool Session::accepts_peer_animation(std::uint32_t net_id) const {
     return net_id == peer_net_id() && avatar_present_ && !avatar_dead_;
+}
+
+static std::string weapon_text(const std::string& name) {
+    return name.empty() ? std::string("arme rangée") : "« " + name + " »";
+}
+
+void Session::on_local_weapon(const LocalWeapon& in, Output& out) {
+    if (state_ != State::InSession) return;  // retenue en tête de tick, envoyée à l'entrée en session
+    (void)in;  // déjà retenue dans local_weapon_ (balayage en tête de tick) : c'est elle qui part
+    if (weapon_sent_valid_ && weapon_sent_ == local_weapon_) return;
+    send_weapon(out);
+}
+
+void Session::send_weapon(Output& out) {
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::Weapon{own_net_id(), local_weapon_}, bytes)) {
+        // Nom de plus de 255 octets : impossible en pratique (Entity::GetName est borné à 255).
+        out.logs.push_back({Level::Warn, "[sync] Weapon non encodable (nom de " + std::to_string(local_weapon_.size()) +
+                                             " octets) : non envoyé"});
+        weapon_sent_valid_ = true;  // une ligne par nom
+        weapon_sent_ = local_weapon_;
+        return;
+    }
+    weapon_sent_valid_ = true;
+    weapon_sent_ = local_weapon_;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    out.logs.push_back({Level::Info, "[sync] Weapon envoyé : NetId " + net_id_text(own_net_id()) + ", " +
+                                         weapon_text(local_weapon_)});
+}
+
+void Session::on_peer_weapon(const proto::Weapon& w, Output& out) {
+    if (w.net_id != peer_net_id() || !avatar_present_ || avatar_dead_ || death_pending_) {
+        out.logs.push_back({Level::Debug, "[sync] Weapon reçu (NetId " + net_id_text(w.net_id) + ", " +
+                                              weapon_text(w.name) + ") : ignoré (" +
+                                              (w.net_id != peer_net_id() ? "pas l'avatar du pair"
+                                               : !avatar_present_       ? "pas d'avatar"
+                                               : avatar_dead_           ? "avatar mort"
+                                                                        : "mort de l'avatar en attente") +
+                                              ")"});
+        return;
+    }
+    if (pending_weapons_.size() >= kMaxPendingWeapons) pending_weapons_.pop_front();
+    // Comme Death : appliqué quand le temps affiché atteint le dernier snapshot reçu.
+    pending_weapons_.push_back({interp_.empty() ? 0.0 : interp_.last_time(), w.name});
+    out.logs.push_back({Level::Info, "[sync] Weapon reçu : avatar " + net_id_text(w.net_id) + ", " +
+                                         weapon_text(w.name) + " à l'instant d'affichage"});
+}
+
+void Session::apply_due_weapons(std::uint64_t now, Output& out) {
+    const double shown = clock_.ready() ? clock_.remote_ms(now) - core::kInterpolationDelayMs : 1e300;
+    while (!pending_weapons_.empty() && (!clock_.ready() || shown >= pending_weapons_.front().at)) {
+        out.commands.push_back(AvatarWeapon{peer_net_id(), std::move(pending_weapons_.front().name)});
+        pending_weapons_.pop_front();
+    }
 }
 
 void Session::on_local_param(std::uint64_t now, const LocalParam& in, Output& out) {
@@ -807,11 +882,13 @@ void Session::play_due_motions(std::uint64_t now, Output& out) {
 
 void Session::place_avatar(std::uint64_t now, Output& out) {
     if (!avatar_present_ || avatar_dead_) return;  // un avatar mort reste en ragdoll, sans pose imposée
+    apply_due_weapons(now, out);  // avant les gestes du même instant : attaques rejouées arme en main
     play_due_motions(now, out);
     if (death_pending_ && (!clock_.ready() || clock_.remote_ms(now) - core::kInterpolationDelayMs >= death_at_)) {
         death_pending_ = false;
         avatar_dead_ = true;
         pending_.clear();
+        pending_weapons_.clear();
         out.commands.push_back(AvatarDeath{peer_net_id()});
         return;
     }

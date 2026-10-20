@@ -129,7 +129,7 @@ Bytes enc(const ReliableMessage& m) {
 const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
 const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin", "spawn.bin",
                                       "despawn.bin",   "aniname.bin",     "death.bin",
-                                      "motion_param.bin"};
+                                      "motion_param.bin", "weapon.bin", "weapon_sheathed.bin"};
 
 }  // namespace
 
@@ -344,14 +344,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v6 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v7 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 6);
+    CHECK_EQ(version, 7);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 6);
+    CHECK_EQ(version, 7);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -362,12 +362,12 @@ TEST("protocole : peek_hello_version sur v6 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 6") {
+TEST("protocole : l'encodeur refuse une version autre que 7") {
     Hello h = sample_hello();
-    h.protocol_version = 5;
+    h.protocol_version = 6;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 7;
+    h.protocol_version = 8;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -493,7 +493,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 6);
+    CHECK_EQ(kProtocolVersion, 7);
     CHECK_EQ(static_cast<int>(Channel::Reliable), 0);
     CHECK_EQ(static_cast<int>(Channel::Snapshot), 1);
     CHECK_EQ(static_cast<int>(Channel::Control), 2);
@@ -508,6 +508,7 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::AniName), 18);
     CHECK_EQ(static_cast<int>(MsgType::Death), 24);
     CHECK_EQ(static_cast<int>(MsgType::MotionParam), 26);
+    CHECK_EQ(static_cast<int>(MsgType::Weapon), 27);
     CHECK_EQ(kHostNetId, 1u);
     CHECK_EQ(kGuestNetId, 2u);
     CHECK_EQ(static_cast<int>(RejectReason::Protocol), 1);
@@ -694,4 +695,40 @@ TEST("protocole : MotionParam — domaine : [0, 100], durée [0, 60], vitesse sa
     CHECK(bad_decoded(2.0f, 0.2f, 3, 0));    // arrêt : valeur 0 ou 1
     CHECK(bad_decoded(1.0f, 0.2f, 4, 0));    // nature inconnue
     CHECK(decode_control(Bytes{2, 26}.data(), 2).error == DecodeError::UnknownType);
+}
+
+// --- Weapon (story 3.2) ----------------------------------------------------------------
+
+TEST("protocole : vecteurs weapon.bin et weapon_sheathed.bin") {
+    const Bytes b = load_vector("weapon.bin");
+    const auto d = dr(b);
+    const Weapon* got = std::get_if<Weapon>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->net_id == 2 && got->name == "It_1H_Sword");
+    CHECK(enc(Weapon{2, "It_1H_Sword"}) == b);
+    if (got != nullptr) CHECK(enc(*got) == b);
+    const Bytes e = load_vector("weapon_sheathed.bin");
+    const auto de = dr(e);
+    const Weapon* ge = std::get_if<Weapon>(&de.message);
+    CHECK(de.ok() && ge != nullptr && ge->net_id == 2 && ge->name.empty());
+    CHECK(enc(Weapon{2, ""}) == e);
+}
+
+TEST("protocole : Weapon — 255 octets acceptés, 256 refusés à l'encodage ; tronqué au décodage") {
+    Weapon m;
+    m.net_id = 0xFFFFFFFFu;
+    m.name.assign(kMaxWeaponName, 'w');
+    const Bytes b = enc(m);
+    CHECK_EQ(b.size(), std::size_t{261});
+    const auto d = dr(b);
+    const Weapon* got = std::get_if<Weapon>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->net_id == m.net_id && got->name == m.name);
+    Bytes out = {0xAA};
+    m.name.assign(kMaxWeaponName + 1, 'w');
+    CHECK(!encode_reliable(m, out));
+    CHECK(out == Bytes{0xAA});
+    // Longueur annoncée plus grande que la suite : Truncated.
+    Bytes cut = load_vector("weapon.bin");
+    cut[0x05] = 0xFF;
+    CHECK(dr(cut).error == DecodeError::Truncated);
+    CHECK(decode_control(Bytes{2, 27}.data(), 2).error == DecodeError::UnknownType);  // pas en contrôle
 }

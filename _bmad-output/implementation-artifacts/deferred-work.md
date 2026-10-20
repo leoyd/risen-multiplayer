@@ -132,3 +132,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-1-avatar-solide.md`
   summary: Couture de test pour les appels ABI de l'avatar (placement cinématique, release_body, make_solid) : aujourd'hui vérifiés seulement en jeu.
   evidence: Revue de la story 3.1 (verification-gap) : aucun banc n'appelle OnProcess.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-equipement-arme.md`
+  summary: Story 3.2b — équipement des personnages. Format de `guest_equipment` (noms de templates séparés par des virgules, `[A-Za-z0-9_]`, 1 à 64 octets par nom, 16 noms, 255 octets en tout ; validé au chargement avec le nom du champ au log) ; héros de l'invité équipé à l'entrée en session (décision de l'utilisateur, 2026-10-20 : objet créé seulement s'il manque, `FindStackIndex` puis `CreateItems`, puis `EquipStack`) ; avatar de l'invité équipé chez l'hôte (`Hello.equipment`) ; armure portée par l'hôte transmise à son avatar chez l'invité (décision de l'utilisateur, 2026-10-20 ; emplacements `gEEquipSlot` à rétro-concevoir) ; le faux invité envoie un équipement.
+  evidence: Story 3.2 découpée par l'utilisateur (spec d'environ 2 500 tokens) : l'arme de l'avatar (message `Weapon`, protocole v7) est livrée seule d'abord. Symboles vérifiés dans Script.dll : `??0Template@@QEAA@PEBD@Z`, `?IsValid@Template@@QEBA_NXZ`, `?FindStackIndex@PSInventory@@QEBAHAEBVTemplate@@H_N@Z`, `?AssureItems@PSInventory@@QEAAHAEBVTemplate@@HW4gEStackType@@@Z`.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-equipement-arme.md`
+  summary: Les armes créées dans l'inventaire de l'avatar (CreateItems, une par nom) pourraient être pillées par l'hôte sur l'avatar mort de l'invité (duplication d'objets).
+  evidence: Revue de la story 3.2, non vérifié (gravité medium si vrai) : tester en jeu si l'hôte peut fouiller l'avatar en ragdoll ; sinon, retirer les objets au Death/Despawn.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-equipement-arme.md`
+  summary: Main gauche (bouclier, torche) non répliquée sur l'avatar : seul GetRightHoldStack est lu.
+  evidence: Revue de la story 3.2 ; à reprendre avec la story 3.2b (équipement), via HoldLeftStack / HoldStacks.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-equipement-arme.md`
+  summary: Colle sync/game de l'arme (avatar::set_weapon, avatar::local_weapon, pick() de combat.cpp, branche AvatarWeapon d'execute) jamais exécutée par un test automatique.
+  evidence: Revue de la story 3.2 (verification-gap) : le build Linux n'inclut ni sync/avatar.cpp ni game/combat.cpp, et le banc Wine n'appelle pas OnProcess ; même couture game:: simulée que celle reportée en 3.1.

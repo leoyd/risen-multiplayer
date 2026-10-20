@@ -37,6 +37,11 @@ struct Entry {
     bool move_error_logged = false;
     bool dead = false;  // en ragdoll (Death) : plus de pose ni d'animation imposées
     bool param_error_logged = false;
+    // Story 3.2 : pile de chaque arme créée dans son inventaire (une fois par nom), noms
+    // inconnus du jeu déjà signalés. Vidés avec l'entrée, au retrait.
+    std::unordered_map<std::string, int> weapon_stacks;
+    std::unordered_set<std::string> weapon_failed;
+    bool weapon_fallback_logged = false;  // repli sur une pile mémorisée (FindStackIndex en SEH)
 };
 std::vector<Entry> g_table;
 
@@ -303,6 +308,104 @@ void die(std::uint32_t net_id) {
         }
         return;
     }
+}
+
+void set_weapon(std::uint32_t net_id, const std::string& name) {
+    for (Entry& e : g_table) {
+        if (e.net_id != net_id) continue;
+        const std::string who = "[sync] arme : avatar " + std::to_string(net_id);
+        if (e.dead) {
+            log::debug(who + " mort : Weapon ignoré");
+            return;
+        }
+        if (name.empty()) {
+            int held = -1;
+            if (!game::get_right_hold_stack(e.entity, held)) {
+                log::error(who + " : GetRightHoldStack a levé une exception (SEH)");
+                return;
+            }
+            if (held < 0) {
+                log::debug(who + " : main déjà vide, rien à ranger");
+                return;
+            }
+            bool ok = false;
+            if (!game::equip_stack(e.entity, held, ok)) {
+                log::error(who + " : EquipStack a levé une exception (SEH)");
+            } else {
+                log::info(who + " range son arme (pile " + std::to_string(held) + ", EquipStack → " +
+                          (ok ? "true" : "false") + ")");
+            }
+            return;
+        }
+        game::Template tmpl;
+        bool valid = false;
+        if (!game::template_from_name(name.c_str(), tmpl, valid)) {
+            if (e.weapon_failed.insert(name).second) {
+                log::error(who + " : Template(« " + name + " ») a levé une exception (SEH)");
+            }
+            return;
+        }
+        if (!valid) {
+            game::destroy_template(tmpl);
+            if (e.weapon_failed.insert(name).second) {
+                log::warn(who + " : template « " + name + " » inconnu du jeu, avatar inchangé");
+            }
+            return;
+        }
+        int stack = -1;
+        const char* how = "trouvée";
+        const bool found = game::find_stack_index(e.entity, tmpl, stack);
+        auto known = e.weapon_stacks.find(name);
+        if (found && stack < 0 && known != e.weapon_stacks.end()) {
+            e.weapon_stacks.erase(known);  // objet sorti de l'inventaire : pile mémorisée périmée
+            known = e.weapon_stacks.end();
+        }
+        if (!found || stack < 0) {
+            if (!found && known != e.weapon_stacks.end()) {
+                stack = known->second;  // repli : FindStackIndex a levé une exception (SEH)
+                how = "mémorisée";
+                if (!e.weapon_fallback_logged) {
+                    e.weapon_fallback_logged = true;
+                    log::warn(who + " : FindStackIndex a levé une exception (SEH) : pile mémorisée reprise");
+                }
+            } else {
+                stack = -1;
+                if (!game::create_items(e.entity, tmpl, 1, 0, stack) || stack < 0) {
+                    game::destroy_template(tmpl);
+                    if (e.weapon_failed.insert(name).second) {
+                        log::error(who + " : CreateItems(« " + name + " ») a échoué (pile " + std::to_string(stack) +
+                                   ")");
+                    }
+                    return;
+                }
+                how = "créée";
+            }
+        }
+        game::destroy_template(tmpl);
+        e.weapon_stacks[name] = stack;
+        bool ok = false;
+        if (!game::hold_right_stack(e.entity, stack, ok)) {
+            log::error(who + " : HoldRightStack a levé une exception (SEH)");
+            return;
+        }
+        log::info(who + " tient « " + name + " » (pile " + std::to_string(stack) + " " + how + ", HoldRightStack → " +
+                  (ok ? "true" : "false") + ")");
+        return;
+    }
+    log::debug("[sync] arme : avatar " + std::to_string(net_id) + " absent : Weapon ignoré");
+}
+
+bool local_weapon(std::string& name) {
+    name.clear();
+    game::Entity player;
+    if (!game::get_player(player) || player.ptr == nullptr) return false;
+    int held = -1;
+    if (!game::get_right_hold_stack(player, held)) return false;
+    if (held < 0) return true;  // arme rangée (ou pas d'inventaire)
+    game::Entity item;
+    if (!game::get_right_hold_item(player, item)) return false;
+    if (item.ptr == nullptr) return true;
+    return game::get_entity_name(item, name);
 }
 
 bool present() { return !g_table.empty(); }

@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 6 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 7 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 6;
+inline constexpr std::uint16_t kProtocolVersion = 7;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -51,6 +51,7 @@ enum class MsgType : std::uint8_t {
     Despawn = 21,  // v3 (story 2.2)
     Death = 24,    // v5 (story 2.4)
     MotionParam = 26,  // v6 (story 2.4b)
+    Weapon = 27,       // v7 (story 3.2)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -189,8 +190,17 @@ struct MotionParam {
     float time = 0.0f;      // durée du fondu (TargetWeight), 0 pour PlaySpeed
 };
 
+// Arme en main d'une entité dont l'émetteur a l'autorité (story 3.2) : nom de l'objet tenu
+// (Entity::GetName de PSInventory::GetRightHoldItem), vide si l'arme est rangée.
+inline constexpr std::size_t kMaxWeaponName = 255;
+struct Weapon {
+    std::uint32_t net_id = 0;
+    std::string name;  // 0 à 255 octets
+};
+
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
-using ReliableMessage = std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam>;
+using ReliableMessage =
+    std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,

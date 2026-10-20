@@ -38,6 +38,10 @@ using SetDamageAmountFn = void (*)(void* damage_ps, const long* amount);
 // Script.dll : GUI2::PrintGameLogF(type, format, ...), `this` = la donnée exportée `gui2`, dont
 // l'octet 0 active le journal à l'écran (sinon l'appel ne fait rien).
 using PrintGameLogFFn = void (*)(void* gui, int type, const char* format, ...);
+// Script.dll : Template (8 octets, eCTemplateEntityProxy) et recherche de pile (story 3.2).
+using TemplateCtorFn = void* (*)(Template* self, const char* name);
+using TemplateIsValidFn = bool (*)(const Template* self);
+using FindStackIndexFn = int (*)(const Entity* self, const Template* tmpl, int after, bool unslotted_only);
 // SharedBase.dll
 using BCStringCtorFn = void* (*)(void* self, const char* text);
 using BCStringDtorFn = void (*)(void* self);
@@ -76,6 +80,9 @@ constexpr const char* kSetDamageAmount = "?SetDamageAmount@gCDamage_PS@@QEAAXAEB
 constexpr const char* kRoutineOnProcess = "?OnProcess@gCScriptRoutine_PS@@UEAAXXZ";
 constexpr const char* kBCStringCtor = "??0bCString@@QEAA@PEBD@Z";
 constexpr const char* kBCStringDtor = "??1bCString@@QEAA@XZ";
+constexpr const char* kTemplateCtor = "??0Template@@QEAA@PEBD@Z";
+constexpr const char* kTemplateIsValid = "?IsValid@Template@@QEBA_NXZ";
+constexpr const char* kFindStackIndex = "?FindStackIndex@PSInventory@@QEBAHAEBVTemplate@@H_N@Z";
 constexpr const char* kGui2 = "gui2";
 constexpr const char* kPrintGameLogF = "?PrintGameLogF@GUI2@@QEAAXW4gELogMessageType@@PEBDZZ";
 // Décision « à terre ou mort » sur un coup (self = ce qui frappe, other = la victime ; rend 0
@@ -131,6 +138,28 @@ struct CombatAbi {
 
 CombatAbi g_abi;
 bool g_resolved = false;
+
+// Inventaire de la session (story 3.2) : sous-ensemble résolu à part, sans la sonde.
+struct InventoryAbi {
+    IntGetterFn get_right_hold_stack = nullptr;
+    GetEntityRetFn get_right_hold_item = nullptr;
+    CreateItemsFn create_items = nullptr;
+    BoolIntFn hold_right_stack = nullptr;
+    BoolIntFn equip_stack = nullptr;
+    GetNameFn get_name = nullptr;
+    BCStringDtorFn bcstring_dtor = nullptr;
+    TemplateCtorFn template_ctor = nullptr;
+    TemplateIsValidFn template_is_valid = nullptr;
+    FindStackIndexFn find_stack_index = nullptr;
+};
+InventoryAbi g_inv;
+bool g_inv_resolved = false;
+
+// Pointeur d'inventaire : celui de resolve_inventory, sinon celui de resolve_combat, sinon nul.
+template <typename Fn>
+Fn pick(Fn inventory, Fn combat) {
+    return g_inv_resolved ? inventory : (g_resolved ? combat : nullptr);
+}
 ScriptFn g_kill = nullptr;
 ScriptFn g_defeat = nullptr;
 SpuGetEntityFn g_spu_get_other = nullptr;
@@ -201,6 +230,30 @@ bool resolve_combat(const char*& missing) {
     return true;
 }
 
+bool resolve_inventory(const char*& missing) {
+    HMODULE script = GetModuleHandleW(L"Script.dll");
+    HMODULE shared_base = GetModuleHandleW(L"SharedBase.dll");
+    if (script == nullptr || shared_base == nullptr) {
+        missing = script == nullptr ? "Script.dll" : "SharedBase.dll";
+        return false;
+    }
+    InventoryAbi a;
+    const bool ok = lookup(script, kGetRightHoldStack, a.get_right_hold_stack, missing) &&
+                    lookup(script, kGetRightHoldItem, a.get_right_hold_item, missing) &&
+                    lookup(script, kCreateItems, a.create_items, missing) &&
+                    lookup(script, kHoldRightStack, a.hold_right_stack, missing) &&
+                    lookup(script, kEquipStack, a.equip_stack, missing) &&
+                    lookup(script, kGetName, a.get_name, missing) &&
+                    lookup(script, kTemplateCtor, a.template_ctor, missing) &&
+                    lookup(script, kTemplateIsValid, a.template_is_valid, missing) &&
+                    lookup(script, kFindStackIndex, a.find_stack_index, missing) &&
+                    lookup(shared_base, kBCStringDtor, a.bcstring_dtor, missing);
+    if (!ok) return false;
+    g_inv = a;
+    g_inv_resolved = true;
+    return true;
+}
+
 bool resolve_script_game(const char*& missing) {
     // Jamais chargée par nous : son DllMain et son ScriptInit restent à l'initiative du jeu.
     // [ASSUMPTION] le jeu la charge avant Script_Multiplayer (ordre alphabétique ?) : le log
@@ -244,9 +297,10 @@ void* down_or_dead_address(int which) {
 
 namespace {
 
+// Les pointeurs sont nuls tant que rien n'est résolu : le test de `fn` suffit.
 bool call_int(IntGetterFn fn, const Entity& e, int& out) {
     out = 0;
-    if (!g_resolved || fn == nullptr || e.ptr == nullptr) return false;
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
         out = fn(&e);
         return true;
@@ -258,7 +312,7 @@ bool call_int(IntGetterFn fn, const Entity& e, int& out) {
 
 bool call_bool_getter(BoolGetterFn fn, const Entity& e, bool& out) {
     out = false;
-    if (!g_resolved || e.ptr == nullptr) return false;
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
         out = fn(&e);
         return true;
@@ -269,7 +323,7 @@ bool call_bool_getter(BoolGetterFn fn, const Entity& e, bool& out) {
 }
 
 bool call_void_int(VoidIntFn fn, const Entity& e, int value) {
-    if (!g_resolved || fn == nullptr || e.ptr == nullptr) return false;
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
         fn(&e, value);
         return true;
@@ -279,7 +333,7 @@ bool call_void_int(VoidIntFn fn, const Entity& e, int value) {
 }
 
 bool call_void_bool(VoidBoolFn fn, const Entity& e, bool value) {
-    if (!g_resolved || fn == nullptr || e.ptr == nullptr) return false;
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
         fn(&e, value);
         return true;
@@ -290,7 +344,7 @@ bool call_void_bool(VoidBoolFn fn, const Entity& e, bool value) {
 
 bool call_bool_int(BoolIntFn fn, const Entity& e, int value, bool& out) {
     out = false;
-    if (!g_resolved || e.ptr == nullptr) return false;
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
         out = fn(&e, value);
         return true;
@@ -319,18 +373,19 @@ __declspec(noinline) std::size_t raw_copy_cstr(const char* src, char* dst, std::
 
 __declspec(noinline) void raw_copy(void* dst, const void* src, std::size_t n) { std::memcpy(dst, src, n); }
 
-bool name_into(const Entity& e, char* buf, std::size_t cap, std::size_t& len) {
+bool name_into(GetNameFn get_name, BCStringDtorFn dtor, const Entity& e, char* buf, std::size_t cap,
+               std::size_t& len) {
     void* text = nullptr;  // bCString retourné par valeur (sret), détruit ici
     bool ok = false;
     __try {
-        g_abi.get_name(&e, &text);
+        get_name(&e, &text);
         len = raw_copy_cstr(static_cast<const char*>(text), buf, cap);
         ok = true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         ok = false;
     }
     __try {
-        if (text != nullptr) g_abi.bcstring_dtor(&text);
+        if (text != nullptr) dtor(&text);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
     return ok;
@@ -340,13 +395,16 @@ bool name_into(const Entity& e, char* buf, std::size_t cap, std::size_t& len) {
 
 // --- Q5 ------------------------------------------------------------------------------------
 
-bool get_right_hold_stack(const Entity& e, int& out) { return call_int(g_abi.get_right_hold_stack, e, out); }
+bool get_right_hold_stack(const Entity& e, int& out) {
+    return call_int(pick(g_inv.get_right_hold_stack, g_abi.get_right_hold_stack), e, out);
+}
 
 bool get_right_hold_item(const Entity& e, Entity& out) {
     out.ptr = nullptr;
-    if (!g_resolved || e.ptr == nullptr) return false;
+    const GetEntityRetFn fn = pick(g_inv.get_right_hold_item, g_abi.get_right_hold_item);
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
-        g_abi.get_right_hold_item(&e, &out);
+        fn(&e, &out);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out.ptr = nullptr;
@@ -368,9 +426,10 @@ bool get_inventory_template(const Entity& e, int stack, Template& out) {
 
 bool create_items(const Entity& e, const Template& t, int count, int stack_type, int& out) {
     out = -1;
-    if (!g_resolved || e.ptr == nullptr) return false;
+    const CreateItemsFn fn = pick(g_inv.create_items, g_abi.create_items);
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
-        out = g_abi.create_items(&e, &t, count, stack_type);  // Template par référence : reste à nous
+        out = fn(&e, &t, count, stack_type);  // Template par référence : reste à nous
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = -1;
@@ -379,21 +438,55 @@ bool create_items(const Entity& e, const Template& t, int count, int stack_type,
 }
 
 bool hold_right_stack(const Entity& e, int stack, bool& out) {
-    return call_bool_int(g_abi.hold_right_stack, e, stack, out);
+    return call_bool_int(pick(g_inv.hold_right_stack, g_abi.hold_right_stack), e, stack, out);
 }
 
-bool equip_stack(const Entity& e, int stack, bool& out) { return call_bool_int(g_abi.equip_stack, e, stack, out); }
+bool equip_stack(const Entity& e, int stack, bool& out) {
+    return call_bool_int(pick(g_inv.equip_stack, g_abi.equip_stack), e, stack, out);
+}
 
 bool get_combat_mode(const Entity& e, int& out) { return call_int(g_abi.get_combat_mode, e, out); }
 
 bool get_entity_name(const Entity& e, std::string& out) {
     out.clear();
-    if (!g_resolved || e.ptr == nullptr) return false;
+    const GetNameFn get_name = pick(g_inv.get_name, g_abi.get_name);
+    const BCStringDtorFn dtor = pick(g_inv.bcstring_dtor, g_abi.bcstring_dtor);
+    if (get_name == nullptr || dtor == nullptr || e.ptr == nullptr) return false;
     char buf[255];
     std::size_t len = 0;
-    if (!name_into(e, buf, sizeof buf, len)) return false;
+    if (!name_into(get_name, dtor, e, buf, sizeof buf, len)) return false;
     out.assign(buf, len);
     return true;
+}
+
+bool template_from_name(const char* name, Template& out, bool& valid) {
+    out.proxy = nullptr;
+    valid = false;
+    if (!g_inv_resolved || name == nullptr) return false;
+    __try {
+        g_inv.template_ctor(&out, name);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out.proxy = nullptr;  // construction inachevée : rien à détruire de fiable
+        return false;
+    }
+    __try {
+        valid = g_inv.template_is_valid(&out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        valid = false;
+    }
+    return true;
+}
+
+bool find_stack_index(const Entity& e, const Template& t, int& out) {
+    out = -1;
+    if (!g_inv_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_inv.find_stack_index(&e, &t, -1, false);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = -1;
+        return false;
+    }
 }
 
 // --- Q6 ------------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 6, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 7, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 6
+	ProtocolVersion   = 7
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -50,6 +50,7 @@ const (
 	TypeMotion      MsgType = 19 // v2
 	TypeDeath       MsgType = 24 // v5
 	TypeMotionParam MsgType = 26 // v6
+	TypeWeapon      MsgType = 27 // v7
 )
 
 // NetId (AD-6) et type de Spawn.
@@ -177,6 +178,14 @@ type MotionParam struct {
 	Time  float32
 }
 
+// Weapon : arme en main d'une entité (v7), nom de l'objet tenu (0 à 255 octets), vide si rangée.
+type Weapon struct {
+	NetId uint32
+	Name  string
+}
+
+const MaxWeaponName = 255
+
 const (
 	ParamTargetWeight = 0 // SetTargetWeight(type, valeur, durée)
 	ParamPlaySpeed    = 1 // SetPlaySpeed(type, valeur), durée 0
@@ -234,6 +243,7 @@ func (AniName) Type() MsgType     { return TypeAniName }
 func (Motion) Type() MsgType      { return TypeMotion }
 func (Death) Type() MsgType       { return TypeDeath }
 func (MotionParam) Type() MsgType { return TypeMotionParam }
+func (Weapon) Type() MsgType      { return TypeWeapon }
 
 // --- Encodage ------------------------------------------------------------------------
 
@@ -314,6 +324,9 @@ func (w *writer) message(m Message) {
 		w.u8(m.Param)
 		w.f32(m.Value)
 		w.f32(m.Time)
+	case Weapon:
+		w.u32(m.NetId)
+		w.str8(m.Name)
 	}
 }
 
@@ -338,7 +351,7 @@ func EncodeControl(m Message) ([]byte, error) {
 }
 
 // EncodeReliable rend le message [MsgType][charge] d'un message fiable (Heartbeat, SessionEnd,
-// Spawn, Despawn, AniName, Motion, Death, MotionParam), sans octet de canal.
+// Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon), sans octet de canal.
 func EncodeReliable(m Message) ([]byte, error) {
 	switch m := m.(type) {
 	case AniName:
@@ -351,6 +364,10 @@ func EncodeReliable(m Message) ([]byte, error) {
 		}
 	case MotionParam:
 		if !validMotionParam(m) {
+			return nil, ErrOutOfBounds
+		}
+	case Weapon:
+		if !inBounds(m.Name, 0, MaxWeaponName) {
 			return nil, ErrOutOfBounds
 		}
 	case Heartbeat, SessionEnd, Spawn, Despawn, Death:
@@ -554,6 +571,13 @@ func DecodeReliable(b []byte) (Message, error) {
 		return m, nil
 	case TypeDeath:
 		m := Death{NetId: r.u32()}
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case TypeWeapon:
+		m := Weapon{NetId: r.u32()}
+		m.Name = r.str8(0, MaxWeaponName)
 		if err := r.finish(); err != nil {
 			return nil, err
 		}

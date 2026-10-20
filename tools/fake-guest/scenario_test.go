@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -262,5 +263,60 @@ func TestScenarioParam(t *testing.T) {
 	rec := host.record()
 	if len(rec.params) < 2 || rec.params[0].NetId != protocol.GuestNetId || rec.params[0].Param != protocol.ParamTargetWeight {
 		t.Fatalf("MotionParam reçus : %+v", rec.params)
+	}
+}
+
+func TestScenarioWeapon(t *testing.T) {
+	sc, err := parseScenario(strings.NewReader("pause 1\nweapon It_1H_Sword\nweapon 0.3 -\nweapon 0.6 It_2H_Axe\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.events) != 3 || sc.events[0].weapon == nil || *sc.events[0].weapon != "It_1H_Sword" || sc.events[0].at != 0 ||
+		*sc.events[1].weapon != "" || sc.events[1].at != 300 || *sc.events[2].weapon != "It_2H_Axe" {
+		t.Fatalf("événements : %+v", sc.events)
+	}
+	for _, bad := range []string{"pause 1\nweapon\n", "pause 1\nweapon 0 a b\n", "pause 1\nweapon -1 X\n",
+		"pause 1\nweapon 2 X\n", "pause 1\nweapon 0 " + strings.Repeat("w", 256) + "\n"} {
+		if _, err := parseScenario(strings.NewReader(bad)); err == nil {
+			t.Errorf("%q accepté", bad)
+		}
+	}
+	host := startHost(t, defaultHost())
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 800 * time.Millisecond
+	cfg.Weapon = "It_1H_Sword"
+	cfg.Scenario, _ = parseScenario(strings.NewReader("pause 1\nweapon 0.3 -\nweapon 0.6 It_2H_Axe\n"))
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	rec := host.record()
+	want := []protocol.Weapon{{NetId: 2, Name: "It_1H_Sword"}, {NetId: 2, Name: ""}, {NetId: 2, Name: "It_2H_Axe"}}
+	if fmt.Sprint(rec.weapons) != fmt.Sprint(want) {
+		t.Fatalf("Weapon reçus par l'hôte : %+v, attendu %+v", rec.weapons, want)
+	}
+	if len(rec.order) < 2 || rec.order[0] != protocol.TypeSpawn || rec.order[1] != protocol.TypeWeapon {
+		t.Fatalf("Weapon pas juste après le Spawn : %v", rec.order)
+	}
+	expectLog(t, r, `-> Weapon netid=2 nom="It_1H_Sword"`, `-> Weapon netid=2 nom=""`)
+}
+
+func TestEchoWeapon(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.SendWeapon = "Host_Sword"
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 500 * time.Millisecond
+	cfg.Echo = true
+	cfg.Weapon = "It_1H_Sword"
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	expectLog(t, r, `<- Weapon netid=1 nom="Host_Sword"`)
+	if r.res.WeaponsRx != 1 {
+		t.Fatalf("Weapon reçus : %d", r.res.WeaponsRx)
+	}
+	rec := host.record()
+	want := []protocol.Weapon{{NetId: 2, Name: "It_1H_Sword"}, {NetId: 2, Name: "Host_Sword"}}
+	if fmt.Sprint(rec.weapons) != fmt.Sprint(want) {
+		t.Fatalf("Weapon renvoyés : %+v, attendu %+v", rec.weapons, want)
 	}
 }

@@ -44,6 +44,12 @@ void* g_local_player = nullptr;
 std::unordered_map<const void*, std::string> g_motion_names;
 sync::Capture g_captures[sync::kCaptureRing];
 
+// Arme du héros local (story 3.2) : dernier nom poussé à la session, oublié au changement de
+// héros (nouveau monde : il repart à la première lecture).
+bool g_weapon_known = false;
+std::string g_weapon;
+bool g_weapon_error_logged = false;
+
 std::uint64_t now_ms() {
     LARGE_INTEGER t{};
     QueryPerformanceCounter(&t);
@@ -175,6 +181,10 @@ void execute(cs::Output out) {
                 avatar::die(ad->net_id);
                 continue;
             }
+            if (const auto* aw = std::get_if<cs::AvatarWeapon>(&cmd)) {
+                avatar::set_weapon(aw->net_id, aw->name);
+                continue;
+            }
             if (g_transport == nullptr) continue;
             bool posted = true;
             if (auto* s = std::get_if<cs::Send>(&cmd)) {
@@ -221,6 +231,8 @@ void local_captures(const cs::World& world) {
         // des ressources de l'ancien monde, peut-être libérées.
         g_local_player = player;
         g_motion_names.clear();
+        g_weapon_known = false;
+        g_weapon_error_logged = false;
         filter.drain(g_captures, sync::kCaptureRing, dropped);
     }
     void* ps = nullptr;
@@ -231,6 +243,21 @@ void local_captures(const cs::World& world) {
     }
     filter.set_local(ps);
     avatar::track_local(ps);  // diagnostic de locomotion (story 2.4b)
+    // Arme en main (story 3.2), lue à chaque frame dans un monde chargé ; poussée au changement.
+    if (world.loaded()) {
+        std::string weapon;
+        if (!avatar::local_weapon(weapon)) {
+            if (!g_weapon_error_logged) {
+                g_weapon_error_logged = true;
+                log::error("[sync] arme du héros illisible (SEH) : dernier état gardé, pas de Weapon");
+            }
+        } else if (!g_weapon_known || weapon != g_weapon) {
+            g_weapon_known = true;
+            g_weapon = weapon;
+            log::debug("[sync] arme du héros : " + (weapon.empty() ? std::string("rangée") : "« " + weapon + " »"));
+            g_inputs.push_back(cs::LocalWeapon{weapon});
+        }
+    }
     const std::size_t n = filter.drain(g_captures, sync::kCaptureRing, dropped);
     if (dropped != 0) log::debug("[sync] captures perdues (anneau plein) : " + std::to_string(dropped));
     for (std::size_t i = 0; i < n; ++i) {
