@@ -120,6 +120,13 @@ context:
   de l'hôte sont renvoyés comme les siens. `session_host` (banc Linux) gagne `--weapon NOM` et
   `SIGHUP` (ranger / ressortir).
 
+- **2026-10-21, test en jeu (utilisateur, une machine, Risen hôte + faux invité) : validé.**
+  - `[hooks] inventaire de session résolu` présent au démarrage.
+  - `--weapon It_1H_Sword` : l'avatar apparaît l'épée en main (pile 2 créée, `HoldRightStack` → true). Il reste en T-pose : c'est attendu, car le faux invité sans `--echo` n'envoie aucun `Motion` et le moteur est bloqué sur l'avatar (comportement de la 2.2).
+  - Écho : sortir, ranger, frapper, esquiver, avec des animations fluides. Les 7 armes testées s'affichent : `It_1H_Sword`, `It_1H_Knife_Hunting`, `It_1H_Sword_Rusty`, `It_Fist`, `It_1H_Club`, `It_1H_Sickle`, `It_Axe_Lumberjack`.
+  - Aucune ligne « inconnu du jeu » : le nom lu par `Entity::GetName` est accepté par `Template(const char*)`. Une pile est créée une fois par nom, puis retrouvée (`trouvée`).
+  - Non fait : la validation à deux machines, et le pillage de l'avatar mort (point reporté).
+
 ## Spec Change Log
 
 ## Review Triage Log
