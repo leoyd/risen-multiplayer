@@ -201,29 +201,6 @@ bool resolve_combat(const char*& missing) {
     return true;
 }
 
-bool resolve_combat_session(const char*& missing) {
-    if (g_resolved) return true;  // table complète déjà résolue (sonde)
-    HMODULE script = GetModuleHandleW(L"Script.dll");
-    if (script == nullptr) {
-        missing = "Script.dll";
-        return false;
-    }
-    // Story 3.1 : seulement ce que la session appelle (avatar solide), pour qu'un symbole réservé
-    // à la sonde ne coupe pas la session. Les autres pointeurs restent nuls : jamais appelés.
-    CombatAbi a;
-    const bool ok = lookup(script, kSetCollisionGroup, a.set_collision_group, missing) &&
-                    lookup(script, kEnableCollision, a.enable_collision, missing) &&
-                    lookup(script, kSetDCCEnabled, a.set_dcc_enabled, missing) &&
-                    lookup(script, kAddBodyFlag, a.add_body_flag, missing) &&
-                    lookup(script, kRemoveBodyFlag, a.remove_body_flag, missing) &&
-                    lookup(script, kBodySetPose, a.body_set_pose, missing) &&
-                    lookup(script, kEnableGravitation, a.enable_gravitation, missing);
-    if (!ok) return false;
-    g_abi = a;
-    g_resolved = true;
-    return true;
-}
-
 bool resolve_script_game(const char*& missing) {
     // Jamais chargée par nous : son DllMain et son ScriptInit restent à l'initiative du jeu.
     // [ASSUMPTION] le jeu la charge avant Script_Multiplayer (ordre alphabétique ?) : le log

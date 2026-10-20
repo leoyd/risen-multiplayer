@@ -220,11 +220,6 @@ bool install_session() {
         log::error(std::string("[hooks] session inactive : symbole introuvable : ") + missing);
         return false;
     }
-    // Story 3.1 (AD-3) : enveloppes du combat de l'avatar solide, en tout ou rien.
-    if (!game::resolve_combat_session(missing)) {
-        log::error(std::string("[hooks] session inactive : symbole du combat introuvable : ") + missing);
-        return false;
-    }
     MH_STATUS s = MH_Initialize();
     if (s != MH_OK) {
         log::error(std::string("[hooks] session inactive : MH_Initialize : ") + MH_StatusToString(s));

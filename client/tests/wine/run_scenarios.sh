@@ -62,8 +62,6 @@ expect_log "nominal : sonde désactivée par défaut" "$d" "sonde désactivée"
 # pour les avatars depuis la story 2.2). Le banc n'appelle jamais OnProcess : aucun tick.
 expect_log "nominal : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX)"
 expect_no_log "nominal : pas de hooks de la sonde" "$d" "hooks installés (OnProcess, PlayMotion"
-# Story 3.1 (AD-3) : la session résout aussi l'ABI du combat (avatar solide), en tout ou rien.
-expect_no_log "nominal : ABI du combat résolue" "$d" "symbole du combat introuvable"
 expect_log "nominal : session prête" "$d" "\[sync\] session prête (rôle invité)"
 expect_no_log "nominal : log_level=info, aucune ligne DEBUG" "$d" "DEBUG"
 

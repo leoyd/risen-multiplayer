@@ -2,9 +2,9 @@
 //
 // - Création à réception d'un Spawn : Entity::Spawn(template du héros local, pose,
 //   temporary = true), puis enregistrement dans la table NetId et dans le registre des
-//   entités (rôle avatar : le moteur ne l'anime jamais de lui-même, AD-8, AD-12), puis
-//   réglages de l'avatar solide (story 3.1) : groupe de collision 4, collision et DCC actifs,
-//   corps cinématique AddBodyFlag(0x81), gravité coupée.
+//   entités (rôle avatar : le moteur ne l'anime jamais de lui-même, AD-8, AD-12). L'avatar
+//   reste traversable : les réglages d'avatar solide du spike J2 décrochaient son modèle
+//   (story 3.1, tests en jeu du 2026-10-20).
 // - Retrait (AD-11) : sortie du registre, effacement de la table, puis Entity::Kill.
 //   Kill n'est appelé que si le monde de la création est toujours là (même joueur, partie en
 //   cours) ; sinon l'avatar a été détruit avec le monde et il est seulement oublié.
@@ -25,8 +25,7 @@ namespace mp::sync::avatar {
 void spawn(std::uint32_t net_id, const core::session::Pose& pose);
 // Retire puis détruit l'avatar `net_id` (sans effet s'il n'existe pas).
 void despawn(std::uint32_t net_id);
-// Place l'avatar `net_id` à chaque frame, en silence : Entity::SetPose puis PSRigidBody::SetPose
-// (corps cinématique, story 3.1 ; ni MoveTo ni SetGoalPose). Après une première erreur (SEH,
+// Place l'avatar `net_id` à chaque frame, en silence (Entity::MoveTo). Après une première erreur (SEH,
 // journalisée), l'avatar n'est plus déplacé.
 void move(std::uint32_t net_id, const core::session::Pose& pose);
 // Rejoue un Motion du pair (AD-8) : GetMotion(nom) → SetMotion → PlayMotion avec le

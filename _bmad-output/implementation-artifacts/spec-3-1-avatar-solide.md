@@ -18,10 +18,12 @@ context:
 
 **Problem:** Dans une session, l’avatar de l’autre joueur se laisse traverser, car `Entity::MoveTo` le téléporte à chaque frame. Ce n’est pas un vrai personnage du monde. Par ailleurs, les détours lisent chacun un filtre de pointeurs « réplique », sans notion de rôle. Or les stories suivantes de l’Epic 3 doivent partager un registre unique, comme le demande AD-12.
 
+**Décision (utilisateur, 2026-10-20, après deux tests en jeu) :** la recette solide décroche le modèle de l’avatar, quel que soit le placement. L’avatar reste **traversable** et placé par `MoveTo` (J1) ; la story livre le registre d’AD-12 seul. Les lignes ci-dessous sur la recette et le placement sont caduques.
+
 **Approach:**
 - Appliquer à l’avatar de session la recette du mode 2 du spike (AD-8) :
   - réglages posés une fois à la création ;
-  - placement à chaque frame par `SetPose` puis `PSRigidBody::SetPose`, au lieu de `MoveTo`.
+  - placement à chaque frame par `MoveTo` (renégocié par l’utilisateur le 2026-10-20 après le 1ᵉʳ test : avec `SetPose` + `PSRigidBody::SetPose`, l’équipement suivait mais le modèle restait ailleurs).
 - Transformer `sync::AnimFilter` en registre d’entités `{entité, PS d’animation, PS de routine, enveloppe, rôle}`, sans changer le comportement des détours existants.
 
 ## Boundaries & Constraints
@@ -40,14 +42,14 @@ context:
 **Never :**
 - Pas de hook nouveau en session : le hook de routine et les `DownOrDeadBy*` arrivent avec les stories 3.3 et 3.7.
 - Pas de changement de protocole.
-- Pas de `MoveTo` à chaque frame sur l’avatar, ni de `SetGoalPose`.
+- Pas de `SetGoalPose`.
 
 ## I/O & Edge-Case Matrix
 
 | Scénario | Entrée / état | Résultat attendu | Erreur |
 |---|---|---|---|
 | Création | `Spawn` de l’avatar | Après `Entity::Spawn` : `SetCollisionGroup(4)`, `EnableCollision(true)`, DCC actif, `AddBodyFlag(0x81)`, `EnableGravitation(false)`. Une ligne de log donne le résultat de chaque réglage | Réglage en échec (SEH) : log, l’avatar est gardé |
-| Placement | Snapshot interpolé | `Entity::SetPose` puis `PSRigidBody::SetPose` à chaque frame, sans `StopMovement` | Première SEH : log une fois, l’avatar n’est plus déplacé (comme aujourd’hui) |
+| Placement | Snapshot interpolé | `Entity::MoveTo` à chaque frame, réglages du mode 2 gardés (renégocié après le 1ᵉʳ test) | Première SEH : log une fois, l’avatar n’est plus déplacé (comme aujourd’hui) |
 | Mort | `Death` de l’avatar | `RemoveBodyFlag(0x81)` et gravité rendue **avant** le ragdoll, pour que le corps tombe | SEH : log, le ragdoll est tenté quand même |
 | Registre | Création, retrait, fin de session | L’avatar y entre avec le rôle « avatar », son PS d’animation, son PS de routine (0x24) et son enveloppe ; il en sort avant `Kill` ou l’oubli | N/A |
 | Détours | Appels du moteur | Mêmes verdicts qu’avant pour `PlayMotion`, `SetRagDollEnabled` et les réglages de locomotion (héros local capturé, avatar bloqué hors rejeu) | N/A |
@@ -95,6 +97,9 @@ context:
 - Given un `Death` de l’avatar, when il est appliqué, then le corps tombe en ragdoll au lieu de rester figé en l’air. *(Manuel.)*
 
 ## Spec Change Log
+
+- **2026-10-20, 1ᵉʳ test en jeu (utilisateur).** Constat : avec `SetPose` + `PSRigidBody::SetPose`, l’arme suivait la pose réseau mais le modèle animé restait au point de création, à jouer ses animations sur place. Aucune SEH (réglages tous OK). Cause probable : le modèle suit le contrôleur de déplacement, que seul `MoveTo` recale (`ResetAll`, `StopMovement`). Le spike n’avait pas pu le voir, car le mode 2 y venait toujours après un placement par `MoveTo`. Amendé avec l’accord de l’utilisateur : placement par `MoveTo`, réglages du mode 2 gardés. À garder : registre d’AD-12, `make_solid`, `release_body` avant le ragdoll, `resolve_combat_session`. Mort native de l’avatar en T-pose chez l’hôte : attendu (ragdoll moteur bloqué), story 3.6.
+- **2026-10-20, 2ᵉ test en jeu (utilisateur).** Placement par `MoveTo` avec les réglages du mode 2 : le modèle reste toujours figé au point de création, seule l’arme suit. Sans ces réglages (J1), le modèle suivait. L’un des réglages (corps cinématique `0x81`, gravité coupée, groupe, collision ou DCC) décroche donc le modèle. Le spike ne l’avait pas vu. **Story arrêtée** (critère « équipement qui suit »), constat reporté dans la spine (AD-8). Décision de l’utilisateur : avatar traversable, réglages retirés, registre gardé.
 
 ## Review Triage Log
 

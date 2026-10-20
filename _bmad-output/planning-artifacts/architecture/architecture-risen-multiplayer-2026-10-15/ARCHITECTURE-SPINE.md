@@ -130,12 +130,7 @@ graph TD
     - `sync/avatar` est le **seul** propriétaire de sa pose et de son animation.
     - `Spawn` et `Respawn` réinitialisent l’interpolation.
     - La sonde (`probe = 1`) et la session sont exclusives : un seul détour `PlayMotion` est actif.
-  - **Placement.** En J1, `Entity::MoveTo(bCMatrix)` place l’avatar à chaque frame ; `SetPose` seul laisse le contrôleur de personnage et l’équipement en place. En J2, l’avatar devient **solide**. Recette complète (mode 2 de la sonde) :
-    - `SetCollisionGroup(4)`, `EnableCollision(true)` et `PSNavigation::SetDCCEnabled(true)` ;
-    - `PSRigidBody::AddBodyFlag(0x81)` (sens du drapeau `[ASSUMPTION : cinématique + sans gravité]`) et `PSCharacterMovement::EnableGravitation(false)` ;
-    - placement à chaque frame par `Entity::SetPose` puis `PSRigidBody::SetPose`, sans `StopMovement`.
-
-    Le héros local ne traverse plus l’avatar (observé par l’utilisateur au 2ᵉ test). `SetGoalPose` est écarté : l’avatar glisse. `[ASSUMPTION : l’équipement suit en mode cinématique ; c’est la première tâche de la story concernée]`
+  - **Placement.** `Entity::MoveTo(bCMatrix)` place l’avatar à chaque frame ; `SetPose` seul laisse le contrôleur de personnage et l’équipement en place. **L’avatar reste traversable.** La recette « solide » du spike J2 (groupe 4, collision, DCC, `AddBodyFlag(0x81)`, gravité coupée) décroche son modèle animé : seule l’arme suit la pose réseau, que le placement soit `SetPose` + `PSRigidBody::SetPose` ou `MoveTo` (story 3.1, tests en jeu du 2026-10-20). Les PNJ de l’hôte ciblent et frappent l’avatar sans elle.
   - **Repères.** `bCMatrix` est en lignes : translation en `m[12..14]`, Y vertical, axe avant en ligne 2, unités en centimètres (vérifié).
   - **Validé** par les stories 2.1 à 2.4b : rejeu par nom (`GetMotion`), descripteur reconstruit, et réglages de locomotion transmis par `MotionParam`.
 
@@ -301,7 +296,7 @@ graph LR
 3. ~~Appariement des PNJ natifs, neutralisation de leur IA, fonction de dégâts (AD-9)~~ : **résolu** par le spike J2 (GUID, hook de routine, `DoDamage`). Le budget de `Motion` pour les PNJ (AD-8) reste à fixer avant toute story `sync/npc`.
 4. ~~`OnProcess` une fois par frame sur le thread principal (AD-2)~~ : **confirmé** en jeu, non bridé (cadences à l’horloge).
 5. ~~Arme dégainée et mode de combat de l’avatar~~ : **résolu** (inventaire + `HoldRightStack`, pas de mode de combat, AD-9).
-6. ~~Collisions entre PNJ et avatar~~ : **résolu** (corps cinématique, AD-8). Les PNJ frappent déjà l’avatar (vérifié).
+6. ~~Collisions entre PNJ et avatar~~ : **tranché** : l’avatar reste traversable (la recette solide décroche son modèle, AD-8). Les PNJ le ciblent et le frappent quand même (vérifié). Un avatar solide sans ce défaut reste possible après J2, en cherchant le réglage fautif.
 7. ~~Mort native de l’invité~~ : **résolu** (coup mortel intercepté dans `DownOrDeadBy*`, AD-11).
 8. **Point d’accroche des dégâts** (AD-9, AD-12) : il doit voir chaque coup avec son agresseur et sa cible, et pouvoir le bloquer. Candidats : `gCDamage_PS::DoDamage` (une arme frappe) ou le virtuel `OnDamage` de la cible. À trancher dans la **story 3.5**, avant 3.6.
 9. **Morts hors `DownOrDeadBy*`** (chute, noyade) et message de perte d’XP (vu seulement avec `Kill → Defeat`) : story 3.7. Seule la mêlée a été testée en jeu ; `Projectile` et `Inferno` ne sont vérifiés qu’au désassemblage.

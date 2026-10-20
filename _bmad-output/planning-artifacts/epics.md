@@ -452,7 +452,7 @@ Les deux joueurs combattent les mêmes monstres en mêlée. FR-9 à FR-12, plus 
 
 Questions ouvertes 3, 5, 6 et 7 de la spine tranchées en jeu (`spec-3-0-spike-j2.md`, `docs/re/spike-j2.md`).
 
-### Story 3.1 : Avatar solide et registre des entités
+### Story 3.1 : Registre des entités (avatar solide abandonné) *(fait)*
 
 As a joueur,
 I want que l’avatar de l’autre joueur bloque mon passage au lieu de se laisser traverser,
