@@ -8,13 +8,13 @@ Explore Faranga together, clear dungeons side by side, fight the same monsters.
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20(Proton)-informational)
 ![Game](https://img.shields.io/badge/Risen-Steam%20x64-8a2be2)
-![Status](https://img.shields.io/badge/status-J1%20in%20validation-orange)
+![Status](https://img.shields.io/badge/status-J2%20in%20progress-orange)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus)
 
 </div>
 
 > [!WARNING]
-> **Early development.** The mod loads natively, hosts or joins a session, and shows the other player's avatar moving and animating (milestone J1). This has been validated in-game on one machine against a scripted fake guest. The two-machine validation and co-op combat (J2) are next. See the [roadmap](#️-roadmap).
+> **Early development.** The mod loads natively, hosts or joins a session, and shows the other player's avatar moving, animating and holding the same weapon (milestone J1, start of J2). This has been validated in-game on one machine against a scripted fake guest. The two-machine validation and co-op combat (rest of J2) are next. See the [roadmap](#️-roadmap).
 
 > [!IMPORTANT]
 > Fan project, **not affiliated** with Piranha Bytes, THQ Nordic or Plaion. The repository contains **no game files**. You need to own Risen on Steam to use it.
@@ -58,15 +58,17 @@ This is a **hobby project**, released as open source so that others can pick it 
 | 📝 | `multiplayer.ini` config file + timestamped log | J0 | ✅ |
 | 🔗 | Host listens, guest joins by IP; version/fingerprint checks; clean session end (quit, reload, death) | J1 | ✅ Validated in-game |
 | 👥 | Each player sees the other's avatar: appears next to the host, moves smoothly (20 Hz, interpolated), replays gestures (walk, run, jump, draw, attacks, death) | J1 | ✅ Validated on one machine — two-machine test pending |
-| ⚔️ | Melee co-op combat against the same monsters (shared HP, host-authoritative) | J2 | 📋 Planned |
+| 🗡️ | The avatar holds the same weapon as its player, drawn or sheathed (any one-handed weapon, axe, fists) | J2 | ✅ Validated on one machine |
+| 🎽 | Guest equipment from `guest_equipment`, host armour shown on its avatar | J2 | 📋 Next (story 3.2b) |
+| ⚔️ | Melee co-op combat against the same monsters (shared HP, host-authoritative) | J2 | 🚧 In progress (stories 3.3 to 3.7) |
 | 💬 | NPC dialogues played on both sides | J3 | 💭 Later |
 | 💾 | Persistent guest profile (gear, XP, loot), shared side quests | J4 | 💭 Later |
 | 🩹 | Reviving a downed ally | J5 | 💭 Later |
 
 **Known J1 limitations** (tracked in [`deferred-work.md`](_bmad-output/implementation-artifacts/deferred-work.md)):
-- the avatar has no physics or collisions in your world (you and NPCs walk through it) — planned for the J2 spike;
+- the avatar has no collisions in your world: you walk through it. This is a choice (story 3.1): the "solid" setup found in the J2 spike detaches its animated model. NPCs still target and hit it;
 - the walk → stop transition is not very smooth, and the walk animation can occasionally stall for a moment;
-- no weapon in hand yet (drawing is animation only) — J2.
+- only the right hand is replicated (no shield or torch yet), and no armour yet (story 3.2b).
 
 ## 📦 Installation (players)
 
@@ -200,17 +202,17 @@ graph TD
 ```
 
 - **The host is authoritative.** Each player's game simulates their own hero; the other side shows a **replica** (avatar) driven by the network.
-- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v6**):
+- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v7**):
   - one UDP socket, a channel byte at the start of every datagram;
   - channel 2: handshake (`Hello`, `Welcome`, `Reject`);
-  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`;
+  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`, `Weapon` (name of the weapon in hand, empty when sheathed);
   - channel 1: unreliable full-state snapshots at 20 Hz;
   - display delayed by 150 ms, Hermite interpolation, extrapolation ≤ 250 ms;
   - every message has binary test vectors checked by both the C++ and Go codecs.
 - **Main thread only:** every game call happens from a [MinHook](https://github.com/TsudaKageyu/minhook) hook on `eCApplication::OnProcess`, called once per frame.
 - **Animations replayed by name:** the local hero's `eCAnimation_PS::PlayMotion` calls are captured, sent as `Motion` events, and replayed on the avatar (`GetMotion` → `SetMotion` → `PlayMotion`). The engine is blocked from animating the avatar by itself.
 
-The detailed decisions (AD-1 to AD-11) are in the [architecture spine](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md) (in French).
+The detailed decisions (AD-1 to AD-12) are in the [architecture spine](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md) (in French).
 
 ### Repository layout
 
@@ -240,6 +242,8 @@ Established on the Steam x64 build. Useful for anyone picking up the project.
 - **Entities** (`Script.dll`): `Entity::Spawn(template, pose, temporary)` creates the avatar (a copy of the local hero), `Entity::MoveTo` places it every frame, `Entity::Kill` destroys it (deferred, through a list in `eCSceneAdmin`).
 - **Animation:** `eCAnimation_PS::PlayMotion(type 0..7, desc, flag)` reads the motion resource at `this + 0x120 + type*0x10`; its name comes from `eCResource2::GetFileTitleA()`, and `eCResource2::GetMotion(name)` finds it back. Only 7 scalars of the 0x60-byte playback descriptor are read. Death goes through the ragdoll (`SetRagDollEnabled`), not through `PlayMotion`.
 - **Locomotion** is not driven by `PlayMotion` alone: `gCCharacterMovement_PS` (`Game.dll`) adjusts weights, play speeds, fade-outs and stops every frame through `eCWrapper_emfx3ActorInstance::SetTargetWeight` / `SetPlaySpeed` / `SwitchFadeOut` / `StopMotion`, based on the character's animation velocity. `MoveTo` resets that velocity (`OnUpdatedWorldMatrix`), so the avatar's own controller thinks it is standing still: its settings are blocked and the local hero's are replicated instead.
+- **Inventory** (`Script.dll`, `PSInventory`): `GetRightHoldStack` (−1 = nothing in hand), `GetRightHoldItem` + `Entity::GetName` give the held item's name (e.g. `It_1H_Sword`), which `Template(const char*)` accepts back. `FindStackIndex(Template, after, unslotted_only)` finds a stack, `CreateItems(Template, count, 0)` creates one, `HoldRightStack` draws it and `EquipStack` sheathes it. There is no combat mode to drive: the stance is in the animation names.
+- **NPCs and combat** (J2 spike, [`docs/re/spike-j2.md`](docs/re/spike-j2.md)): native NPCs are matched across machines by their 16-byte GUID; their AI can be frozen one by one with a hook on `gCScriptRoutine_PS::OnProcess`; a fatal blow can be cancelled in `DownOrDeadBy*`.
 - **The version fingerprint:** `TimeDateStamp` and `SizeOfImage` of `Game.dll` and `Engine.dll` (allow-list in `client/src/core/version.cpp`).
 
 **Tools:** objdump (binutils), gdb (thread states of a frozen game), Ghidra, and a built-in in-game probe (`probe = 1`). Full notes: [`docs/re/`](docs/re/), the [technical research](_bmad-output/planning-artifacts/research/technical-faisabilite-multijoueur-risen-2026-10-15/research.md) and the specs in `_bmad-output/implementation-artifacts/` (in French).
@@ -248,7 +252,7 @@ Established on the Steam x64 build. Useful for anyone picking up the project.
 
 - [x] **J0 — It loads:** native loading, version check, config, log
 - [ ] **J1 — I can see you:** host/guest session ✅, avatar that appears, moves and animates ✅ (one machine) — two-machine validation pending
-- [ ] **J2 — We fight together:** host-driven NPCs, melee co-op combat, avatar collisions, weapon in hand ← **MVP goal**
+- [ ] **J2 — We fight together** ← **MVP goal**: J2 spike ✅, entity registry ✅, weapon in hand ✅ (one machine); next: equipment (3.2b), host-driven NPC replicas (3.3, 3.4), damage both ways (3.5, 3.6), downed and respawn (3.7)
 - [ ] J3 — Mirrored dialogues
 - [ ] J4 — Persistent guest profile, shared side quests
 - [ ] J5 — Reviving a downed ally
@@ -264,7 +268,7 @@ The project is designed to be picked up. Where to start:
    - [PRD](_bmad-output/planning-artifacts/prds/prd-risen-multiplayer-2026-10-15/prd.md): requirements FR-1 to FR-12;
    - [architecture](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md): the rules to follow;
    - `_bmad-output/implementation-artifacts/`: one spec per delivery, plus `deferred-work.md` for known follow-ups.
-2. **Respect the architecture invariants** (AD-1 to AD-11), especially:
+2. **Respect the architecture invariants** (AD-1 to AD-12), especially:
    - only `game/` calls the game;
    - every game call happens on the main thread;
    - no pointer ever goes over the network;
