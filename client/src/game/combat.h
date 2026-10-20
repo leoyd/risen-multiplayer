@@ -51,6 +51,10 @@ using RoutineOnProcessFn = void (*)(void* routine_ps);
 // Résout en bloc les symboles du combat (Script.dll, Engine.dll, Game.dll, SharedBase.dll).
 // Indépendante de resolve_entities (à appeler après). False et `missing` au premier échec.
 bool resolve_combat(const char*& missing);
+// Session (story 3.1) : seulement les enveloppes de l'avatar solide (collision, DCC, corps,
+// gravité), en tout ou rien. Les autres enveloppes rendent false tant que resolve_combat
+// (sonde) n'a pas été appelée.
+bool resolve_combat_session(const char*& missing);
 // Kill et Defeat (Script_Game.dll), facultatifs : module déjà chargé par le jeu, jamais par
 // nous. False et `missing` (module ou symbole) en cas d'échec.
 bool resolve_script_game(const char*& missing);

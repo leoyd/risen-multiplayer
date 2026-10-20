@@ -1,9 +1,11 @@
 // Avatars du pair (story 2.2) : seul propriétaire des entités qui représentent l'autre joueur.
 //
 // - Création à réception d'un Spawn : Entity::Spawn(template du héros local, pose,
-//   temporary = true), puis enregistrement dans la table NetId et dans l'AnimFilter
-//   (réplique : le moteur ne l'anime jamais de lui-même, AD-8).
-// - Retrait (AD-11) : sortie de l'AnimFilter, effacement de la table, puis Entity::Kill.
+//   temporary = true), puis enregistrement dans la table NetId et dans le registre des
+//   entités (rôle avatar : le moteur ne l'anime jamais de lui-même, AD-8, AD-12), puis
+//   réglages de l'avatar solide (story 3.1) : groupe de collision 4, collision et DCC actifs,
+//   corps cinématique AddBodyFlag(0x81), gravité coupée.
+// - Retrait (AD-11) : sortie du registre, effacement de la table, puis Entity::Kill.
 //   Kill n'est appelé que si le monde de la création est toujours là (même joueur, partie en
 //   cours) ; sinon l'avatar a été détruit avec le monde et il est seulement oublié.
 // - Aucun pointeur gardé hors de la table, ni après le retrait.
@@ -23,8 +25,9 @@ namespace mp::sync::avatar {
 void spawn(std::uint32_t net_id, const core::session::Pose& pose);
 // Retire puis détruit l'avatar `net_id` (sans effet s'il n'existe pas).
 void despawn(std::uint32_t net_id);
-// Place l'avatar `net_id` (Entity::MoveTo), à chaque frame, en silence. Après une première
-// erreur (SEH, journalisée), l'avatar n'est plus déplacé.
+// Place l'avatar `net_id` à chaque frame, en silence : Entity::SetPose puis PSRigidBody::SetPose
+// (corps cinématique, story 3.1 ; ni MoveTo ni SetGoalPose). Après une première erreur (SEH,
+// journalisée), l'avatar n'est plus déplacé.
 void move(std::uint32_t net_id, const core::session::Pose& pose);
 // Rejoue un Motion du pair (AD-8) : GetMotion(nom) → SetMotion → PlayMotion avec le
 // descripteur reconstruit, sous ReplayGuard. Un échec est journalisé une fois par nom.
@@ -32,7 +35,8 @@ void play(std::uint32_t net_id, const std::string& name, const protocol::Motion&
 // Rejoue un réglage de locomotion du pair (story 2.4b) sur l'enveloppe EMotionFX de l'avatar,
 // sous ReplayGuard. Un échec est journalisé une fois par avatar.
 void play_param(std::uint32_t net_id, const protocol::MotionParam& param);
-// Met l'avatar en ragdoll (Death du pair) : il n'est plus déplacé ni animé jusqu'au retrait.
+// Met l'avatar en ragdoll (Death du pair) : corps rendu à la physique et gravité rétablie
+// d'abord, pour qu'il tombe ; il n'est plus déplacé ni animé jusqu'au retrait.
 void die(std::uint32_t net_id);
 // Un avatar existe-t-il ? (sentinelle de diagnostic)
 bool present();

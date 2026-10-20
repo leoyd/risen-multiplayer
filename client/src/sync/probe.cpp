@@ -434,7 +434,7 @@ void toggle_mirror() {
         return;
     }
     if (g_mirror) {
-        sync::anim_filter().remove_replica(g_copy_anim_ps);
+        sync::anim_filter().untrack(g_copy.ptr);
         g_mirror = false;
         log::info("[probe] F7 : miroir désactivé (la copie reprend ses propres animations)");
         return;
@@ -460,7 +460,11 @@ void toggle_mirror() {
     g_by_name.clear();  // chaque nom est revérifié contre sa ressource capturée
     g_mirror_start = GetTickCount64();
     sync::anim_filter().take_blocked();
-    sync::anim_filter().add_replica(g_copy_anim_ps);
+    sync::TrackedEntity tracked;  // registre (AD-12) : la copie de la sonde a le rôle avatar
+    tracked.entity = g_copy.ptr;
+    tracked.animation_ps = g_copy_anim_ps;
+    tracked.role = sync::EntityRole::Avatar;
+    sync::anim_filter().track(tracked);
     g_mirror = true;
     char off[96];
     std::snprintf(off, sizeof off, "(%.0f, %.0f, %.0f)", static_cast<double>(g_mirror_offset[0]),
@@ -531,7 +535,7 @@ void frame() {
         // Chargement, retour au menu ou prise de contrôle : la copie temporaire a pu
         // être détruite avec le monde. Ne jamais réutiliser un pointeur peut-être libéré.
         // Elle sort du filtre avant d'être oubliée (AD-2).
-        filter.remove_replica(g_copy_anim_ps);
+        filter.untrack(g_copy.ptr);
         if (g_copy.ptr != nullptr) log::info("[probe] joueur changé : copie " + hex_ptr(g_copy.ptr) + " oubliée");
         g_copy = game::Entity{};
         g_copy_anim_ps = nullptr;

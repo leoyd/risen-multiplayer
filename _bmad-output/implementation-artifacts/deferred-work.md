@@ -126,3 +126,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-0-spike-j2.md`
   summary: Scénario Wine du repli « ABI du combat introuvable, sonde J1 toujours active » (`install_probe_j2`, `resolve_combat` seul en échec).
   evidence: Revue de la story 3.0 : aucun banc ne fait échouer `resolve_combat` sans `resolve_entities` ; il faudrait une Script.dll aux exports trafiqués.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-avatar-solide.md`
+  summary: L'avatar invité, désormais ciblé par les PNJ de l'hôte, peut mourir chez l'hôte et reste figé debout (ragdoll bloqué) : invulnérabilité à faire en story 3.6.
+  evidence: Revue de la story 3.1 ; déjà observé au spike J2 (copie tuée par un Vulture).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-avatar-solide.md`
+  summary: Couture de test pour les appels ABI de l'avatar (placement cinématique, release_body, make_solid) : aujourd'hui vérifiés seulement en jeu.
+  evidence: Revue de la story 3.1 (verification-gap) : aucun banc n'appelle OnProcess.

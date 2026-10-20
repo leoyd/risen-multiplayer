@@ -1,6 +1,7 @@
 #include "sync/avatar.h"
 
 #include "common/log.h"
+#include "game/combat.h"
 #include "game/entity.h"
 #include "game/motion_desc.h"
 #include "sync/anim_filter.h"
@@ -29,10 +30,14 @@ using core::session::Pose;
 struct Entry {
     std::uint32_t net_id = 0;
     game::Entity entity;
-    void* animation_ps = nullptr;  // réplique dans l'AnimFilter (nul : pas de PS trouvé)
-    void* wrapper = nullptr;       // enveloppe EMotionFX, réplique aussi (story 2.4b)
+    void* animation_ps = nullptr;  // suivi dans le registre (nul : pas de PS trouvé)
+    void* wrapper = nullptr;       // enveloppe EMotionFX, suivie aussi (story 2.4b)
+    void* routine_ps = nullptr;    // gCScriptRoutine_PS (0x24), au registre (AD-12)
     void* player = nullptr;        // héros local à la création : le monde de l'avatar
     bool move_error_logged = false;
+    // Corps cinématique posé (AddBodyFlag OK) : placement SetPose + PSRigidBody::SetPose. Sinon
+    // (pas de PS 0xd, SEH), repli sur MoveTo, comme en J1 : l'avatar n'est jamais figé pour ça.
+    bool kinematic = false;
     bool dead = false;  // en ragdoll (Death) : plus de pose ni d'animation imposées
     bool param_error_logged = false;
 };
@@ -119,6 +124,58 @@ bool same_world(const Entry& e) {
            game::game_running(running) && running;
 }
 
+const char* ok_or_seh(bool ok) { return ok ? "OK" : "SEH"; }
+
+bool has_ps(const game::Entity& e, int type) {
+    void* ps = nullptr;
+    return game::get_property_set(e, type, ps) && ps != nullptr;
+}
+
+// Story 3.1 : avatar solide (AD-8, mode 2 du spike J2). Réglages posés une fois, après
+// Entity::Spawn ; un échec est journalisé et l'avatar est gardé. Une ligne pour le tout.
+void make_solid(Entry& e) {
+    const bool group = game::set_collision_group(e.entity, game::kCollisionGroupNpc);
+    const bool coll = game::enable_collision(e.entity, true);
+    std::string dcc = "sauté (pas de PS 0x5)";
+    if (has_ps(e.entity, game::kNavigationPropertySet)) dcc = ok_or_seh(game::set_dcc_enabled(e.entity, true));
+    std::string body = "sauté (pas de PS 0xd)";
+    if (has_ps(e.entity, game::kRigidBodyPropertySet)) {
+        body = ok_or_seh(game::add_body_flag(e.entity, game::kBodyFlagsKinematic));
+    }
+    std::string grav = "sauté (pas de PS 0x15)";
+    if (has_ps(e.entity, game::kCharacterMovementPropertySet)) grav = ok_or_seh(game::enable_gravitation(e.entity, false));
+    const std::string line = "[sync] avatar " + std::to_string(e.net_id) + " réglages : SetCollisionGroup(" +
+                             std::to_string(game::kCollisionGroupNpc) + ") " + ok_or_seh(group) +
+                             ", EnableCollision(true) " + ok_or_seh(coll) + ", SetDCCEnabled(true) " + dcc +
+                             ", AddBodyFlag(0x81) " + body + ", EnableGravitation(false) " + grav;
+    e.kinematic = body == "OK";
+    const bool skipped = line.find("sauté") != std::string::npos;
+    if (!group || !coll || dcc == "SEH" || body == "SEH" || grav == "SEH") {
+        log::error(line + " : avatar gardé" + (e.kinematic ? "" : ", placé par MoveTo"));
+    } else if (skipped) {
+        log::warn(line + (e.kinematic ? "" : " : pas de corps cinématique, avatar placé par MoveTo"));
+    } else {
+        log::info(line);
+    }
+}
+
+// Mort : corps rendu à la physique et gravité rétablie, pour que le ragdoll tombe.
+void release_body(const Entry& e) {
+    std::string body = "sauté (pas de PS 0xd)";
+    if (has_ps(e.entity, game::kRigidBodyPropertySet)) {
+        body = ok_or_seh(game::remove_body_flag(e.entity, game::kBodyFlagsKinematic));
+    }
+    std::string grav = "sauté (pas de PS 0x15)";
+    if (has_ps(e.entity, game::kCharacterMovementPropertySet)) grav = ok_or_seh(game::enable_gravitation(e.entity, true));
+    const std::string line = "[sync] avatar " + std::to_string(e.net_id) + " réglages de mort : RemoveBodyFlag(0x81) " +
+                             body + ", EnableGravitation(true) " + grav;
+    if (body != "SEH" && grav != "SEH") {
+        log::info(line);
+    } else {
+        log::error(line + " : ragdoll tenté quand même");
+    }
+}
+
 }  // namespace
 
 void spawn(std::uint32_t net_id, const Pose& pose) {
@@ -149,29 +206,33 @@ void spawn(std::uint32_t net_id, const Pose& pose) {
     if (!game::get_animation_ps(e.entity, e.animation_ps) || e.animation_ps == nullptr) {
         e.animation_ps = nullptr;
         log::warn("[sync] avatar " + std::to_string(net_id) + " : pas d'eCAnimation_PS, le moteur peut l'animer");
-    } else {
-        anim_filter().add_replica(e.animation_ps);
-        // Story 2.4b : l'enveloppe aussi, pour bloquer les réglages de locomotion du moteur.
-        if (game::get_actor_wrapper(e.animation_ps, e.wrapper) && e.wrapper != nullptr) {
-            anim_filter().add_replica(e.wrapper);
-        } else {
-            e.wrapper = nullptr;
-            log::warn("[sync] avatar " + std::to_string(net_id) + " : pas d'enveloppe EMotionFX, locomotion non protégée");
-        }
+    } else if (!game::get_actor_wrapper(e.animation_ps, e.wrapper) || e.wrapper == nullptr) {
+        // Story 2.4b : l'enveloppe sert à bloquer les réglages de locomotion du moteur.
+        e.wrapper = nullptr;
+        log::warn("[sync] avatar " + std::to_string(net_id) + " : pas d'enveloppe EMotionFX, locomotion non protégée");
     }
+    if (!game::get_property_set(e.entity, game::kRoutinePropertySet, e.routine_ps)) e.routine_ps = nullptr;
+    // Registre (AD-12) : seul sync/avatar y inscrit ses avatars.
+    TrackedEntity tracked;
+    tracked.entity = e.entity.ptr;
+    tracked.animation_ps = e.animation_ps;
+    tracked.routine_ps = e.routine_ps;
+    tracked.wrapper = e.wrapper;
+    tracked.role = EntityRole::Avatar;
+    anim_filter().track(tracked);
     anim_filter().take_blocked();  // compteur remis à zéro : bilan au retrait
     g_table.push_back(e);
     log::info("[sync] avatar " + std::to_string(net_id) + " créé : entité " + hex_ptr(e.entity.ptr) + ", PS " +
               hex_ptr(e.animation_ps) + ", " + pose_text(pose));
+    make_solid(g_table.back());  // après la ligne « créé » : réglages de l'avatar annoncé
 }
 
 void despawn(std::uint32_t net_id) {
     for (auto it = g_table.begin(); it != g_table.end(); ++it) {
         if (it->net_id != net_id) continue;
         const Entry e = *it;
-        // AD-11 : d'abord l'AnimFilter et la table, ensuite seulement la destruction.
-        if (e.animation_ps != nullptr) anim_filter().remove_replica(e.animation_ps);
-        if (e.wrapper != nullptr) anim_filter().remove_replica(e.wrapper);
+        // AD-11, AD-12 : d'abord le registre et la table, ensuite seulement la destruction.
+        anim_filter().untrack(e.entity.ptr);
         g_table.erase(it);
         g_resources.clear();
         g_failed_names.clear();
@@ -196,10 +257,23 @@ void move(std::uint32_t net_id, const Pose& pose) {
     for (Entry& e : g_table) {
         if (e.net_id != net_id) continue;
         if (e.move_error_logged || e.dead) return;  // après une SEH, ou mort : plus de pose imposée
-        if (!game::move_to(e.entity, matrix_of(pose))) {
+        // Corps cinématique (AD-8, story 3.1) : pose de l'entité puis du corps, sans MoveTo
+        // (StopMovement) ni SetGoalPose.
+        const game::Matrix m = matrix_of(pose);
+        if (!e.kinematic) {
+            if (!game::move_to(e.entity, m)) {
+                e.move_error_logged = true;
+                log::error("[sync] avatar " + std::to_string(net_id) +
+                           " : Entity::MoveTo a levé une exception (SEH) : avatar plus déplacé");
+            }
+        } else if (!game::set_pose(e.entity, m)) {
             e.move_error_logged = true;
             log::error("[sync] avatar " + std::to_string(net_id) +
-                       " : Entity::MoveTo a levé une exception (SEH) : avatar plus déplacé");
+                       " : Entity::SetPose a levé une exception (SEH) : avatar plus déplacé");
+        } else if (!game::set_body_pose(e.entity, m)) {
+            e.kinematic = false;  // une erreur du corps ne fige pas l'avatar : repli sur MoveTo
+            log::error("[sync] avatar " + std::to_string(net_id) +
+                       " : PSRigidBody::SetPose a levé une exception (SEH) : avatar placé par MoveTo");
         }
         log_wrapper_stats();
         return;
@@ -279,13 +353,16 @@ void die(std::uint32_t net_id) {
             log::warn("[sync] avatar " + std::to_string(net_id) + " mort, mais sans eCAnimation_PS : pas de ragdoll");
             return;
         }
+        release_body(e);  // avant le ragdoll : sinon le corps cinématique reste figé en l'air
         bool ok = false;
         {
             AnimFilter::ReplayGuard guard;
             ok = game::set_ragdoll(e.animation_ps, true, false, nullptr);
         }
-        // En cas d'échec, l'avatar garde pose et animations plutôt que de rester figé debout.
+        // En cas d'échec, l'avatar garde pose et animations plutôt que de rester figé debout :
+        // il redevient solide (corps cinématique, sans gravité).
         e.dead = ok;
+        if (!ok) make_solid(e);
         if (ok) {
             log::info("[sync] avatar " + std::to_string(net_id) + " en ragdoll (mort)");
         } else {

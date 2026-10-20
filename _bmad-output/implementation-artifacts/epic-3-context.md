@@ -4,47 +4,47 @@
 
 ## Goal
 
-Les deux joueurs combattent les mêmes monstres en mêlée : le jeu de l’hôte simule les PNJ hostiles, l’invité en voit des répliques fidèles, ses coups blessent les monstres chez l’hôte, les monstres le blessent dans son propre jeu, et sa mort se règle par une réapparition près de l’hôte au lieu d’un rechargement. C’est J2, la ligne d’arrivée du MVP : nettoyer à deux un camp de monstres de la zone de départ, sans désynchronisation visible ni crash. L’epic n’est qu’esquissé : il commence par un spike (story 3.0) qui doit trancher les questions ouvertes 3, 5, 6 et 7 de la spine ; les stories suivantes seront détaillées d’après ses résultats.
+Les deux joueurs combattent les mêmes monstres en mêlée (jalon J2, ligne d’arrivée du MVP : nettoyer à deux un camp de monstres sans désynchronisation visible ni crash). L’avatar de l’autre joueur devient solide et armé. L’invité porte l’équipement de sa config. Chez l’invité, les PNJ proches suivent l’hôte sans IA locale. Ses coups blessent les monstres chez l’hôte, ceux des monstres le blessent dans son propre jeu, et aucun coup ne compte deux fois. À zéro PV, il tombe à terre puis réapparaît près de l’hôte, PV pleins, sans quitter la session. Le spike J2 (3.0) est fait : ses conclusions sont intégrées aux invariants ci-dessous, et les détails de rétro-ingénierie sont dans `docs/re/spike-j2.md`.
 
 ## Stories
 
-- Story 3.0 : Spike J2 (questions ouvertes 3, 5, 6, 7)
-- Story 3.1 : Équipement de l’invité depuis la config
-- Story 3.2 : Arme en main et mode combat de l’avatar
-- Story 3.3 : Répliques des PNJ chez l’invité
-- Story 3.4 : Dégâts de l’invité sur les monstres
-- Story 3.5 : Dégâts subis par l’invité
-- Story 3.6 : Mort et réapparition
+- Story 3.0 : Spike J2 *(fait)*
+- Story 3.1 : Avatar solide et registre des entités
+- Story 3.2 : Équipement et arme de l’avatar
+- Story 3.3 : Répliques des PNJ : apparition, position et PV
+- Story 3.4 : Répliques des PNJ : animations et mort
+- Story 3.5 : Dégâts de l’invité sur les monstres
+- Story 3.6 : Dégâts subis par l’invité
+- Story 3.7 : À terre et réapparition de l’invité
 
 ## Requirements & Constraints
 
-- **Répliques de PNJ** : chez l’invité, position, orientation, animation, PV et mort des PNJ proches suivent l’hôte, sans aucune décision d’IA locale. Un monstre tué d’un côté est mort des deux. Un monstre peut cibler et attaquer l’invité. « Proche » = zone chargée autour de l’hôte (hypothèse) ; la spine fixe 50 m d’un des deux joueurs (hypothèse).
-- **Dégâts de l’invité** : un coup de mêlée de l’invité blesse le monstre chez l’hôte ; la jauge de PV baisse chez les deux.
-- **Dégâts subis** : les attaques des monstres sur l’invité réduisent ses PV dans son propre jeu.
-- **Mort** : l’invité mort réapparaît automatiquement près de l’hôte, PV pleins, et la session continue. La mort de l’hôte met fin à la session (les deux rechargent la sauvegarde de départ).
-- **Équipement de l’invité** (reporté de J1) : défini dans sa config (`guest_equipment`), il voyage dans `Hello` (champ présent depuis la v1) et est porté aussi par son avatar chez l’hôte ; format et application à choisir dans la story.
-- **Périmètre** : mêlée uniquement ; ne pas optimiser le nombre de PNJ ni de systèmes synchronisés — fiabilité du strict nécessaire.
-- **Robustesse** : aucun échec du mod ne fait crasher le jeu ; toute erreur ramène au solo avec la raison au log. Session de 30 min d’exploration et de combat sans crash.
-- **Tests** : une seule instance de Risen par machine ; tests quotidiens hôte + faux invité Go (`tools/fake-guest/`), validation finale à deux machines.
+- **Répliques** : chez l’invité, la position, l’orientation, l’animation, les PV et la mort des PNJ hostiles proches (≤ 50 m d’un des joueurs, hypothèse) suivent l’hôte, sans aucune IA locale. Un monstre peut cibler et attaquer l’invité.
+- **Dégâts** : un coup de l’invité blesse le monstre chez l’hôte, et la jauge baisse chez les deux. Les coups des monstres réduisent les PV de l’invité dans son propre jeu. Chaque coup a une seule source.
+- **Mort** : l’invité ne meurt jamais nativement. Il passe « à terre », puis réapparaît près de l’hôte, PV pleins. La mort de l’hôte reste native et met fin à la session.
+- **Équipement** (reporté de J1) : `guest_equipment` vient de la config de l’invité et voyage dans `Hello`. Une valeur invalide est refusée au chargement, avec le nom du champ au log.
+- **Périmètre** : mêlée uniquement, strict nécessaire (fiabilité plutôt qu’étendue). La locomotion de l’avatar (reliquat de la 2.4b) n’est pas un objectif.
+- **Robustesse** : aucun échec du mod ne fait crasher le jeu ; toute erreur ramène au solo, avec la raison au log. Session de 30 min sans crash.
+- **Tests** : une seule instance de Risen par machine. Tests quotidiens avec Risen en hôte et le faux invité Go (`tools/fake-guest/`, à étendre selon les stories), validation finale à deux machines.
 
 ## Technical Decisions
 
-- **Questions ouvertes à trancher par le spike 3.0** (avant toute story concernée ; les réponses s’inscrivent dans la spine avant toute story `sync/npc`) :
-  - **Q3 — PNJ natifs de l’invité** : ils existent déjà (même sauvegarde). Hypothèse : appariement aux `NetId` de l’hôte par GUID d’entité ; candidats `eCEntity::GetID` (`bCPropertyID`) ou `Entity::GetNetIndex`. À fixer aussi : neutralisation de leur IA, fonction de dégâts côté hôte, invulnérabilité de l’avatar invité chez l’hôte, budget de `Motion` pour les PNJ.
-  - **Q5 — Arme et mode combat de l’avatar** : le rejeu d’animation joue l’attaque sans arme en main. Pistes : `gECombatMode`, `PSCombatSystem`. À résoudre avant la story combat.
-  - **Q6 — Collisions** : l’avatar placé par `MoveTo` traverse décor, héros et PNJ (pas de physique). Il doit devenir « solide » : corps de collision cinématique qui suit la pose imposée, sans gravité, et repousse héros et PNJ, pour qu’un PNJ puisse toucher l’avatar invité. Hypothèse : le recalage de `MoveTo` (`OnUpdatedWorldMatrix`) neutralise son corps physique.
-  - **Q7 — Mort native de l’invité** : elle recharge vraisemblablement une sauvegarde, ce qui finirait la session ; l’interception doit précéder `Respawn`.
-- **Autorité des PNJ (AD-9)** : seul l’hôte décide. Chez l’invité, l’IA des PNJ répliqués est neutralisée ; leur état ne vient que des snapshots et événements. L’invité ne modifie **jamais** une réplique : un coup produit `HitRequest{NetId cible, dégâts}`, appliqué par l’hôte avec la fonction de dégâts du jeu. Chez l’hôte, l’avatar invité est **invulnérable** ; quand un PNJ le touche, l’hôte envoie `HitOnGuest{NetId source, dégâts}`, que l’invité applique à son propre héros.
-- **Identité (AD-6)** : `NetId` u32 attribué par l’hôte seul ; 1 = avatar hôte, 2 = avatar invité, PNJ à partir de 1000. Une table `NetId ↔ entité` par pair ; aucun pointeur sur le réseau ni gardé hors de la table ou après `Ended`.
-- **Snapshots (AD-7)** : l’hôte y ajoute les PNJ (état complet, 22 o par entité, PV inclus, 20 Hz). Si un datagramme (≤ 1200 o, `nombre` ≤ 54) ne suffit pas, les entités les plus proches d’un joueur passent d’abord, les autres au tick suivant. Même interpolation (150 ms, extrapolation ≤ 250 ms).
-- **Animation (AD-8)** : le rejeu par nom (`AniName`/`Motion`/`MotionParam`) s’étend aux PNJ, émis par l’hôte. Le moteur ne doit jamais animer une réplique lui-même (hook `PlayMotion` bloquant via `sync::AnimFilter`) ; une entité sort du filtre avant d’être oubliée ou détruite. Les leçons de la locomotion de l’avatar (vitesse issue de `gCCharacterMovement_PS`, trafic `MotionParam` élevé) valent aussi pour les PNJ.
-- **Mort et réapparition (AD-11)** : à sa mort, l’invité émet `Death{2}` ; l’hôte répond `Respawn{NetId, pose}` près de son avatar, PV pleins ; `Respawn` réinitialise l’interpolation. La mort de l’hôte passe par l’unique transition vers `Ended`, qui supprime avatars **et répliques** puis rend la main au solo.
-- **Protocole (AD-10)** : liste fermée, actuellement en v6. `HitRequest`, `HitOnGuest`, `Respawn` sont réservés (22, 23, 25) mais non définis : les définir exige de mettre à jour `protocol/PROTOCOL.md`, d’incrémenter la version et d’ajouter les vecteurs `protocol/vectors/*.bin`, vérifiés par les tests C++ et Go (faux invité inclus).
-- **Rappels transverses** : jeu appelé uniquement depuis `OnProcess` (AD-2), cadences à l’horloge QPC ; seul `game/` appelle le jeu (`game/ai`, `game/combat`), résolution par nom décoré en tout ou rien, sret explicite, SEH autour de chaque appel, offsets en dur documentés dans `docs/re/` (AD-3). PNJ dans `sync/npc`. Pas d’exception entre couches ; préfixes de log `[net]`/`[game]`/`[sync]`, rien par frame hors `log_level = debug` ; nouvelle clé de config → défaut dans `multiplayer.example.ini`.
+- **Base réutilisée** : les enveloppes ABI du combat (`game/combat`) et les détours `Kill`, `DownOrDeadBy*` et `gCScriptRoutine_PS::OnProcess` existent déjà, réservés à la sonde (`probe = 1`). Les stories les reprennent pour la session. Sonde et session sont exclusives pour tous les détours.
+- **Avatar solide** : `SetCollisionGroup(4)`, `EnableCollision(true)`, DCC activé ; `PSRigidBody::AddBodyFlag(0x81)` et gravité coupée. Il est placé à chaque frame par `Entity::SetPose` puis `PSRigidBody::SetPose`, sans `MoveTo`, `StopMovement` ni `SetGoalPose`. Hypothèse : l’équipement suit en mode cinématique ; c’est à vérifier en premier, sinon la story s’arrête et le constat remonte dans la spine.
+- **Registre unique des entités** : extension de `sync::AnimFilter`, même verrou. Il stocke `{entité, PS d’animation, PS de routine, rôle}`, avec les rôles héros local / avatar / réplique de PNJ. Seul le module propriétaire l’écrit (`sync/avatar`, `sync/npc`) ; les détours ne font que le lire. Une entité en sort avant d’être oubliée ou libérée.
+- **Liste fermée des hooks**, tous posés par `win/hooks` : `OnProcess`, `PlayMotion`, `SetRagDollEnabled`, les quatre réglages de locomotion, `gCScriptRoutine_PS::OnProcess`, les trois `DownOrDeadBy*` et le point d’accroche des dégâts (à trancher). Un seul détour par fonction, qui délègue à `sync/` selon le rôle. Ajouter un hook exige de mettre la liste à jour dans la spine.
+- **PNJ de l’invité = ses PNJ natifs** (même sauvegarde). Ils sont appariés par le GUID de 16 octets de `GetID` (+ 4 octets nuls), retrouvé par `gCRuntimeInfo::GetEntity`. Le `NetId` ≥ 1000 est attribué par l’hôte et reste lié à son GUID toute la session. L’IA est figée PNJ par PNJ par le hook de routine ; `EnableClassProcessing` est **interdit** (il fige tous les PNJ). À `Ended`, une réplique est libérée (IA rendue), jamais détruite. Chez l’invité, `sync/npc` est le seul à écrire l’état des répliques, PV compris.
+- **Coups** : un coup natif impliquant une entité non locale est bloqué au point d’accroche, puis converti en événement. Côté invité, son héros qui frappe une réplique émet `HitRequest{NetId cible}`. Côté hôte, un PNJ qui frappe l’avatar invité émet `HitOnGuest{NetId source, dégâts bruts}` ; l’avatar est invulnérable et ses PV ne servent qu’à l’affichage. L’hôte applique `HitRequest` par `PSDamage::DoDamage(arme en main de l’avatar, cible, agresseur = avatar)` et n’écrit jamais directement les PV d’un PNJ.
+- **Arme de l’avatar** : créée par `PSInventory::CreateItems(template)`, tenue par `HoldRightStack`, rangée par `EquipStack`. Il n’y a pas de mode de combat à transmettre : la posture est dans le nom des animations rejouées.
+- **PV du héros invité** : un seul chemin d’écriture, dans `sync/` : `HitOnGuest`, ou les détours `DownOrDeadBy*` (victime = héros invité, PV ≤ 0 → 1 PV, à terre, retour 0 sans appeler l’original). « À terre » = 1 PV et `Death{2}` émis une seule fois, puis l’hôte répond `Respawn{2, pose}` (PV pleins, interpolation réinitialisée). Écartés : `Kill → Defeat` (menu de chargement), `ZS_Unconscious` forcé.
+- **Réseau** : snapshots complets à 20 Hz (22 o par entité, PV inclus). Si un datagramme ne suffit pas, les entités les plus proches passent d’abord. Le rejeu d’animation par nom (`AniName`/`Motion`/`MotionParam`) s’étend aux PNJ, émis par l’hôte ; le moteur ne doit jamais animer une réplique. `Spawn` dépend de son type : 0 = avatar, 1 = PNJ avec GUID. Tout message ajouté ou struct modifiée → `protocol/PROTOCOL.md`, vecteurs `protocol/vectors/`, version du protocole incrémentée, tests C++ et Go.
+- **Rappels transverses** : le jeu n’est appelé que depuis `OnProcess`, sauf trois cas : le hook `PlayMotion` (copie d’octets ou blocage), le hook de routine (simple comparaison au registre) et les détours `DownOrDeadBy*`, qui tournent sur ce même thread et peuvent appeler `SetHitPoints` ou `GetOtherEntity`. Cadences à l’horloge QPC. Seul `game/` appelle le jeu : résolution par nom décoré en tout ou rien, sret explicite, SEH. `Script_Game.dll` entre dans les modules résolus et dans l’empreinte. Aucun pointeur d’entité hors de la table `NetId` ni après `Ended`. Pas d’exception entre couches ; préfixes de log `[net]`/`[game]`/`[sync]`, rien par frame hors `log_level = debug`. Toute nouvelle clé de config a un défaut dans `multiplayer.example.ini`.
 
 ## Cross-Story Dependencies
 
-- 3.0 conditionne tout l’epic : Q5 → 3.2 ; Q3 et Q6 → 3.3, 3.4, 3.5 ; Q7 → 3.6. Ses conclusions sont reportées dans la spine (AD-9, AD-11) avant les stories `sync/npc`.
-- 3.1 s’appuie sur `Hello` (Epic 1) et sur l’avatar créé par `Spawn` (Epic 2) ; 3.2 complète l’avatar et ses animations d’attaque (Epic 2).
-- 3.3 fournit les `NetId` de PNJ et la neutralisation d’IA dont dépendent 3.4 (`HitRequest`) et 3.5 (`HitOnGuest`, qui suppose aussi l’avatar solide de Q6).
-- 3.6 dépend de 3.5 (l’invité peut mourir) et de la transition `Ended` de l’Epic 1.
+- **3.1** fournit le registre et l’avatar solide, dont dépendent toutes les stories suivantes. Les détours existants (`PlayMotion`, ragdoll, locomotion) passent sur le registre sans changer de comportement (banc Wine et tests 2.4b au vert).
+- **3.2** fixe le format de `guest_equipment` et la transmission de l’arme sortie ou rangée (Q14). `DoDamage` côté hôte (3.5) a besoin de l’arme en main de l’avatar.
+- **3.3** fixe le repli pour un GUID introuvable (Q10, PNJ créés en cours de partie) et doit vérifier que les GUID sont identiques d’un PC à l’autre. Elle fournit les `NetId` de PNJ et le gel d’IA dont dépendent 3.4 à 3.6.
+- **3.4** fixe le budget de `Motion`/`MotionParam` des PNJ (Q12) et la mort d’une réplique (Q11 : sans `Kill` natif ? butin et XP de l’invité ?).
+- **3.5** tranche le point d’accroche des dégâts (Q8 : `gCDamage_PS::DoDamage` ou le virtuel `OnDamage` de la cible) et l’ajoute à la liste des hooks. 3.6 réutilise ce même point d’accroche.
+- **3.7** dépend de 3.6 (l’invité peut tomber à 0 PV) et de l’unique transition vers `Ended` (Epic 1). Elle règle les morts hors `DownOrDeadBy*` (Q9 : chute, noyade, message d’XP) et les snapshots périmés après `Respawn` (Q13).

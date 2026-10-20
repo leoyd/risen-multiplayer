@@ -1,10 +1,15 @@
-// Filtre des hooks eCAnimation_PS::PlayMotion et SetRagDollEnabled (AD-2, AD-8) : seul
-// état partagé entre les hooks et la frame (OnProcess). Réutilisé par la sonde (miroir) et
-// par l'avatar.
+// Filtre des hooks et registre des entités (AD-2, AD-8, AD-12) : seul état partagé entre les
+// hooks et la frame (OnProcess), sous un seul verrou. Réutilisé par la sonde (miroir) et par
+// la session (avatar ; répliques de PNJ à partir de la story 3.3).
 //
-// - PS local (héros du joueur) : ses appels sont capturés, jamais bloqués.
-// - PS des répliques (copie de la sonde, avatar) : les appels que le moteur lance de
-//   lui-même sont bloqués ; seul le rejeu, sous ReplayGuard sur le même thread, passe.
+// - PS local (héros du joueur, `set_local`) : ses appels sont capturés, jamais bloqués.
+// - Registre : une entrée par entité suivie {entité, PS d'animation, PS de routine, enveloppe
+//   EMotionFX, rôle}. Il n'est écrit que par le module propriétaire de l'entité (sync/avatar,
+//   la sonde, sync/npc), et une entité en sort AVANT d'être oubliée ou détruite. Les détours ne
+//   font que le lire.
+// - Avatar et réplique de PNJ : les appels que le moteur lance de lui-même sur leur PS
+//   d'animation ou leur enveloppe sont bloqués ; seul le rejeu, sous ReplayGuard sur le même
+//   thread, passe.
 // - Anneau des captures, vidé par la frame.
 //
 // Le filtre ne touche jamais au jeu : il ne manipule que des pointeurs opaques. Portable
@@ -49,16 +54,37 @@ struct Capture {
     float time = 0.0f;
 };
 
+// Rôle d'une entité suivie (AD-12). Le héros local est déclaré par `set_local` ; une entrée de
+// rôle LocalHero n'est jamais bloquée.
+// Le héros local reste déclaré par set_local (capturé) : ce rôle décrit une entrée du registre,
+// il ne déclenche pas la capture.
+enum class EntityRole : std::uint8_t { LocalHero, Avatar, NpcReplica };
+
+// Une entité suivie. Les pointeurs sont opaques ; nuls si absents (sauf `entity`, la clé).
+struct TrackedEntity {
+    void* entity = nullptr;        // eCDynamicEntity*
+    void* animation_ps = nullptr;  // eCAnimation_PS (0x52)
+    void* routine_ps = nullptr;    // gCScriptRoutine_PS (0x24)
+    void* wrapper = nullptr;       // eCWrapper_emfx3ActorInstance (story 2.4b)
+    EntityRole role = EntityRole::Avatar;
+};
+
 class AnimFilter {
 public:
     enum class Verdict { Pass, Capture, Block };
 
     // --- Frame (thread principal) ---
     void set_local(void* animation_ps);
-    void add_replica(void* animation_ps);
-    // À appeler AVANT d'oublier ou de détruire l'entité.
-    void remove_replica(void* animation_ps);
-    void clear_replicas();
+    // Ajoute l'entité au registre, ou remplace son entrée (pas de doublon). `entity` nul : ignoré.
+    void track(const TrackedEntity& entry);
+    // Retire l'entité (PS et enveloppe compris). À appeler AVANT de l'oublier ou de la détruire.
+    void untrack(const void* entity);
+    // Vide le registre (le PS local et l'anneau sont gardés).
+    void clear();
+    std::size_t tracked_count() const;
+    // Recherches (frame ou hook) : entrée dont le PS d'animation, ou l'enveloppe, vaut `ptr`.
+    bool find_by_animation_ps(const void* ptr, TrackedEntity& out) const;
+    bool find_by_wrapper(const void* ptr, TrackedEntity& out) const;
     // Retire au plus `cap` captures (les plus anciennes d'abord). `dropped` reçoit le nombre
     // de captures perdues (anneau plein) depuis le dernier appel.
     std::size_t drain(Capture* out, std::size_t cap, unsigned& dropped);
@@ -69,7 +95,10 @@ public:
     bool hook_thread_varied() const { return hook_thread_varied_.load(); }
 
     // --- Hook ---
-    Verdict classify(void* animation_ps, std::uint32_t thread_id);
+    // `ptr` : PS d'animation (PlayMotion, SetRagDollEnabled) ou enveloppe EMotionFX (réglages de
+    // locomotion). Capture pour le PS local ; Block pour un avatar ou une réplique de PNJ hors
+    // rejeu ; Pass sinon.
+    Verdict classify(void* ptr, std::uint32_t thread_id);
     // PS du héros local ? (sans effet sur les compteurs)
     bool is_local(const void* animation_ps) const;
     // Hook SetRagDollEnabled : une désactivation qui ne vient pas du héros local passe toujours,
@@ -90,8 +119,11 @@ public:
 
 private:
     mutable std::mutex mutex_;
+    // Sous mutex_. Une entrée bloque-t-elle `ptr` (PS d'animation ou enveloppe) ?
+    bool blocks_locked(const void* ptr) const;
+
     void* local_ = nullptr;
-    std::vector<void*> replicas_;
+    std::vector<TrackedEntity> entities_;
     Capture ring_[kCaptureRing];
     std::size_t head_ = 0;   // prochaine écriture
     std::size_t count_ = 0;

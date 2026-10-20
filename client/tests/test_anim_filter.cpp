@@ -5,15 +5,29 @@
 
 using mp::sync::AnimFilter;
 using mp::sync::Capture;
+using mp::sync::EntityRole;
 using mp::sync::kCaptureRing;
+using mp::sync::TrackedEntity;
 using Verdict = AnimFilter::Verdict;
 
 namespace {
 
 int g_ps_local, g_ps_replica, g_ps_other;  // adresses servant de PS opaques
+int g_entity_a, g_entity_b, g_wrapper_a, g_routine_a;
 void* const kLocal = &g_ps_local;
 void* const kReplica = &g_ps_replica;
 void* const kOther = &g_ps_other;
+
+// Suit `entity` comme avatar, avec ce PS d'animation (et éventuellement cette enveloppe).
+void track_avatar(AnimFilter& f, void* animation_ps, void* entity = &g_entity_a, void* wrapper = nullptr,
+                  EntityRole role = EntityRole::Avatar) {
+    TrackedEntity e;
+    e.entity = entity;
+    e.animation_ps = animation_ps;
+    e.wrapper = wrapper;
+    e.role = role;
+    f.track(e);
+}
 
 }  // namespace
 
@@ -26,17 +40,17 @@ TEST("filtre : PS local capturé, autres PS libres") {
     CHECK_EQ(f.take_blocked(), 0u);
 }
 
-TEST("filtre : le PS local n'est jamais bloqué, même déclaré réplique") {
+TEST("filtre : le PS local n'est jamais bloqué, même suivi comme avatar") {
     AnimFilter f;
     f.set_local(kLocal);
-    f.add_replica(kLocal);
+    track_avatar(f, kLocal);
     CHECK(f.classify(kLocal, 1) == Verdict::Capture);
     CHECK_EQ(f.take_blocked(), 0u);
 }
 
 TEST("filtre : réplique bloquée sans garde, libre sous garde du même thread") {
     AnimFilter f;
-    f.add_replica(kReplica);
+    track_avatar(f, kReplica);
     CHECK(f.classify(kReplica, 1) == Verdict::Block);
     {
         AnimFilter::ReplayGuard guard;
@@ -51,7 +65,7 @@ TEST("filtre : réplique bloquée sans garde, libre sous garde du même thread")
 
 TEST("filtre : la garde d'un autre thread ne laisse pas passer") {
     AnimFilter f;
-    f.add_replica(kReplica);
+    track_avatar(f, kReplica);
     AnimFilter::ReplayGuard guard;  // garde du thread de test
     Verdict seen = Verdict::Pass;
     std::thread other([&] { seen = f.classify(kReplica, 2); });
@@ -60,15 +74,80 @@ TEST("filtre : la garde d'un autre thread ne laisse pas passer") {
     CHECK(f.classify(kReplica, 1) == Verdict::Pass);
 }
 
-TEST("filtre : retrait d'une réplique") {
+TEST("registre : retrait d'une entité, puis vidage") {
     AnimFilter f;
-    f.add_replica(kReplica);
-    f.add_replica(kReplica);  // pas de doublon
-    f.remove_replica(kReplica);
+    track_avatar(f, kReplica);
+    track_avatar(f, kReplica);  // pas de doublon
+    CHECK_EQ(f.tracked_count(), static_cast<std::size_t>(1));
+    f.untrack(&g_entity_a);
     CHECK(f.classify(kReplica, 1) == Verdict::Pass);
-    f.add_replica(kReplica);
-    f.clear_replicas();
+    CHECK_EQ(f.tracked_count(), static_cast<std::size_t>(0));
+    track_avatar(f, kReplica);
+    f.clear();
     CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+    CHECK_EQ(f.take_blocked(), 0u);
+}
+
+TEST("registre : une entité suivie deux fois garde une seule entrée, la dernière") {
+    AnimFilter f;
+    track_avatar(f, kReplica, &g_entity_a, &g_wrapper_a);
+    track_avatar(f, kOther, &g_entity_a);  // même entité, autre PS : remplacement
+    CHECK_EQ(f.tracked_count(), static_cast<std::size_t>(1));
+    CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+    CHECK(f.classify(&g_wrapper_a, 1) == Verdict::Pass);
+    CHECK(f.classify(kOther, 1) == Verdict::Block);
+    f.track(TrackedEntity{});  // entité nulle : ignorée
+    CHECK_EQ(f.tracked_count(), static_cast<std::size_t>(1));
+}
+
+TEST("registre : untrack retire le PS et l'enveloppe, sans toucher aux autres entités") {
+    AnimFilter f;
+    track_avatar(f, kReplica, &g_entity_a, &g_wrapper_a);
+    track_avatar(f, kOther, &g_entity_b, nullptr, EntityRole::NpcReplica);
+    CHECK(f.classify(kReplica, 1) == Verdict::Block);
+    CHECK(f.classify(&g_wrapper_a, 1) == Verdict::Block);
+    f.untrack(&g_entity_a);
+    CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+    CHECK(f.classify(&g_wrapper_a, 1) == Verdict::Pass);
+    CHECK(f.classify(kOther, 1) == Verdict::Block);  // réplique de PNJ toujours suivie
+    f.untrack(nullptr);
+    f.untrack(&g_entity_a);  // déjà retirée : sans effet
+    CHECK_EQ(f.tracked_count(), static_cast<std::size_t>(1));
+    CHECK_EQ(f.take_blocked(), 3u);
+}
+
+TEST("registre : recherches par PS d'animation et par enveloppe, avec le rôle") {
+    AnimFilter f;
+    TrackedEntity a;
+    a.entity = &g_entity_a;
+    a.animation_ps = kReplica;
+    a.routine_ps = &g_routine_a;
+    a.wrapper = &g_wrapper_a;
+    a.role = EntityRole::Avatar;
+    f.track(a);
+    track_avatar(f, kOther, &g_entity_b, nullptr, EntityRole::NpcReplica);
+    TrackedEntity out;
+    CHECK(f.find_by_animation_ps(kReplica, out));
+    CHECK(out.entity == &g_entity_a && out.role == EntityRole::Avatar);
+    CHECK(out.routine_ps == &g_routine_a && out.wrapper == &g_wrapper_a);
+    CHECK(f.find_by_wrapper(&g_wrapper_a, out));
+    CHECK(out.entity == &g_entity_a);
+    CHECK(f.find_by_animation_ps(kOther, out));
+    CHECK(out.entity == &g_entity_b && out.role == EntityRole::NpcReplica);
+    CHECK(!f.find_by_animation_ps(&g_wrapper_a, out));  // une enveloppe n'est pas un PS
+    CHECK(!f.find_by_wrapper(kReplica, out));
+    CHECK(!f.find_by_animation_ps(nullptr, out));
+    CHECK(!f.find_by_wrapper(nullptr, out));  // l'enveloppe nulle de b ne correspond pas
+    CHECK_EQ(f.take_blocked(), 0u);  // les recherches ne comptent rien
+}
+
+TEST("registre : une entrée de rôle héros local n'est jamais bloquée") {
+    AnimFilter f;
+    track_avatar(f, kReplica, &g_entity_a, &g_wrapper_a, EntityRole::LocalHero);
+    CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+    CHECK(f.classify(&g_wrapper_a, 1) == Verdict::Pass);
+    CHECK(f.classify_ragdoll(kReplica, true, 1) == Verdict::Pass);
+    CHECK_EQ(f.take_blocked(), 0u);
 }
 
 TEST("filtre : anneau plein, 64 captures restituées dans l'ordre et 1 perte") {
@@ -157,7 +236,7 @@ TEST("anim_filter : is_local ne compte rien") {
     AnimFilter f;
     int local = 0, replica = 0;
     f.set_local(&local);
-    f.add_replica(&replica);
+    track_avatar(f, &replica);
     CHECK(f.is_local(&local));
     CHECK(!f.is_local(&replica));
     CHECK(!f.is_local(nullptr));
@@ -168,7 +247,7 @@ TEST("anim_filter : classify_ragdoll — désactivation d'un avatar passe sans c
     AnimFilter f;
     int local = 0, replica = 0, other = 0;
     f.set_local(&local);
-    f.add_replica(&replica);
+    track_avatar(f, &replica);
     CHECK(f.classify_ragdoll(&replica, false, 1) == Verdict::Pass);  // nettoyage par le moteur
     CHECK_EQ(f.take_blocked(), 0u);
     CHECK(f.classify_ragdoll(&replica, true, 1) == Verdict::Block);

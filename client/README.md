@@ -275,9 +275,44 @@ Prérequis : `role = host`, `probe = 0`, `log_level = debug`, overlay Steam dés
 puis en règle le poids et la vitesse de lecture à chaque frame (`SetTargetWeight`, `SetPlaySpeed`
 de l'enveloppe EMotionFX), et l'arrête par un fondu (`SwitchFadeOut`, `StopMotion`). Ces réglages
 du héros partent en `MotionParam` (les changements seulement) et sont rejoués sur l'avatar ; ceux que le contrôleur de l'avatar lancerait de lui-même
-sont bloqués (il le croit immobile, car `MoveTo` le recale). Test : en écho, démarrer, courir en
+sont bloqués (il le croit immobile, car la frame le recale ; `SetPose` depuis la story 3.1). Test : en écho, démarrer, courir en
 avant puis en arrière, s'arrêter, marcher, tourner : ni T-pose au démarrage, ni blocage. La ligne
 `[sync] locomotion (1 s)` compte les réglages du héros et ceux bloqués sur l'avatar.
+
+### Avatar solide (story 3.1, une machine)
+
+L'avatar est un vrai obstacle du monde. Juste après `Entity::Spawn`, il reçoit une fois les réglages
+du mode 2 du spike J2 (AD-8) : `SetCollisionGroup(4)` (valeur à confirmer : les PNJ natifs du spike lisent 0), `EnableCollision(true)`, DCC actif,
+corps cinématique (`PSRigidBody::AddBodyFlag(0x81)`) et gravité coupée. Il est ensuite placé à
+chaque frame par `Entity::SetPose` puis `PSRigidBody::SetPose` (plus de `MoveTo`). À sa mort
+(`Death`), le corps est rendu à la physique et la gravité rétablie **avant** le ragdoll. Le héros
+local, lui, est toujours téléporté par `MoveTo` à l'entrée en session de l'invité.
+
+Prérequis : `role = host`, `probe = 0`, overlay Steam désactivé. Charger une partie près d'un
+monstre hostile isolé (camp de la zone de départ), pas trop près pour commencer.
+
+1. `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 300s --echo`. Au log :
+   `[sync] avatar 2 créé : …`, puis `[sync] avatar 2 réglages : SetCollisionGroup(4) OK,
+   EnableCollision(true) OK, SetDCCEnabled(true) OK, AddBodyFlag(0x81) OK,
+   EnableGravitation(false) OK`. Un `SEH` (ligne en erreur) n'empêche pas l'avatar d'exister :
+   le rapporter.
+2. **Équipement (à vérifier en premier).** Courir, puis sauter : l'avatar imite (écho). Son
+   équipement (armure, arme au fourreau) le suit-il, ou reste-t-il en place / à la traîne ? Si
+   l'équipement ne suit pas, **arrêter le test** et le rapporter : la story s'arrête et le constat
+   remonte dans la spine (AD-8).
+3. **Solidité.** S'arrêter, puis marcher droit dans l'avatar, puis courir dedans, puis sauter
+   pendant que l'avatar saute (écho : il saute avec un léger retard). Attendu : le héros est
+   bloqué à chaque fois, sans passer au travers.
+4. **Cible des monstres.** Attirer le monstre près de l'avatar (se placer derrière lui). Attendu :
+   le monstre le cible et l'attaque (l'avatar n'est pas encore invulnérable : il peut mourir,
+   c'est la story 3.6).
+5. **Mort.** Relancer avec `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 20s --scenario
+   tools/fake-guest/scenarios/mort.txt` (près d'un sol en pente, si possible). Au log :
+   `[sync] avatar 2 réglages de mort : RemoveBodyFlag(0x81) OK, EnableGravitation(true) OK`, puis
+   `[sync] avatar 2 en ragdoll (mort)`. Attendu : le corps tombe au sol en ragdoll, au lieu de
+   rester figé en l'air.
+6. Fournir `Script_Multiplayer.log` (lignes `[sync] avatar … réglages`, et toute ligne `SetPose`
+   en erreur) et le comportement observé à chaque étape.
 
 ### Fin de session en jeu (story 1.5, une machine)
 
