@@ -303,13 +303,13 @@ graph LR
 5. ~~Arme dégainée et mode de combat de l’avatar~~ : **résolu** (inventaire + `HoldRightStack`, pas de mode de combat, AD-9).
 6. ~~Collisions entre PNJ et avatar~~ : **résolu** (corps cinématique, AD-8). Les PNJ frappent déjà l’avatar (vérifié).
 7. ~~Mort native de l’invité~~ : **résolu** (coup mortel intercepté dans `DownOrDeadBy*`, AD-11).
-8. **Point d’accroche des dégâts** (AD-9, AD-12) : il doit voir chaque coup avec son agresseur et sa cible, et pouvoir le bloquer. Candidats : `gCDamage_PS::DoDamage` (une arme frappe) ou le virtuel `OnDamage` de la cible. À trancher dans la **story 3.4**, avant 3.5.
-9. **Morts hors `DownOrDeadBy*`** (chute, noyade) et message de perte d’XP (vu seulement avec `Kill → Defeat`) : story 3.6. Seule la mêlée a été testée en jeu ; `Projectile` et `Inferno` ne sont vérifiés qu’au désassemblage.
+8. **Point d’accroche des dégâts** (AD-9, AD-12) : il doit voir chaque coup avec son agresseur et sa cible, et pouvoir le bloquer. Candidats : `gCDamage_PS::DoDamage` (une arme frappe) ou le virtuel `OnDamage` de la cible. À trancher dans la **story 3.5**, avant 3.6.
+9. **Morts hors `DownOrDeadBy*`** (chute, noyade) et message de perte d’XP (vu seulement avec `Kill → Defeat`) : story 3.7. Seule la mêlée a été testée en jeu ; `Projectile` et `Inferno` ne sont vérifiés qu’au désassemblage.
 10. **PNJ créés en cours de partie** (réapparition de monstres) : leur GUID est-il le même chez les deux pairs ? Sinon, repli à fixer dans la spine avant la **story 3.3**.
-11. **Mort d’une réplique chez l’invité** : comment `Death` la tue (sans `Kill` natif ?) et ce qu’il advient du butin et de l’XP de l’invité. **Story 3.3**.
-12. **Budget de `Motion` et `MotionParam` pour les PNJ** (AD-8) : à fixer avant la **story 3.3**.
-13. **Après `Respawn`**, les snapshots de l’invité encore en route peuvent replacer son avatar sur le lieu de la mort chez l’hôte. Remède à fixer dans la **story 3.6** (époque de vie dans le snapshot, ou accusé de `Respawn`).
-14. **Équipement de l’invité** (`guest_equipment`) : format de la liste (noms de templates) et façon de transmettre l’arme sortie ou rangée. **Story 3.1**, avant 3.2.
+11. **Mort d’une réplique chez l’invité** : comment `Death` la tue (sans `Kill` natif ?) et ce qu’il advient du butin et de l’XP de l’invité. **Story 3.4**.
+12. **Budget de `Motion` et `MotionParam` pour les PNJ** (AD-8) : à fixer dans la **story 3.4**.
+13. **Après `Respawn`**, les snapshots de l’invité encore en route peuvent replacer son avatar sur le lieu de la mort chez l’hôte. Remède à fixer dans la **story 3.7** (époque de vie dans le snapshot, ou accusé de `Respawn`).
+14. **Équipement de l’invité** (`guest_equipment`) : format de la liste (noms de templates) et façon de transmettre l’arme sortie ou rangée. **Story 3.2**.
 
 ## Deferred
 
