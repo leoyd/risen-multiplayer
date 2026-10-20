@@ -39,6 +39,7 @@ constexpr int kSkillModifierMax = 1;
 constexpr int kSkillModifierSet = 2;
 constexpr int kAIModeDead = 12;              // Kill : AIMode = 12 (Entity::IsDead)
 constexpr int kAIModeDefeated = 11;          // Defeat : AIMode = 11
+constexpr int kAIModeRoutine = 2;            // héros vivant (1ᵉʳ test en jeu, 2026-10-20)
 
 constexpr std::size_t kPropertyIdSize = 0x14;  // bCPropertyID (16 o de GUID en tête)
 
@@ -56,6 +57,8 @@ bool resolve_script_game(const char*& missing);
 
 void* routine_on_process_address();  // gCScriptRoutine_PS::OnProcess (Game.dll)
 void* kill_address();                // ::Kill (Script_Game.dll)
+// ::DownOrDeadBy{MeleeWeapon,Projectile,Inferno} (Script_Game.dll), which = 0, 1, 2.
+void* down_or_dead_address(int which);
 
 // --- Q5 : arme et mode de combat ------------------------------------------------------
 bool get_right_hold_stack(const Entity& e, int& out);      // -1 : rien ou pas d'inventaire
@@ -99,6 +102,12 @@ bool set_ai_mode(const Entity& e, int mode);
 bool set_routine_state(const Entity& e, const char* state);  // PSRoutine::SetState(bCString)
 // Appelle ::Defeat(spu, self, other, arg). Depuis le détour de Kill uniquement.
 bool defeat(void* spu, void* self, void* other, long long arg, long long& out);
+// GUI2::PrintGameLogF (Script.dll) : une ligne dans le journal à l'écran du jeu (ASCII, 255 car.).
+// False si le journal est désactivé dans le jeu ou sur SEH. Thread principal.
+bool hud_print(const char* text);
+// gCScriptProcessingUnit::GetOtherEntity (Game.dll) : victime d'un Kill dont `other` est nul.
+// Accesseur sans effet de bord, appelé depuis le détour de Kill (même thread). Sous SEH.
+bool spu_other_entity(void* spu, void*& out);
 // *(void**)entity_object : eCEntity* d'un `Entity*` reçu par un script. Lecture protégée.
 bool read_entity_ptr(const void* entity_object, void*& out);
 

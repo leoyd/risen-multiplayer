@@ -26,6 +26,7 @@ game::SwitchFadeOutFn g_original_switch_fade_out = nullptr;
 game::WrapperStopMotionFn g_original_wrapper_stop_motion = nullptr;
 game::RoutineOnProcessFn g_original_routine_on_process = nullptr;  // spike J2 (Num4)
 game::ScriptFn g_original_kill = nullptr;                           // spike J2 (Num6)
+game::ScriptFn g_original_down_or_dead[3] = {};                     // spike J2 (Num6, 5ᵉ test)
 bool g_initialized = false;
 
 void detour_on_process(void* application) {
@@ -64,7 +65,12 @@ void detour_routine_on_process(void* routine_ps) {
 thread_local bool t_in_kill_detour = false;
 
 long long detour_kill(void* spu, void* self, void* other, long long arg) {
-    if (!t_in_kill_detour && sync::probe_j2::intercept_kill(other)) {
+    if (t_in_kill_detour) {
+        // Kill lancé pendant Defeat (3ᵉ test : il tuait le héros juste après l'interception).
+        if (sync::probe_j2::swallow_nested_kill(spu, other)) return 0;
+        return g_original_kill(spu, self, other, arg);
+    }
+    if (sync::probe_j2::intercept_kill(spu, other)) {
         t_in_kill_detour = true;
         long long result = 0;
         const bool ok = game::defeat(spu, self, other, arg, result);
@@ -73,6 +79,13 @@ long long detour_kill(void* spu, void* self, void* other, long long arg) {
         if (ok) return result;
     }
     return g_original_kill(spu, self, other, arg);
+}
+
+// Spike J2, Num6 (5ᵉ test) : coup mortel sur le héros annulé avant toute décision de mort.
+template <int Which>
+long long detour_down_or_dead(void* spu, void* self, void* other, long long arg) {
+    if (sync::probe_j2::intercept_down_or_dead(Which, spu, other)) return 0;
+    return g_original_down_or_dead[Which](spu, self, other, arg);
 }
 
 // Spike J2 : hooks facultatifs. Un échec rend l'expérience inactive, la sonde J1 continue.
@@ -90,8 +103,14 @@ void install_probe_j2() {
     const char* kill_missing = nullptr;
     if (game::resolve_script_game(kill_missing)) {
         kill = create(game::kill_address(), reinterpret_cast<void*>(&detour_kill),
-                      reinterpret_cast<void**>(&g_original_kill), "Kill");
-        if (!kill) kill_reason = "MH_CreateHook(Kill) a échoué";
+                      reinterpret_cast<void**>(&g_original_kill), "Kill") &&
+               create(game::down_or_dead_address(0), reinterpret_cast<void*>(&detour_down_or_dead<0>),
+                      reinterpret_cast<void**>(&g_original_down_or_dead[0]), "DownOrDeadByMeleeWeapon") &&
+               create(game::down_or_dead_address(1), reinterpret_cast<void*>(&detour_down_or_dead<1>),
+                      reinterpret_cast<void**>(&g_original_down_or_dead[1]), "DownOrDeadByProjectile") &&
+               create(game::down_or_dead_address(2), reinterpret_cast<void*>(&detour_down_or_dead<2>),
+                      reinterpret_cast<void**>(&g_original_down_or_dead[2]), "DownOrDeadByInferno");
+        if (!kill) kill_reason = "MH_CreateHook(Kill ou DownOrDeadBy*) a échoué";
     } else {
         kill_reason = std::string(kill_missing != nullptr ? kill_missing : "?") + " introuvable";
     }

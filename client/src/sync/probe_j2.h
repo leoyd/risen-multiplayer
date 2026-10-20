@@ -43,7 +43,14 @@ void find_nearest_npc(const game::Entity& player, const game::Entity& exclude, f
 bool on_routine_process(void* routine_ps) noexcept;
 // ::Kill(spu, self, other, arg) : true = la victime (`other`, un Entity*) est le héros et
 // l'interception est active ; le détour appelle alors Defeat à la place.
-bool intercept_kill(void* other) noexcept;
+// `other` nul : victime lue par gCScriptProcessingUnit::GetOtherEntity(spu).
+bool intercept_kill(void* spu, void* other) noexcept;
+// DownOrDeadBy* (which 0 mêlée, 1 projectile, 2 inferno) : true = la victime (`other`) est le
+// héros et l'interception est active ; le héros est remis à 1 PV, le détour rend 0 sans appeler
+// l'original (comme le jeu quand la victime survit).
+bool intercept_down_or_dead(int which, void* spu, void* other) noexcept;
+// Kill imbriqué dans Defeat : true = sa victime est le héros, l'appel est avalé (compté).
+bool swallow_nested_kill(void* spu, void* other) noexcept;
 // Résultat de l'appel de Defeat par le détour (journalisé par la frame).
 void note_defeat(bool call_ok, long long result) noexcept;
 

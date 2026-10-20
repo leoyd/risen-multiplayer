@@ -27,14 +27,24 @@ constexpr std::uint64_t kFollowUpMs = 1000;      // Num1 : relecture 1 s plus ta
 constexpr std::uint64_t kSummaryPeriodMs = 1000;
 constexpr long kProbeDamage = 10;
 constexpr const char* kStandUpState = "ZS_StandUp";
+constexpr const char* kUnconsciousState = "ZS_Unconscious";
 
 // --- Partagé avec les détours --------------------------------------------------------------
 std::atomic<void*> g_frozen_routine_ps{nullptr};  // Num4 : PS 0x24 dont l'IA est figée
 std::atomic<void*> g_hero{nullptr};               // eCEntity* du héros, publié par la frame
 std::atomic<bool> g_intercept{false};             // Num6
 std::atomic<unsigned> g_kills_seen{0};            // Kill reçus par le détour
-std::atomic<unsigned> g_kills_null_other{0};      // Kill sans victime explicite (non identifiés)
+std::atomic<unsigned> g_kills_null_other{0};      // Kill sans victime explicite (GetOtherEntity)
+std::atomic<unsigned> g_kills_hero{0};            // Kill dont la victime est le héros
 std::atomic<unsigned> g_kills_intercepted{0};
+std::atomic<unsigned> g_nested_kills{0};
+// 4ᵉ test : après le Kill (devenu Defeat), DownOrDeadByMeleeWeapon met le héros en
+// ZS_RagDollDead → boucle de mort et menu. La frame suivante le remet en ZS_Unconscious.
+std::atomic<bool> g_force_unconscious{false};
+// 5ᵉ test : coups mortels sur le héros annulés dans DownOrDeadBy* (mêlée, projectile, inferno).
+std::atomic<unsigned> g_lethal_seen[3] = {};
+std::atomic<unsigned> g_lethal_cancelled{0};
+unsigned g_logged_cancelled = 0;          // Kill sur le héros pendant Defeat, avalés
 std::atomic<unsigned> g_defeat_failures{0};       // Defeat a levé une exception (SEH)
 std::atomic<long long> g_last_defeat_result{0};
 std::atomic<std::uint32_t> g_kill_thread{0};
@@ -45,6 +55,9 @@ bool g_combat = false;
 bool g_routine_hook = false;
 bool g_kill_hook = false;
 bool g_down[6] = {};
+bool g_num0_down = false;
+bool g_hello = false;          // message d'accueil à l'écran, une fois par partie chargée
+bool g_hud_warned = false;
 std::uint64_t g_num6_since = 0;
 bool g_num6_revived = false;
 std::uint64_t g_last_summary = 0;
@@ -103,6 +116,27 @@ std::string entity_name(const game::Entity& e) {
 
 void log_line(const std::string& text) { log::info("[probe] J2 " + text); }
 
+// Journal à l'écran du jeu (ASCII : le jeu n'affiche pas l'UTF-8). Copié dans le log.
+void hud(const std::string& text) {
+    log::info("[probe] J2 écran : " + text);
+    if (!game::hud_print(("[MP] " + text).c_str()) && !g_hud_warned) {
+        g_hud_warned = true;
+        log_line("journal à l'écran indisponible (désactivé dans les options du jeu ?)");
+    }
+}
+
+const char* mode_name(int mode) {
+    static const char* const kNames[] = {"0 MoveTo (traverse)", "1 solide (groupe 4, DCC)",
+                                         "2 cinematique (bloque le heros)", "3 SetGoalPose (glisse)"};
+    return kNames[mode & 3];
+}
+
+std::string ascii(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) out += (c < 0x80) ? static_cast<char>(c) : '?';
+    return out;
+}
+
 bool pressed(int vk, bool& was_down, bool focus) {
     const bool down = focus && (GetAsyncKeyState(vk) & 0x8000) != 0;
     const bool edge = down && !was_down;
@@ -126,6 +160,7 @@ void num1_weapon(const game::Entity& player, const game::Entity& copy, std::uint
              " » (" + hex_ptr(hero_item.ptr) + ") mode combat=" + combat_mode(player));
     if (copy.ptr == nullptr) {
         log_line("Num1 : pas de copie (F6 d'abord)");
+        hud("Num1 : pas de copie, appuie d'abord sur F6");
         return;
     }
     void* inventory = nullptr;
@@ -140,6 +175,7 @@ void num1_weapon(const game::Entity& player, const game::Entity& copy, std::uint
     if (g_copy_stack < 0) {
         if (!stack_ok || hero_stack < 0) {
             log_line("Num1 : main du héros vide : sortir une arme puis réessayer");
+            hud("Num1 : sors d'abord ton arme, puis reessaie");
             return;
         }
         game::Template tmpl;
@@ -173,6 +209,8 @@ void num1_weapon(const game::Entity& player, const game::Entity& copy, std::uint
     log_line(std::string("Num1 : copie ") + action + "(" + std::to_string(g_copy_stack) + ") " + call(ok) + " -> " +
              (ok ? (result ? "true" : "false") : "?") + ", mode combat avant=" + before +
              " après=" + combat_mode(copy) + ", pile en main=" + int_or(copy_stack_ok, copy_stack));
+    hud(std::string("Num1 : copie ") + (ok && result ? (g_copy_holding ? "arme EN MAIN" : "arme RANGEE")
+                                                    : "echec (voir le log)"));
     g_q5_followup = now + kFollowUpMs;
     g_q5_copy = copy;
 }
@@ -242,6 +280,7 @@ void set_kinematic(const game::Entity& copy, bool on) {
 void num2_collision(const game::Entity& copy) {
     if (copy.ptr == nullptr) {
         log_line("Num2 : pas de copie (F6 d'abord)");
+        hud("Num2 : pas de copie, appuie d'abord sur F6 puis F7");
         return;
     }
     log_collision_state(copy, "avant");
@@ -266,6 +305,7 @@ void num2_collision(const game::Entity& copy) {
                                              "SetGoalPose chaque frame, MoveTo si écart > 150 cm"};
     log_line(std::string("Num2 : mode ") + std::to_string(g_mode) + " — placement en miroir : " + kPlacement[g_mode]);
     log_collision_state(copy, "après");
+    hud(std::string("Num2 : collision mode ") + mode_name(g_mode));
 }
 
 // --- Q3 : PNJ natifs (Num3, Num4, Num5) ----------------------------------------------------
@@ -299,6 +339,7 @@ void num3_npc(const game::Entity& player, const game::Entity& copy) {
     }
     if (best.ptr == nullptr) {
         log_line("Num3 : aucun PNJ à moins de 15 m (" + std::to_string(total) + " PNJ au total)");
+        hud("Num3 : aucun PNJ a moins de 15 m");
         return;
     }
     if (g_npc.ptr != nullptr && g_npc.ptr != best.ptr && g_frozen_routine_ps.load() != nullptr) {
@@ -320,6 +361,8 @@ void num3_npc(const game::Entity& player, const game::Entity& copy) {
              }() +
              ", gCRuntimeInfo::GetEntity(GUID)=" + (back_ok ? hex_ptr(back) : std::string("SEH")) +
              (back_ok ? (back == best.ptr ? " (== entité)" : " (DIFFÉRENT)") : std::string()));
+    hud("Num3 : " + ascii(entity_name(best)) + " suivi, GUID " + (id_ok ? hex_bytes(id, 4) : std::string("?")) +
+        " PV " + hit_points(best) + " (note le GUID, recharge, revise le meme)");
 }
 
 // Le PNJ suivi existe-t-il encore (mort, retiré du monde) ? Sinon, il est oublié et son IA
@@ -356,6 +399,7 @@ void num4_freeze(std::uint64_t now) {
     }
     if (g_npc.ptr == nullptr) {
         log_line("Num4 : aucun PNJ suivi (Num3 d'abord)");
+        hud("Num4 : aucun PNJ suivi, appuie d'abord sur Num3");
         return;
     }
     if (!tracked_npc_alive("Num4")) return;
@@ -369,6 +413,7 @@ void num4_freeze(std::uint64_t now) {
     g_frozen_routine_ps.store(freeze ? ps : nullptr);
     log_line(std::string("Num4 : IA du PNJ ") + hex_ptr(g_npc.ptr) + (freeze ? " FIGÉE" : " libérée") + " (PS 0x24 " +
              hex_ptr(ps) + ")");
+    hud(std::string("Num4 : IA de ") + ascii(entity_name(g_npc)) + (freeze ? " FIGEE" : " liberee"));
     g_freeze_log_start = now;
     g_freeze_log_next = now;
 }
@@ -389,6 +434,7 @@ void freeze_followup(std::uint64_t now) {
 void num5_damage(const game::Entity& player, const game::Entity& copy) {
     if (g_npc.ptr == nullptr) {
         log_line("Num5 : aucun PNJ suivi (Num3 d'abord)");
+        hud("Num5 : aucun PNJ suivi, appuie d'abord sur Num3");
         return;
     }
     if (!tracked_npc_alive("Num5")) return;
@@ -421,10 +467,14 @@ void num5_damage(const game::Entity& player, const game::Entity& copy) {
                  (amount_ok ? std::to_string(old_amount) : std::string("illisible (pas de gCDamage_PS ?)")) +
                  (set_ok ? " -> 10 (rétabli après)" : " (inchangé)") + ", PV " + before + " -> " + after);
     }
-    if (damaged) return;  // repli seulement si DoDamage n'a pas porté : une seule source de dégâts par appui
+    if (damaged) {
+        hud("Num5 : " + ascii(entity_name(g_npc)) + " blesse, PV " + hit_points(g_npc));
+        return;  // repli seulement si DoDamage n'a pas porté : une seule source de dégâts par appui
+    }
     const std::string before = hit_points(g_npc);
     const bool ok = game::set_hit_points(g_npc, -kProbeDamage, game::kSkillModifierAdd);
     log_line("Num5 : repli SetHitPoints(-10, ajout) " + call(ok) + ", PV " + before + " -> " + hit_points(g_npc));
+    hud("Num5 : " + ascii(entity_name(g_npc)) + " PV " + hit_points(g_npc) + " (repli SetHitPoints)");
 }
 
 // --- Q7 : mort et relève (Num6) ------------------------------------------------------------
@@ -438,6 +488,7 @@ void toggle_intercept() {
     g_intercept.store(on);
     log_line(std::string("Num6 : interception de la mort du héros ") +
              (on ? "ACTIVÉE (Kill du héros → Defeat)" : "désactivée (mort native)"));
+    hud(on ? "Num6 : mort interceptee ACTIVEE (coup mortel annule, 1 PV)" : "Num6 : mort interceptee DESACTIVEE (mort normale)");
 }
 
 void revive(const game::Entity& player) {
@@ -457,10 +508,12 @@ void revive(const game::Entity& player) {
     log_line("Num6 relève 1/6 : SetHitPoints(max, fixer) " +
              (max_ok ? call(game::set_hit_points(player, max, game::kSkillModifierSet)) : std::string("sauté (max SEH)")) +
              ", PV=" + hit_points(player));
+    // Après une vraie mort, LastAIMode vaut aussi 12 (2ᵉ test) : repli sur l'état normal du héros.
     const bool last_usable = last_ok && last != game::kAIModeDead && last != game::kAIModeDefeated;
-    log_line("Num6 relève 2/6 : AIMode = LastAIMode (" + int_or(last_ok, last) + ") " +
-             (last_usable ? call(game::set_ai_mode(player, last))
-                          : std::string("sauté (LastAIMode illisible, mort ou à terre)")) +
+    const int target = last_usable ? last : game::kAIModeRoutine;
+    log_line("Num6 relève 2/6 : AIMode = " + std::to_string(target) +
+             (last_usable ? " (LastAIMode) " : " (repli : LastAIMode illisible, mort ou à terre) ") +
+             call(game::set_ai_mode(player, target)) +
              ", AIMode=" + [&] {
                  int m = 0;
                  return int_or(game::get_ai_mode(player, m), m);
@@ -479,6 +532,7 @@ void revive(const game::Entity& player) {
              call(game::set_routine_state(player, kStandUpState)));
     const bool after_ok = game::is_dead(player, dead);
     log_line("Num6 relève : après, mort=" + bool_or(after_ok, dead) + " PV=" + hit_points(player));
+    hud("Num6 tenu : releve faite, mort=" + bool_or(after_ok, dead) + " PV " + hit_points(player));
 }
 
 void num6(const game::Entity& player, bool focus, std::uint64_t now) {
@@ -501,13 +555,24 @@ void kill_summary() {
     const unsigned intercepted = g_kills_intercepted.load();
     const unsigned failures = g_defeat_failures.load();
     const unsigned null_other = g_kills_null_other.load();
+    if (intercepted > g_logged_intercepted) hud("Mort interceptee : heros a terre (Defeat)");
+    const unsigned cancelled = g_lethal_cancelled.load();
+    if (cancelled != g_logged_cancelled) {
+        g_logged_cancelled = cancelled;
+        hud("Coup mortel annule : heros reste debout a 1 PV");
+        log_line("Num6 : coups mortels sur le héros (DownOrDeadBy* mêlée/projectile/inferno)=" +
+                 std::to_string(g_lethal_seen[0].load()) + "/" + std::to_string(g_lethal_seen[1].load()) + "/" +
+                 std::to_string(g_lethal_seen[2].load()) + ", annulés=" + std::to_string(cancelled));
+    }
     if (seen == g_logged_seen && intercepted == g_logged_intercepted && failures == g_logged_failures &&
         null_other == g_logged_null) {
         return;
     }
     const std::uint32_t tid = g_kill_thread.load();
     log_line("Num6 : Kill vus=" + std::to_string(seen) + " (sans victime explicite=" + std::to_string(null_other) +
-             "), morts du héros interceptées=" + std::to_string(intercepted) + " (+" +
+             ", dont la victime est le héros=" + std::to_string(g_kills_hero.load()) +
+             "), Kill imbriqués avalés=" + std::to_string(g_nested_kills.load()) +
+             ", morts du héros interceptées=" + std::to_string(intercepted) + " (+" +
              std::to_string(intercepted - g_logged_intercepted) + "), Defeat en échec (SEH)=" +
              std::to_string(failures) + ", dernier résultat de Defeat=" + std::to_string(g_last_defeat_result.load()) +
              ", thread du détour=" + std::to_string(tid) +
@@ -516,6 +581,21 @@ void kill_summary() {
     g_logged_intercepted = intercepted;
     g_logged_failures = failures;
     g_logged_null = null_other;
+}
+
+void help(const game::Entity& copy) {
+    hud("F6 copie | F7 miroir | Num1 arme copie | Num2 collision | Num0 aide");
+    hud("Num3 viser PNJ | Num4 figer IA | Num5 blesser | Num6 court: mort->a terre, tenu 1s: releve");
+    hud(std::string("Etat : copie ") + (copy.ptr != nullptr ? "oui" : "non (F6)") + ", collision " +
+        mode_name(g_mode) + ", PNJ " + (g_npc.ptr != nullptr ? ascii(entity_name(g_npc)) : std::string("aucun")) +
+        ", IA figee " + (g_frozen_routine_ps.load() != nullptr ? "oui" : "non") + ", mort interceptee " +
+        (g_intercept.load() ? "ON" : "OFF"));
+}
+
+bool victim_of(void* spu, void* other, void*& victim) noexcept {
+    victim = nullptr;
+    if (other == nullptr) return game::spu_other_entity(spu, victim);
+    return game::read_entity_ptr(other, victim);  // lecture mémoire seule
 }
 
 }  // namespace
@@ -565,6 +645,7 @@ void reset() {
     g_group_saved = g_grav_saved = false;
     g_goal_moves = g_placements = g_placement_failures = 0;
     g_goal_max_gap = 0.0f;
+    g_hello = false;
 }
 
 void place_copy(const game::Entity& copy, const game::Matrix& target) {
@@ -602,6 +683,24 @@ void frame(const game::Entity& player, const game::Entity& copy, bool focus, std
         for (int i = 0; i < 6; ++i) pressed(VK_NUMPAD1 + i, g_down[i], false);
         return;
     }
+    if (g_force_unconscious.exchange(false) && player.ptr != nullptr) {
+        // 5ᵉ test : le coup mortel a mis le héros en ragdoll, et ZS_Unconscious coupe ses collisions :
+        // il passait sous la carte. Le chemin « assommé » natif n'a pas de ragdoll : on le coupe d'abord.
+        void* anim = nullptr;
+        std::string ragdoll = "sauté (pas d'eCAnimation_PS)";
+        if (game::get_animation_ps(player, anim) && anim != nullptr) {
+            ragdoll = call(game::set_ragdoll(anim, false, true, nullptr));
+        }
+        const bool ok = game::set_routine_state(player, kUnconsciousState);
+        log_line(std::string("Num6 : ragdoll coupé ") + ragdoll + ", héros remis en « " + kUnconsciousState +
+                 " » après l'interception " + call(ok));
+        hud(ok ? "Mort interceptee : heros remis a terre (ZS_Unconscious)" : "Mort interceptee : SetState a echoue");
+    }
+    if (player.ptr != nullptr && !g_hello) {
+        g_hello = true;
+        hud("Sonde J2 active : Num0 = aide et etat des modes (Verr. Num actif)");
+    }
+    if (pressed(VK_NUMPAD0, g_num0_down, focus) && player.ptr != nullptr) help(copy);
     if (player.ptr != nullptr) {
         if (pressed(VK_NUMPAD1, g_down[0], focus)) num1_weapon(player, copy, now_ms);
         if (pressed(VK_NUMPAD2, g_down[1], focus)) num2_collision(copy);
@@ -639,18 +738,43 @@ bool on_routine_process(void* routine_ps) noexcept {
     return true;
 }
 
-bool intercept_kill(void* other) noexcept {
+bool intercept_kill(void* spu, void* other) noexcept {
     g_kills_seen.fetch_add(1);
     g_kill_thread.store(GetCurrentThreadId());
-    if (other == nullptr) {
-        g_kills_null_other.fetch_add(1);  // victime = GetOtherEntity de l'unité : non identifiée
-        return false;
-    }
-    if (!g_intercept.load()) return false;
+    // 1ᵉʳ test : la mort d'un personnage arrive avec `other` nul (victime = GetOtherEntity de l'unité).
+    if (other == nullptr) g_kills_null_other.fetch_add(1);
     void* victim = nullptr;
-    if (!game::read_entity_ptr(other, victim)) return false;  // lecture mémoire seule
+    if (!victim_of(spu, other, victim)) return false;
     const void* hero = g_hero.load();
-    return hero != nullptr && victim == hero;
+    if (hero == nullptr || victim != hero) return false;
+    g_kills_hero.fetch_add(1);
+    if (!g_intercept.load()) return false;
+    // 3ᵉ test : Defeat sur un héros à 0 PV finissait en mort. 1 PV avant Defeat (même thread,
+    // exception AD-2 documentée), Defeat ajoute ensuite 5 % du max.
+    game::set_hit_points(game::Entity{victim}, 1, game::kSkillModifierSet);
+    g_force_unconscious.store(true);
+    return true;
+}
+
+bool intercept_down_or_dead(int which, void* spu, void* other) noexcept {
+    void* victim = nullptr;
+    if (!victim_of(spu, other, victim)) return false;
+    const void* hero = g_hero.load();
+    if (hero == nullptr || victim != hero) return false;
+    g_lethal_seen[(which >= 0 && which < 3) ? which : 0].fetch_add(1);
+    if (!g_intercept.load()) return false;
+    if (!game::set_hit_points(game::Entity{victim}, 1, game::kSkillModifierSet)) return false;
+    g_lethal_cancelled.fetch_add(1);
+    return true;
+}
+
+bool swallow_nested_kill(void* spu, void* other) noexcept {
+    void* victim = nullptr;
+    if (!victim_of(spu, other, victim)) return false;
+    const void* hero = g_hero.load();
+    if (hero == nullptr || victim != hero) return false;
+    g_nested_kills.fetch_add(1);
+    return true;
 }
 
 void note_defeat(bool call_ok, long long result) noexcept {

@@ -35,6 +35,9 @@ using GetIdFn = const void* (*)(const void* dynamic_entity);
 using RuntimeGetEntityFn = void* (*)(void* runtime_info, const void* property_id);
 using GetDamageAmountFn = const long* (*)(const void* damage_ps);
 using SetDamageAmountFn = void (*)(void* damage_ps, const long* amount);
+// Script.dll : GUI2::PrintGameLogF(type, format, ...), `this` = la donnée exportée `gui2`, dont
+// l'octet 0 active le journal à l'écran (sinon l'appel ne fait rien).
+using PrintGameLogFFn = void (*)(void* gui, int type, const char* format, ...);
 // SharedBase.dll
 using BCStringCtorFn = void* (*)(void* self, const char* text);
 using BCStringDtorFn = void (*)(void* self);
@@ -73,8 +76,19 @@ constexpr const char* kSetDamageAmount = "?SetDamageAmount@gCDamage_PS@@QEAAXAEB
 constexpr const char* kRoutineOnProcess = "?OnProcess@gCScriptRoutine_PS@@UEAAXXZ";
 constexpr const char* kBCStringCtor = "??0bCString@@QEAA@PEBD@Z";
 constexpr const char* kBCStringDtor = "??1bCString@@QEAA@XZ";
+constexpr const char* kGui2 = "gui2";
+constexpr const char* kPrintGameLogF = "?PrintGameLogF@GUI2@@QEAAXW4gELogMessageType@@PEBDZZ";
+// Décision « à terre ou mort » sur un coup (self = ce qui frappe, other = la victime ; rend 0
+// sans rien faire si la victime a encore des PV). 5ᵉ test : point d'interception de la mort.
+constexpr const char* kDownOrDead[3] = {
+    "?DownOrDeadByMeleeWeapon@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z",
+    "?DownOrDeadByProjectile@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z",
+    "?DownOrDeadByInferno@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z"};
 constexpr const char* kKill = "?Kill@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z";
 constexpr const char* kDefeat = "?Defeat@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z";
+// Game.dll : `this + 0x150` (proxy) → eCEntityProxy::GetEntity. Accesseur, sans effet de bord.
+constexpr const char* kSpuGetOther = "?GetOtherEntity@gCScriptProcessingUnit@@QEAAPEAVeCGeometryEntity@@XZ";
+using SpuGetEntityFn = void* (*)(void* spu);
 
 struct CombatAbi {
     IntGetterFn get_right_hold_stack = nullptr;
@@ -111,12 +125,16 @@ struct CombatAbi {
     void* routine_on_process = nullptr;
     BCStringCtorFn bcstring_ctor = nullptr;
     BCStringDtorFn bcstring_dtor = nullptr;
+    void* gui2 = nullptr;
+    PrintGameLogFFn print_game_log_f = nullptr;
 };
 
 CombatAbi g_abi;
 bool g_resolved = false;
 ScriptFn g_kill = nullptr;
 ScriptFn g_defeat = nullptr;
+SpuGetEntityFn g_spu_get_other = nullptr;
+ScriptFn g_down_or_dead[3] = {};
 
 template <typename Fn>
 bool lookup(HMODULE module, const char* name, Fn& out, const char*& missing) {
@@ -174,7 +192,9 @@ bool resolve_combat(const char*& missing) {
                     lookup(game, kSetDamageAmount, a.set_damage_amount, missing) &&
                     lookup(game, kRoutineOnProcess, a.routine_on_process, missing) &&
                     lookup(shared_base, kBCStringCtor, a.bcstring_ctor, missing) &&
-                    lookup(shared_base, kBCStringDtor, a.bcstring_dtor, missing);
+                    lookup(shared_base, kBCStringDtor, a.bcstring_dtor, missing) &&
+                    lookup(script, kGui2, a.gui2, missing) &&
+                    lookup(script, kPrintGameLogF, a.print_game_log_f, missing);
     if (!ok) return false;
     g_abi = a;
     g_resolved = true;
@@ -190,16 +210,34 @@ bool resolve_script_game(const char*& missing) {
         missing = "Script_Game.dll";
         return false;
     }
+    HMODULE game = GetModuleHandleW(L"Game.dll");
+    if (game == nullptr) {
+        missing = "Game.dll";
+        return false;
+    }
     ScriptFn kill = nullptr;
     ScriptFn defeat = nullptr;
-    if (!lookup(module, kKill, kill, missing) || !lookup(module, kDefeat, defeat, missing)) return false;
+    SpuGetEntityFn get_other = nullptr;
+    if (!lookup(module, kKill, kill, missing) || !lookup(module, kDefeat, defeat, missing) ||
+        !lookup(game, kSpuGetOther, get_other, missing)) {
+        return false;
+    }
+    ScriptFn down_or_dead[3] = {};
+    for (int i = 0; i < 3; ++i) {
+        if (!lookup(module, kDownOrDead[i], down_or_dead[i], missing)) return false;
+    }
+    for (int i = 0; i < 3; ++i) g_down_or_dead[i] = down_or_dead[i];
     g_kill = kill;
     g_defeat = defeat;
+    g_spu_get_other = get_other;
     return true;
 }
 
 void* routine_on_process_address() { return g_abi.routine_on_process; }
 void* kill_address() { return reinterpret_cast<void*>(g_kill); }
+void* down_or_dead_address(int which) {
+    return which >= 0 && which < 3 ? reinterpret_cast<void*>(g_down_or_dead[which]) : nullptr;
+}
 
 // --- Appels génériques -------------------------------------------------------------------
 // Aucun objet C++ à détruire dans un cadre __try.
@@ -522,6 +560,29 @@ bool defeat(void* spu, void* self, void* other, long long arg, long long& out) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = 0;
+        return false;
+    }
+}
+
+bool hud_print(const char* text) {
+    if (!g_resolved || g_abi.gui2 == nullptr || text == nullptr) return false;
+    __try {
+        if (*static_cast<const unsigned char*>(g_abi.gui2) == 0) return false;  // journal à l'écran désactivé
+        g_abi.print_game_log_f(g_abi.gui2, 0, "%s", text);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool spu_other_entity(void* spu, void*& out) {
+    out = nullptr;
+    if (g_spu_get_other == nullptr || spu == nullptr) return false;
+    __try {
+        out = g_spu_get_other(spu);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
         return false;
     }
 }
