@@ -339,6 +339,18 @@ bool get_animation_ps(const Entity& e, void*& out) {
     }
 }
 
+bool get_property_set(const Entity& e, int type, void*& out) {
+    out = nullptr;
+    if (!g_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_abi.get_property_set(e.ptr, type);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
+
 bool play_motion(void* animation_ps, int type, void* desc, bool flag) {
     if (!g_resolved || animation_ps == nullptr) return false;
     __try {

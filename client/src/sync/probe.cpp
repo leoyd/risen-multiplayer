@@ -5,6 +5,7 @@
 #include "game/entity.h"
 #include "game/motion_desc.h"
 #include "sync/anim_filter.h"
+#include "sync/probe_j2.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -478,7 +479,9 @@ void mirror_pose(const game::Entity& player) {
     game::Matrix p;
     if (!game::get_pose(player, p)) return;
     for (int i = 0; i < 3; ++i) p.m[12 + i] += g_mirror_offset[i];
-    game::move_to(g_copy, p);  // v4 : SetPose laissait contrôleur et équipement au sol
+    // v4 : SetPose laissait contrôleur et équipement au sol, d'où MoveTo (mode 0). Spike J2 : Num2
+    // choisit d'autres placements (collisions, Q6).
+    probe_j2::place_copy(g_copy, p);
 }
 
 // F4 : même rejeu sur le PNJ le plus proche (≤ 15 m), pour distinguer « la copie est
@@ -490,30 +493,21 @@ void replay_on_nearest_npc() {
         log::info("[probe] F4 : pas de joueur");
         return;
     }
-    std::vector<game::Entity> npcs;
-    if (!game::get_npcs(npcs)) {
+    game::Entity best;
+    float distance = 0.0f;
+    std::size_t total = 0;
+    bool list_ok = false;
+    probe_j2::find_nearest_npc(player, g_copy, kMaxNpcDistance, best, distance, total, list_ok);
+    if (!list_ok) {
         log::info("[probe] F4 : GetNPCs a échoué (SEH)");
         return;
     }
-    game::Entity best;
-    float best_d2 = kMaxNpcDistance * kMaxNpcDistance;
-    for (const auto& npc : npcs) {
-        if (npc.ptr == nullptr || npc.ptr == player.ptr || npc.ptr == g_copy.ptr) continue;
-        game::Matrix p;
-        if (!game::get_pose(npc, p)) continue;
-        const float dx = p.m[12] - pose.m[12], dy = p.m[13] - pose.m[13], dz = p.m[14] - pose.m[14];
-        const float d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < best_d2) {
-            best_d2 = d2;
-            best = npc;
-        }
-    }
     if (best.ptr == nullptr) {
-        log::info("[probe] F4 : aucun PNJ à moins de 15 m (" + std::to_string(npcs.size()) + " PNJ au total)");
+        log::info("[probe] F4 : aucun PNJ à moins de 15 m (" + std::to_string(total) + " PNJ au total)");
         return;
     }
     char dist[32];
-    std::snprintf(dist, sizeof dist, "%.0f cm", static_cast<double>(std::sqrt(best_d2)));
+    std::snprintf(dist, sizeof dist, "%.0f cm", static_cast<double>(distance));
     replay_on(best, "F4", "le PNJ " + hex_ptr(best.ptr) + " (à " + dist + ")");
 }
 
@@ -548,6 +542,7 @@ void frame() {
         g_have_last_attack = g_have_last_other = g_have_last = false;
         g_last_ragdoll = -1;
         g_copy_dead = false;
+        probe_j2::reset();  // spike J2 : PNJ suivi, IA figée, mode de collision, arme de la copie
         // Captures de l'ancien monde : leurs ressources sont peut-être libérées, on les jette.
         static Capture stale[sync::kCaptureRing];
         unsigned dropped = 0;
@@ -570,7 +565,8 @@ void frame() {
     if (g_mirror && g_copy.ptr != nullptr && player.ptr != nullptr) mirror_pose(player);
     flush_captures();
 
-    if (game_has_focus()) {
+    const bool focus = game_has_focus();
+    if (focus) {
         if (pressed(VK_F6, g_f6_down)) spawn_copy();
         if (pressed(VK_F7, g_f7_down)) toggle_mirror();
         if (pressed(VK_F4, g_f4_down)) replay_on_nearest_npc();
@@ -580,6 +576,8 @@ void frame() {
         pressed(VK_F7, g_f7_down);
         pressed(VK_F4, g_f4_down);
     }
+    // Spike J2 : pavé numérique (Num1 à Num6), journaux différés, héros publié pour le détour de Kill.
+    probe_j2::frame(player, g_copy, focus, now);
 
     if (now - g_window_start >= kTickPeriodMs) {
         log_tick(now);

@@ -123,3 +123,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-4b-locomotion-avatar.md`
   summary: Spike J2 (story 3.0, question ouverte 6 de la spine) — rendre l'avatar « solide » dans le monde local : corps de collision cinématique (suit la pose imposée, sans gravité, repousse héros et PNJ), pour que le héros local ne le traverse plus et que les PNJ puissent le toucher (AD-9, combat coop).
   evidence: Constat de l'utilisateur en jeu (2026-10-20) : l'avatar n'est soumis ni à la physique ni aux collisions. Attendu en J1 (réplique placée par `MoveTo`, physique calculée chez son joueur ; en écho, le décalage de 2 m le fait traverser les murs). Hypothèse : le recalage de `MoveTo` (`OnUpdatedWorldMatrix`) neutralise aussi son corps physique. Décision de l'utilisateur : attendre J2.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-0-spike-j2.md`
+  summary: Scénario Wine du repli « ABI du combat introuvable, sonde J1 toujours active » (`install_probe_j2`, `resolve_combat` seul en échec).
+  evidence: Revue de la story 3.0 : aucun banc ne fait échouer `resolve_combat` sans `resolve_entities` ; il faudrait une Script.dll aux exports trafiqués.

@@ -1,9 +1,11 @@
 #include "win/hooks.h"
 
 #include "common/log.h"
+#include "game/combat.h"
 #include "game/entity.h"
 #include "sync/avatar.h"
 #include "sync/probe.h"
+#include "sync/probe_j2.h"
 #include "sync/session.h"
 #include "win/watchdog.h"
 
@@ -22,6 +24,8 @@ game::SetPlaySpeedFn g_original_set_play_speed = nullptr;
 game::SetTargetWeightFn g_original_set_target_weight = nullptr;
 game::SwitchFadeOutFn g_original_switch_fade_out = nullptr;
 game::WrapperStopMotionFn g_original_wrapper_stop_motion = nullptr;
+game::RoutineOnProcessFn g_original_routine_on_process = nullptr;  // spike J2 (Num4)
+game::ScriptFn g_original_kill = nullptr;                           // spike J2 (Num6)
 bool g_initialized = false;
 
 void detour_on_process(void* application) {
@@ -44,6 +48,68 @@ void detour_play_motion(void* animation_ps, int type, void* desc, bool flag) {
 void detour_set_ragdoll(void* animation_ps, bool on, bool flag, const float* vector) {
     if (sync::probe::on_set_ragdoll(animation_ps, on, flag, vector)) {
         g_original_set_ragdoll(animation_ps, on, flag, vector);
+    }
+}
+
+bool create(void* target, void* detour, void** original, const char* name);
+
+// Spike J2, Num4 : IA d'un PNJ figée. Le détour ne fait que comparer un pointeur (AD-2).
+void detour_routine_on_process(void* routine_ps) {
+    if (sync::probe_j2::on_routine_process(routine_ps)) g_original_routine_on_process(routine_ps);
+}
+
+// Spike J2, Num6 : un Kill du héros devient Defeat (même thread, mêmes arguments). Seule
+// exception documentée à AD-2 : appel de Defeat depuis le détour.
+// Garde de réentrance : si Defeat repasse par Kill, l'appel imbriqué va à l'original.
+thread_local bool t_in_kill_detour = false;
+
+long long detour_kill(void* spu, void* self, void* other, long long arg) {
+    if (!t_in_kill_detour && sync::probe_j2::intercept_kill(other)) {
+        t_in_kill_detour = true;
+        long long result = 0;
+        const bool ok = game::defeat(spu, self, other, arg, result);
+        t_in_kill_detour = false;
+        sync::probe_j2::note_defeat(ok, result);
+        if (ok) return result;
+    }
+    return g_original_kill(spu, self, other, arg);
+}
+
+// Spike J2 : hooks facultatifs. Un échec rend l'expérience inactive, la sonde J1 continue.
+void install_probe_j2() {
+    const char* missing = nullptr;
+    if (!game::resolve_combat(missing)) {
+        sync::probe_j2::set_status(false, false, false);
+        log::warn(std::string("[hooks] J2 : expériences Num1 à Num6 inactives : symbole introuvable : ") + missing);
+        return;
+    }
+    const bool routine = create(game::routine_on_process_address(), reinterpret_cast<void*>(&detour_routine_on_process),
+                                reinterpret_cast<void**>(&g_original_routine_on_process), "gCScriptRoutine_PS::OnProcess");
+    bool kill = false;
+    std::string kill_reason;
+    const char* kill_missing = nullptr;
+    if (game::resolve_script_game(kill_missing)) {
+        kill = create(game::kill_address(), reinterpret_cast<void*>(&detour_kill),
+                      reinterpret_cast<void**>(&g_original_kill), "Kill");
+        if (!kill) kill_reason = "MH_CreateHook(Kill) a échoué";
+    } else {
+        kill_reason = std::string(kill_missing != nullptr ? kill_missing : "?") + " introuvable";
+    }
+    sync::probe_j2::set_status(true, routine, kill);
+    if (routine && kill) {
+        log::info("[hooks] J2 : hooks Kill/Routine posés");
+        return;
+    }
+    if (routine) {
+        log::info("[hooks] J2 : hook Routine posé (Num4)");
+    } else {
+        log::warn("[hooks] J2 : expérience Q3 Num4 (IA figée) inactive : hook gCScriptRoutine_PS::OnProcess impossible");
+    }
+    if (kill) {
+        log::info("[hooks] J2 : hook Kill posé (Num6)");
+    } else {
+        log::warn("[hooks] J2 : expérience Q7 (Num6, mort interceptée) inactive : " + kill_reason +
+                  " ; Num6 tenu 1 s relève encore le héros");
     }
 }
 
@@ -117,6 +183,7 @@ bool install_probe() {
         log::error("[hooks] sonde inactive");
         return false;
     }
+    install_probe_j2();  // facultatif : créés ici, activés avec les autres
     // Activation groupée : MinHook suspend les autres threads pendant l'écriture.
     s = MH_EnableHook(MH_ALL_HOOKS);
     if (s != MH_OK) {

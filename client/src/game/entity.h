@@ -93,6 +93,8 @@ void destroy_template(Template& t);
 // `tmpl` est consommé (détruit par le jeu) que l'appel réussisse ou non.
 bool spawn(Template& tmpl, const Matrix& pose, bool temporary, Entity& out);
 bool get_animation_ps(const Entity& e, void*& out);
+// eCEntity::GetPropertySet(type) (variante const) : nul si l'entité n'a pas ce PS.
+bool get_property_set(const Entity& e, int type, void*& out);
 bool play_motion(void* animation_ps, int type, void* desc, bool flag);
 // Range `resource` (eCMotionResource2*) dans l'emplacement `type` du PS.
 bool set_motion(void* animation_ps, int type, void* resource);

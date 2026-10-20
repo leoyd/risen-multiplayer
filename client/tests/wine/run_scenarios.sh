@@ -74,6 +74,7 @@ expect_log "probe = 0 : sonde désactivée" "$d" "sonde désactivée"
 expect_log "probe = 0 : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX)"
 expect_no_log "probe = 0 : pas de hooks de la sonde" "$d" "hooks installés (OnProcess, PlayMotion"
 expect_log "probe = 0 : session prête" "$d" "\[sync\] session prête (rôle hôte)"
+expect_no_log "probe = 0 : aucun hook J2" "$d" "\[hooks\] J2"
 expect_log "log_level = DEBUG : lignes DEBUG écrites" "$d" "DEBUG .*\[sync\] empreinte locale SharedBase.dll"
 
 d=$(setup sonde_on $'role = host\nprobe = 1')
@@ -82,6 +83,20 @@ expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, Pla
 expect_log "probe = 1 : mod actif" "$d" "mod actif"
 expect_no_log "probe = 1 : pas de hook de session" "$d" "hooks de session installés"
 expect_no_log "probe = 1 : aucune session" "$d" "\[sync\]"
+# Spike J2 (story 3.0) : hooks facultatifs. Le banc ne charge jamais Script_Game.dll (et le mod
+# ne la charge pas lui-même) : hook Routine posé, expérience Q7 nommée inactive, sonde J1 intacte.
+expect_log "probe = 1 : J2 : hook Routine posé" "$d" "\[hooks\] J2 : hook Routine posé (Num4)"
+expect_no_log "probe = 1 : J2 : ABI du combat résolue" "$d" "expériences Num1 à Num6 inactives"
+expect_log "probe = 1 : J2 : Q7 inactive, cause nommée" "$d" \
+    "\[hooks\] J2 : expérience Q7 (Num6, mort interceptée) inactive : Script_Game.dll introuvable"
+# Noms décorés de Kill et Defeat présents dans la Script_Game.dll du jeu (résolus en jeu seulement).
+for sym in '?Kill@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' '?Defeat@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z'; do
+    if grep -qaF -- "$sym" "$risen_bin/scripts/Script_Game.dll" 2>/dev/null; then
+        echo "[ OK ] Script_Game.dll exporte $sym"
+    else
+        echo "[ÉCHEC] Script_Game.dll : $sym introuvable"; failures=$((failures + 1))
+    fi
+done
 
 # Hook impossible : jeu sans Script.dll (Game.dll n'en dépend pas). Attendu : erreur
 # explicite, sonde inactive, mod toujours actif et descripteur intact.
@@ -94,6 +109,7 @@ d=$(setup sonde_sans_script $'role = host\nprobe = 1')
 run "sonde sans Script.dll" "$d" "$no_script_bin"
 expect_log "hook impossible : erreur explicite" "$d" "sonde inactive : symbole introuvable : Script.dll"
 expect_no_log "hook impossible : aucun hook" "$d" "hooks installés"
+expect_no_log "hook impossible : aucun hook J2" "$d" "\[hooks\] J2"
 expect_log "hook impossible : mod actif" "$d" "mod actif"
 
 # Même jeu sans Script.dll, sans sonde : la session ne peut pas poser son hook. Attendu :

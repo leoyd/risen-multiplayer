@@ -62,12 +62,14 @@ if(WIN32)
         src/win/hooks.cpp
         src/common/log.cpp
         src/game/abi.cpp
+        src/game/combat.cpp
         src/game/entity.cpp
         src/game/motion_desc.cpp
         src/sync/anim_filter.cpp
         src/sync/avatar.cpp
         src/sync/local_capture.cpp
         src/sync/probe.cpp
+        src/sync/probe_j2.cpp
         src/sync/session.cpp
         src/win/watchdog.cpp
         ${MINHOOK_SOURCES})

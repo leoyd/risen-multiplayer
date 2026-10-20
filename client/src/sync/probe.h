@@ -7,6 +7,7 @@
 //   déplacements ; story 2.1). F4 : même rejeu du dernier coup sur le PNJ le plus proche.
 // - Mort (story 2.1b) : SetRagDollEnabled du joueur capturé et rejoué sur la copie.
 // L'état partagé avec les hooks passe par sync::anim_filter() (AD-2).
+// - Spike J2 (story 3.0) : pavé numérique Num1 à Num6, voir sync/probe_j2.h.
 #pragma once
 
 namespace mp::sync::probe {
