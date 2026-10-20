@@ -761,6 +761,9 @@ bool intercept_down_or_dead(int which, void* spu, void* other) noexcept {
     if (!victim_of(spu, other, victim)) return false;
     const void* hero = g_hero.load();
     if (hero == nullptr || victim != hero) return false;
+    // Appelées après CHAQUE coup (elles vérifient elles-mêmes les PV) : n'agir que si le coup est mortel.
+    int hp = 1;
+    if (!game::get_hit_points(game::Entity{victim}, hp) || hp > 0) return false;
     g_lethal_seen[(which >= 0 && which < 3) ? which : 0].fetch_add(1);
     if (!g_intercept.load()) return false;
     if (!game::set_hit_points(game::Entity{victim}, 1, game::kSkillModifierSet)) return false;
