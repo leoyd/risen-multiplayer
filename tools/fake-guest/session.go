@@ -59,8 +59,9 @@ type sessionConfig struct {
 	Scenario   *scenario     // trajectoire des snapshots (nil : pose fixe du Spawn)
 	Delay      time.Duration // retard ajouté à chaque datagramme sortant
 	Jitter     time.Duration // ± gigue ajoutée au retard (tirage uniforme)
-	Echo       bool          // renvoie les snapshots, les Motion et l'arme de l'hôte comme les siens (story 2.4)
+	Echo       bool          // renvoie les snapshots, les Motion, l'arme et l'armure de l'hôte comme les siens (story 2.4)
 	Weapon     string        // arme en main envoyée après le Spawn (v7), vide = rangée
+	Armor      *string       // armure envoyée après le Spawn et le Weapon (v8) ; nil = pas d'Armor, "" = sans armure
 
 	HelloInterval     time.Duration
 	ConnectTimeout    time.Duration
@@ -97,6 +98,8 @@ type sessionResult struct {
 	DeathsRx     int // Death reçus de l'hôte
 	WeaponsTx    int // Weapon envoyés (Spawn, scénario ou écho, v7)
 	WeaponsRx    int // Weapon reçus de l'hôte
+	ArmorsTx     int // Armor envoyés (Spawn, scénario ou écho, v8)
+	ArmorsRx     int // Armor reçus de l'hôte
 	DespawnsRx   int // Despawn reçus de l'hôte (v3)
 	EndReason    string
 }
@@ -341,6 +344,10 @@ func (g *guest) playEvents(now time.Time) {
 			g.sendReliable(protocol.Weapon{NetId: protocol.GuestNetId, Name: *ev.weapon})
 			continue
 		}
+		if ev.armor != nil {
+			g.sendReliable(protocol.Armor{NetId: protocol.GuestNetId, Name: *ev.armor})
+			continue
+		}
 		if ev.death {
 			if !g.deathSent {
 				g.deathSent = true
@@ -466,6 +473,9 @@ func (g *guest) sendReliable(m protocol.Message) {
 	case protocol.Weapon:
 		g.res.WeaponsTx++
 		g.log.printf("-> Weapon netid=%d nom=%q", m.NetId, m.Name)
+	case protocol.Armor:
+		g.res.ArmorsTx++
+		g.log.printf("-> Armor netid=%d nom=%q", m.NetId, m.Name)
 	}
 }
 
@@ -605,6 +615,10 @@ func (g *guest) enterSession(w protocol.Welcome) {
 	g.sendReliable(g.spawn) // avatar de l'invité chez l'hôte (v3) ; le scénario part de cette pose
 	// Arme en main (v7), juste après le Spawn : l'avatar apparaît armé.
 	g.sendReliable(protocol.Weapon{NetId: protocol.GuestNetId, Name: g.cfg.Weapon})
+	// Armure (v8), après le Weapon, seulement si --armor est donné.
+	if g.cfg.Armor != nil {
+		g.sendReliable(protocol.Armor{NetId: protocol.GuestNetId, Name: *g.cfg.Armor})
+	}
 }
 
 // drain lit les messages complets rendus par KCP.
@@ -653,6 +667,12 @@ func (g *guest) drain() (sessionResult, bool) {
 			g.log.printf("<- Weapon netid=%d nom=%q", m.NetId, m.Name)
 			if g.cfg.Echo && m.NetId == protocol.HostNetId {
 				g.sendReliable(protocol.Weapon{NetId: protocol.GuestNetId, Name: m.Name})
+			}
+		case protocol.Armor:
+			g.res.ArmorsRx++
+			g.log.printf("<- Armor netid=%d nom=%q", m.NetId, m.Name)
+			if g.cfg.Echo && m.NetId == protocol.HostNetId {
+				g.sendReliable(protocol.Armor{NetId: protocol.GuestNetId, Name: m.Name})
 			}
 		case protocol.SessionEnd:
 			g.log.printf("<- SessionEnd raison=%d (%s)", m.Reason, protocol.EndReasonName(m.Reason))

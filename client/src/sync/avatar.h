@@ -48,10 +48,20 @@ void set_weapon(std::uint32_t net_id, const std::string& name);
 // Un nom en échec est journalisé et n'empêche pas les suivants. `equip` : avatar `net_id` (piles
 // partagées avec set_weapon, une par nom) ; `equip_player` : héros local (invité, en session).
 void equip(std::uint32_t net_id, const std::vector<std::string>& names);
+// Armure de l'avatar (story 3.2c, Armor du pair) : nom non vide → pile de ce nom trouvée ou créée
+// (piles partagées avec set_weapon et equip, une par nom), puis EquipStack sauf si elle est déjà
+// équipée ; nom vide → UnEquipStack de la pile équipée à l'emplacement 8 (gEEquipSlot armure),
+// sans effet s'il n'y en a pas. Avant que l'inventaire soit prêt, le dernier reçu est différé
+// (ordre : équipement, armure, arme). Nom inconnu du jeu : journalisé une fois, avatar inchangé.
+void set_armor(std::uint32_t net_id, const std::string& name);
 void equip_player(const std::vector<std::string>& names);
 // Arme en main du héros local : nom de l'objet tenu (GetRightHoldStack ≥ 0, GetRightHoldItem,
 // Entity::GetName), vide si rien. False sur SEH ou sans héros : `name` est alors sans valeur.
 bool local_weapon(std::string& name);
+// Armure portée par le héros local (story 3.2c) : nom de l'objet de la pile équipée à
+// l'emplacement 8 (FindStackIndex(gEEquipSlot), GetTemplateItem, Entity::GetName), vide si aucune.
+// False sur SEH ou sans héros : `name` est alors sans valeur.
+bool local_armor(std::string& name);
 // Un avatar existe-t-il ? (sentinelle de diagnostic)
 bool present();
 // Déplace le héros local (invité, à l'entrée en session) par Entity::MoveTo.

@@ -32,6 +32,12 @@
 // rangée) part en Weapon à chaque changement, et une fois à l'entrée en session, après le Spawn.
 // Celui du pair devient AvatarWeapon au même instant d'affichage qu'un Death.
 //
+// Armure (story 3.2c) : même logique que l'arme. Le nom de l'armure portée par le héros local
+// (LocalArmor, emplacement d'équipement 8, vide s'il n'en porte pas) part en Armor à chaque
+// changement, et une fois à l'entrée en session, après le Spawn et le Weapon. Celui du pair
+// devient AvatarArmor au même instant d'affichage ; Weapon et Armor du pair partagent une même
+// file datée, qui conserve leur ordre d'arrivée.
+//
 // Équipement (story 3.2b) : `Settings.equipment` (forme de core/equipment.h) part dans le Hello
 // de l'invité ; invalide, il est traité comme vide (Warn au premier tick). L'invité équipe son
 // héros à chaque entrée en session, après la Teleport (EquipHero). L'hôte garde les noms du Hello
@@ -123,7 +129,12 @@ struct LocalParam {
 struct LocalWeapon {
     std::string name;
 };
-using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon>;
+// Armure portée par le héros local (story 3.2c), mêmes règles que LocalWeapon : nom de l'objet de
+// la pile équipée à l'emplacement 8, vide s'il n'en porte pas.
+struct LocalArmor {
+    std::string name;
+};
+using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor>;
 
 using core::Pose;
 
@@ -188,16 +199,20 @@ struct AvatarWeapon {  // faire tenir (nom non vide) ou ranger (nom vide) l'arme
     std::uint32_t net_id = 0;
     std::string name;
 };
+struct AvatarArmor {  // équiper (nom non vide) ou retirer (nom vide) l'armure de l'avatar (story 3.2c)
+    std::uint32_t net_id = 0;
+    std::string name;
+};
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
-                             AvatarWeapon, EquipHero, EquipAvatar>;
+                             AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
 inline constexpr float kParamTimeEpsilon = 0.005f;  // écart minimal de durée de fondu
 
 inline constexpr std::size_t kMaxPendingMotions = 256;  // Motion du pair en attente d'affichage
-inline constexpr std::size_t kMaxPendingWeapons = 16;   // Weapon du pair en attente d'affichage
+inline constexpr std::size_t kMaxPendingCarried = 16;   // Weapon et Armor du pair en attente d'affichage
 inline constexpr double kMaxMotionLeadMs = 1000.0;      // au-delà, un Motion « du futur » part aussitôt
 inline constexpr std::uint32_t kAniIdCount = 0x10000;   // AniId u16
 
@@ -242,10 +257,15 @@ private:
     void on_peer_motion(const protocol::Motion& m, Output& out);
     void on_local_param(std::uint64_t now, const LocalParam& in, Output& out);
     void on_peer_param(const protocol::MotionParam& p);
-    void on_local_weapon(const LocalWeapon& in, Output& out);
-    void send_weapon(Output& out);
-    void on_peer_weapon(const protocol::Weapon& w, Output& out);
-    void apply_due_weapons(std::uint64_t now, Output& out);
+    // Objet tenu ou porté (arme, story 3.2 ; armure, story 3.2c) : mêmes règles d'émission et
+    // de réception, un état par type.
+    enum class Carried : std::uint8_t { Weapon = 0, Armor = 1 };
+    static constexpr std::size_t kCarriedCount = 2;
+    void on_local_carried(Carried kind, Output& out);
+    void send_carried(Carried kind, Output& out);
+    void on_peer_carried(Carried kind, std::uint32_t net_id, const std::string& name, Output& out);
+    void apply_due_carried(std::uint64_t now, Output& out);
+    void reset_carried_sent();
     bool accepts_peer_animation(std::uint32_t net_id) const;
     void play_due_motions(std::uint64_t now, Output& out);
     void clear_peer_avatar_state();
@@ -338,17 +358,22 @@ private:
         unsigned params_sent = 0, params_played = 0, params_ignored = 0;
     } anim_;
 
-    // Arme (story 3.2). Héros local : dernier nom connu (gardé d'une session à l'autre : c'est
-    // l'état du héros) ; dernier nom envoyé au pair, remis à zéro à chaque entrée en session.
-    bool local_weapon_known_ = false;
-    std::string local_weapon_;
-    bool weapon_sent_valid_ = false;
-    std::string weapon_sent_;
-    struct PendingWeapon {
+    // Arme (story 3.2) et armure (story 3.2c), indexées par Carried. Héros local : dernier nom
+    // connu (gardé d'une session à l'autre : c'est l'état du héros) ; dernier nom envoyé au pair,
+    // remis à zéro à chaque entrée en session.
+    struct CarriedState {
+        bool known = false;
+        std::string local;
+        bool sent_valid = false;
+        std::string sent;
+    };
+    CarriedState carried_[kCarriedCount];
+    struct PendingCarried {
         double at = 0.0;  // temps distant à atteindre (dernier snapshot connu à la réception)
+        Carried kind = Carried::Weapon;
         std::string name;
     };
-    std::deque<PendingWeapon> pending_weapons_;  // pair : vidée au retrait de l'avatar
+    std::deque<PendingCarried> pending_carried_;  // pair, ordre d'arrivée : vidée au retrait de l'avatar
 
     // Équipement (story 3.2b). Invité : noms de sa config (vides si invalides), Warn en attente
     // jusqu'au premier tick. Hôte : noms du Hello accepté, gardés jusqu'à Ended.

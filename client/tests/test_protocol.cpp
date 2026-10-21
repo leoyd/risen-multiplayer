@@ -129,7 +129,8 @@ Bytes enc(const ReliableMessage& m) {
 const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
 const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin", "spawn.bin",
                                       "despawn.bin",   "aniname.bin",     "death.bin",
-                                      "motion_param.bin", "weapon.bin", "weapon_sheathed.bin"};
+                                      "motion_param.bin", "weapon.bin", "weapon_sheathed.bin",
+                                      "armor.bin",     "armor_removed.bin"};
 
 }  // namespace
 
@@ -344,14 +345,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v7 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v8 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 7);
+    CHECK_EQ(version, 8);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 7);
+    CHECK_EQ(version, 8);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -362,12 +363,12 @@ TEST("protocole : peek_hello_version sur v7 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 7") {
+TEST("protocole : l'encodeur refuse une version autre que 8") {
     Hello h = sample_hello();
-    h.protocol_version = 6;
+    h.protocol_version = 7;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 8;
+    h.protocol_version = 9;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -493,7 +494,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 7);
+    CHECK_EQ(kProtocolVersion, 8);
     CHECK_EQ(static_cast<int>(Channel::Reliable), 0);
     CHECK_EQ(static_cast<int>(Channel::Snapshot), 1);
     CHECK_EQ(static_cast<int>(Channel::Control), 2);
@@ -509,6 +510,7 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::Death), 24);
     CHECK_EQ(static_cast<int>(MsgType::MotionParam), 26);
     CHECK_EQ(static_cast<int>(MsgType::Weapon), 27);
+    CHECK_EQ(static_cast<int>(MsgType::Armor), 28);
     CHECK_EQ(kHostNetId, 1u);
     CHECK_EQ(kGuestNetId, 2u);
     CHECK_EQ(static_cast<int>(RejectReason::Protocol), 1);
@@ -731,4 +733,44 @@ TEST("protocole : Weapon — 255 octets acceptés, 256 refusés à l'encodage ; 
     cut[0x05] = 0xFF;
     CHECK(dr(cut).error == DecodeError::Truncated);
     CHECK(decode_control(Bytes{2, 27}.data(), 2).error == DecodeError::UnknownType);  // pas en contrôle
+}
+
+// --- Armor (story 3.2c) ----------------------------------------------------------------
+
+TEST("protocole : vecteurs armor.bin et armor_removed.bin") {
+    const Bytes b = load_vector("armor.bin");
+    const auto d = dr(b);
+    const Armor* got = std::get_if<Armor>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->net_id == 1 && got->name == "It_Armor_Inquisitor");
+    CHECK(enc(Armor{1, "It_Armor_Inquisitor"}) == b);
+    if (got != nullptr) CHECK(enc(*got) == b);
+    const Bytes e = load_vector("armor_removed.bin");
+    const auto de = dr(e);
+    const Armor* ge = std::get_if<Armor>(&de.message);
+    CHECK(de.ok() && ge != nullptr && ge->net_id == 1 && ge->name.empty());
+    CHECK(enc(Armor{1, ""}) == e);
+}
+
+TEST("protocole : Armor — 255 octets acceptés, 256 refusés à l'encodage ; tronqué au décodage") {
+    Armor m;
+    m.net_id = 0xFFFFFFFFu;
+    m.name.assign(kMaxArmorName, 'a');
+    const Bytes b = enc(m);
+    CHECK_EQ(b.size(), std::size_t{261});
+    const auto d = dr(b);
+    const Armor* got = std::get_if<Armor>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->net_id == m.net_id && got->name == m.name);
+    Bytes out = {0xAA};
+    m.name.assign(kMaxArmorName + 1, 'a');
+    CHECK(!encode_reliable(m, out));
+    CHECK(out == Bytes{0xAA});
+    Bytes cut = load_vector("armor.bin");
+    cut[0x05] = 0xFF;  // longueur annoncée plus grande que la suite
+    CHECK(dr(cut).error == DecodeError::Truncated);
+    const Bytes head = load_vector("armor.bin");
+    CHECK(dr(Bytes(head.begin(), head.begin() + 3)).error == DecodeError::Truncated);  // net_id coupé
+    Bytes extra = load_vector("armor_removed.bin");
+    extra.push_back(0);
+    CHECK(dr(extra).error == DecodeError::TrailingBytes);
+    CHECK(decode_control(Bytes{2, 28}.data(), 2).error == DecodeError::UnknownType);  // pas en contrôle
 }

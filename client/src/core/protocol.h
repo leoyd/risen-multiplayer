@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 7 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 8 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 7;
+inline constexpr std::uint16_t kProtocolVersion = 8;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -52,6 +52,7 @@ enum class MsgType : std::uint8_t {
     Death = 24,    // v5 (story 2.4)
     MotionParam = 26,  // v6 (story 2.4b)
     Weapon = 27,       // v7 (story 3.2)
+    Armor = 28,        // v8 (story 3.2c)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -198,9 +199,18 @@ struct Weapon {
     std::string name;  // 0 à 255 octets
 };
 
+// Armure portée par une entité dont l'émetteur a l'autorité (story 3.2c) : nom de l'objet de la
+// pile équipée à l'emplacement 8 (gEEquipSlot armure), vide si elle n'en porte pas. Même forme
+// que Weapon.
+inline constexpr std::size_t kMaxArmorName = 255;
+struct Armor {
+    std::uint32_t net_id = 0;
+    std::string name;  // 0 à 255 octets
+};
+
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
 using ReliableMessage =
-    std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon>;
+    std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon, Armor>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,

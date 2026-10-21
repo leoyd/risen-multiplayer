@@ -320,3 +320,71 @@ func TestEchoWeapon(t *testing.T) {
 		t.Fatalf("Weapon renvoyés : %+v, attendu %+v", rec.weapons, want)
 	}
 }
+
+func TestScenarioArmor(t *testing.T) {
+	sc, err := parseScenario(strings.NewReader("pause 1\narmor It_Armor_Inquisitor\narmor 0.3 -\nweapon 0.4 It_2H_Axe\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.events) != 3 || sc.events[0].armor == nil || *sc.events[0].armor != "It_Armor_Inquisitor" || sc.events[0].at != 0 ||
+		sc.events[1].armor == nil || *sc.events[1].armor != "" || sc.events[1].at != 300 || sc.events[2].weapon == nil || sc.events[2].armor != nil {
+		t.Fatalf("événements : %+v", sc.events)
+	}
+	for _, bad := range []string{"pause 1\narmor\n", "pause 1\narmor 0 a b\n", "pause 1\narmor -1 X\n",
+		"pause 1\narmor 2 X\n", "pause 1\narmor 0 " + strings.Repeat("a", 256) + "\n"} {
+		if _, err := parseScenario(strings.NewReader(bad)); err == nil {
+			t.Errorf("%q accepté", bad)
+		}
+	}
+	host := startHost(t, defaultHost())
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 800 * time.Millisecond
+	cfg.Weapon = "It_1H_Sword"
+	armor := "It_Armor_Inquisitor"
+	cfg.Armor = &armor
+	cfg.Scenario, _ = parseScenario(strings.NewReader("pause 1\narmor 0.3 -\narmor 0.6 It_Armor_Don_Fighter\n"))
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	rec := host.record()
+	want := []protocol.Armor{{NetId: 2, Name: "It_Armor_Inquisitor"}, {NetId: 2, Name: ""}, {NetId: 2, Name: "It_Armor_Don_Fighter"}}
+	if fmt.Sprint(rec.armors) != fmt.Sprint(want) {
+		t.Fatalf("Armor reçus par l'hôte : %+v, attendu %+v", rec.armors, want)
+	}
+	if len(rec.order) < 3 || rec.order[0] != protocol.TypeSpawn || rec.order[1] != protocol.TypeWeapon || rec.order[2] != protocol.TypeArmor {
+		t.Fatalf("Armor pas juste après le Spawn et le Weapon : %v", rec.order)
+	}
+	expectLog(t, r, `-> Armor netid=2 nom="It_Armor_Inquisitor"`, `-> Armor netid=2 nom=""`)
+}
+
+func TestNoArmorByDefault(t *testing.T) {
+	t.Parallel()
+	host := startHost(t, defaultHost())
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 300 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	if rec := host.record(); len(rec.armors) != 0 || r.res.ArmorsTx != 0 {
+		t.Fatalf("Armor envoyés sans --armor : %+v", rec.armors)
+	}
+}
+
+func TestEchoArmor(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.SendArmor = "It_Armor_Inquisitor"
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 500 * time.Millisecond
+	cfg.Echo = true
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	expectLog(t, r, `<- Armor netid=1 nom="It_Armor_Inquisitor"`)
+	if r.res.ArmorsRx != 1 {
+		t.Fatalf("Armor reçus : %d", r.res.ArmorsRx)
+	}
+	rec := host.record()
+	want := []protocol.Armor{{NetId: 2, Name: "It_Armor_Inquisitor"}}
+	if fmt.Sprint(rec.armors) != fmt.Sprint(want) {
+		t.Fatalf("Armor renvoyés : %+v, attendu %+v", rec.armors, want)
+	}
+}

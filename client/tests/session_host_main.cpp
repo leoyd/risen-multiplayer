@@ -2,7 +2,7 @@
 // avec un monde simulé chargé. Même boucle que le pilote Windows (sync/session) : lire le
 // monde, vider poll(), tick, exécuter les commandes, écrire les logs.
 //
-// Usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM]
+// Usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM]
 // Sort après la E-ième fin de session (défaut 1), une fois le maintien terminé (Ended →
 // Inactive), ou après T ms (défaut 30000). Log sur stdout ; la dernière ligne est
 // « état final : <état> ». Code de sortie : 0, ou 1 sur erreur d'usage.
@@ -12,6 +12,8 @@
 //
 // Arme (story 3.2) : --weapon NOM met cette arme dans la main du héros de l'hôte dès le départ
 // (LocalWeapon) ; SIGHUP la range ou la ressort.
+// Armure (story 3.2c) : --armor NOM la met sur le héros de l'hôte dès le départ (LocalArmor) ;
+// SIGHUP la retire ou la remet (en même temps que l'arme).
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -73,14 +75,16 @@ int main(int argc, char** argv) {
     long max_ms = 30000;
     long max_ends = 1;
     std::string weapon;
+    std::string armor;
     for (int i = 1; i + 1 < argc; i += 2) {
         if (std::strcmp(argv[i], "--weapon") == 0) weapon = argv[i + 1];
+        if (std::strcmp(argv[i], "--armor") == 0) armor = argv[i + 1];
         if (std::strcmp(argv[i], "--port") == 0) port = std::strtol(argv[i + 1], nullptr, 10);
         else if (std::strcmp(argv[i], "--max-ms") == 0) max_ms = std::strtol(argv[i + 1], nullptr, 10);
         else if (std::strcmp(argv[i], "--ends") == 0) max_ends = std::strtol(argv[i + 1], nullptr, 10);
     }
     if (port <= 0 || port > 65535 || max_ms <= 0 || max_ends <= 0 || argc % 2 == 0) {
-        std::fprintf(stderr, "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM]\n");
+        std::fprintf(stderr, "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM]\n");
         return 1;
     }
     std::signal(SIGUSR1, on_sigusr1);
@@ -137,6 +141,8 @@ int main(int argc, char** argv) {
     std::sig_atomic_t toggles_seen = 0;
     bool weapon_out = !weapon.empty();
     bool weapon_pushed = false;
+    bool armor_worn = !armor.empty();
+    bool armor_pushed = false;
     while (now_ms() < static_cast<std::uint64_t>(max_ms)) {
         if (g_reload_requests != reloads_seen) {
             reloads_seen = g_reload_requests;
@@ -150,15 +156,26 @@ int main(int argc, char** argv) {
             print("INFO", "[test] mort du héros de l'hôte simulée");
         }
         inputs.clear();
-        if (g_weapon_toggles != toggles_seen && !weapon.empty()) {
+        if (g_weapon_toggles != toggles_seen) {
             toggles_seen = g_weapon_toggles;
-            weapon_out = !weapon_out;
-            weapon_pushed = false;
-            print("INFO", std::string("[test] arme de l'hôte ") + (weapon_out ? "sortie" : "rangée"));
+            if (!weapon.empty()) {
+                weapon_out = !weapon_out;
+                weapon_pushed = false;
+                print("INFO", std::string("[test] arme de l'hôte ") + (weapon_out ? "sortie" : "rangée"));
+            }
+            if (!armor.empty()) {
+                armor_worn = !armor_worn;
+                armor_pushed = false;
+                print("INFO", std::string("[test] armure de l'hôte ") + (armor_worn ? "remise" : "retirée"));
+            }
         }
         if (!weapon.empty() && !weapon_pushed) {
             weapon_pushed = true;
             inputs.push_back(LocalWeapon{weapon_out ? weapon : std::string()});
+        }
+        if (!armor.empty() && !armor_pushed) {
+            armor_pushed = true;
+            inputs.push_back(LocalArmor{armor_worn ? armor : std::string()});
         }
         mp::net::Event ev;
         while (transport.poll(ev)) {
@@ -221,6 +238,8 @@ int main(int argc, char** argv) {
                                       " valeur " + std::to_string(pp->param.value));
                 } else if (const auto* aw = std::get_if<AvatarWeapon>(&cmd)) {
                     print("INFO", "[test] AvatarWeapon NetId " + std::to_string(aw->net_id) + " « " + aw->name + " »");
+                } else if (const auto* aa = std::get_if<AvatarArmor>(&cmd)) {
+                    print("INFO", "[test] AvatarArmor NetId " + std::to_string(aa->net_id) + " « " + aa->name + " »");
                 } else if (const auto* ea = std::get_if<EquipAvatar>(&cmd)) {
                     std::string names;
                     for (const auto& n : ea->names) names += (names.empty() ? "" : ",") + n;

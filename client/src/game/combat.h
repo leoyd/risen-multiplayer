@@ -42,6 +42,9 @@ constexpr int kAIModeDead = 12;              // Kill : AIMode = 12 (Entity::IsDe
 constexpr int kAIModeDefeated = 11;          // Defeat : AIMode = 11
 constexpr int kAIModeRoutine = 2;            // héros vivant (1ᵉʳ test en jeu, 2026-10-20)
 
+// gEEquipSlot de l'armure (story 3.2c) : vérifié en jeu par GetEquipSlotFromStack (story 3.2b).
+constexpr int kEquipSlotArmor = 8;
+
 constexpr std::size_t kPropertyIdSize = 0x14;  // bCPropertyID (16 o de GUID en tête)
 
 // Signature des fonctions de script de Script_Game.dll (Kill, Defeat) :
@@ -52,7 +55,8 @@ using RoutineOnProcessFn = void (*)(void* routine_ps);
 // Résout en bloc les symboles du combat (Script.dll, Engine.dll, Game.dll, SharedBase.dll).
 // Indépendante de resolve_entities (à appeler après). False et `missing` au premier échec.
 bool resolve_combat(const char*& missing);
-// Symboles d'inventaire de la session (story 3.2, AD-3) : arme en main du héros et de l'avatar.
+// Symboles d'inventaire de la session (stories 3.2 à 3.2c, AD-3) : arme, équipement et armure du
+// héros et de l'avatar.
 // Script.dll et SharedBase.dll, en tout ou rien, indépendants de resolve_combat (sonde). Les
 // enveloppes d'inventaire ci-dessous marchent après l'une ou l'autre. False et `missing` au
 // premier échec. Après resolve_entities (destroy_template).
@@ -75,9 +79,17 @@ bool hold_right_stack(const Entity& e, int stack, bool& out);
 bool equip_stack(const Entity& e, int stack, bool& out);
 // PSInventory::IsStackEquiped(int) const (story 3.2b) : pile déjà équipée ? resolve_inventory seulement.
 bool is_stack_equipped(const Entity& e, int stack, bool& out);
+// PSInventory::UnEquipStack(int) (story 3.2c) : déséquipe la pile ; resolve_inventory seulement.
+bool unequip_stack(const Entity& e, int stack, bool& out);
+// PSInventory::FindStackIndex(gEEquipSlot) const (story 3.2c) : pile équipée à cet emplacement
+// (enum passé en int), -1 si aucune. resolve_inventory seulement.
+bool find_stack_by_equip_slot(const Entity& e, int equip_slot, int& out);
+// PSInventory::GetTemplateItem(int) const (story 3.2c) : objet modèle de la pile (Entity rendue par
+// valeur, sret après this), dont Entity::GetName donne le nom. resolve_inventory seulement.
+bool get_template_item(const Entity& e, int stack, Entity& out);
 // Diagnostic (story 3.2b), en debug : chaque pile de l'inventaire (au plus 64), nom de son objet
 // (GetTemplateItem + GetName), équipée ou non, emplacement (gEEquipSlot brut). False si les
-// symboles facultatifs manquent ou sur SEH.
+// symboles facultatifs (GetStackCount, GetEquipSlotFromStack) manquent ou sur SEH.
 struct StackInfo {
     int index = 0;
     std::string name;

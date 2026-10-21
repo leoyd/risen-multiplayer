@@ -42,6 +42,8 @@ using PrintGameLogFFn = void (*)(void* gui, int type, const char* format, ...);
 using TemplateCtorFn = void* (*)(Template* self, const char* name);
 using TemplateIsValidFn = bool (*)(const Template* self);
 using FindStackIndexFn = int (*)(const Entity* self, const Template* tmpl, int after, bool unslotted_only);
+using FindStackBySlotFn = int (*)(const Entity* self, int equip_slot);  // gEEquipSlot passé en int (story 3.2c)
+using GetEntityAtFn = Entity* (*)(const Entity* self, Entity* sret, int stack);
 // SharedBase.dll
 using BCStringCtorFn = void* (*)(void* self, const char* text);
 using BCStringDtorFn = void (*)(void* self);
@@ -88,6 +90,8 @@ constexpr const char* kBCStringDtor = "??1bCString@@QEAA@XZ";
 constexpr const char* kTemplateCtor = "??0Template@@QEAA@PEBD@Z";
 constexpr const char* kTemplateIsValid = "?IsValid@Template@@QEBA_NXZ";
 constexpr const char* kFindStackIndex = "?FindStackIndex@PSInventory@@QEBAHAEBVTemplate@@H_N@Z";
+constexpr const char* kFindStackByEquipSlot = "?FindStackIndex@PSInventory@@QEBAHW4gEEquipSlot@@@Z";
+constexpr const char* kUnEquipStack = "?UnEquipStack@PSInventory@@QEAA_NH@Z";
 constexpr const char* kGui2 = "gui2";
 constexpr const char* kPrintGameLogF = "?PrintGameLogF@GUI2@@QEAAXW4gELogMessageType@@PEBDZZ";
 // Décision « à terre ou mort » sur un coup (self = ce qui frappe, other = la victime ; rend 0
@@ -157,17 +161,18 @@ struct InventoryAbi {
     TemplateCtorFn template_ctor = nullptr;
     TemplateIsValidFn template_is_valid = nullptr;
     FindStackIndexFn find_stack_index = nullptr;
+    FindStackBySlotFn find_stack_by_equip_slot = nullptr;  // story 3.2c
+    GetEntityAtFn get_template_item = nullptr;             // story 3.2c (diagnostic en 3.2b)
+    BoolIntFn unequip_stack = nullptr;                     // story 3.2c
 };
 InventoryAbi g_inv;
 bool g_inv_resolved = false;
 
 // Diagnostic de l'inventaire (story 3.2b) : résolu au mieux avec resolve_inventory, sans
 // conséquence s'il manque (la session reste active).
-using GetEntityAtFn = Entity* (*)(const Entity* self, Entity* sret, int stack);
 using IntIntFn = int (*)(const Entity* self, int value);
 struct InventoryDiagAbi {
     IntGetterFn get_stack_count = nullptr;
-    GetEntityAtFn get_template_item = nullptr;
     IntIntFn get_equip_slot = nullptr;
 };
 
@@ -267,6 +272,9 @@ bool resolve_inventory(const char*& missing) {
                     lookup(script, kTemplateCtor, a.template_ctor, missing) &&
                     lookup(script, kTemplateIsValid, a.template_is_valid, missing) &&
                     lookup(script, kFindStackIndex, a.find_stack_index, missing) &&
+                    lookup(script, kFindStackByEquipSlot, a.find_stack_by_equip_slot, missing) &&
+                    lookup(script, kGetTemplateItem, a.get_template_item, missing) &&
+                    lookup(script, kUnEquipStack, a.unequip_stack, missing) &&
                     lookup(shared_base, kBCStringDtor, a.bcstring_dtor, missing);
     if (!ok) return false;
     g_inv = a;
@@ -274,7 +282,6 @@ bool resolve_inventory(const char*& missing) {
     InventoryDiagAbi d;
     const char* unused = nullptr;
     g_diag_resolved = lookup(script, kGetStackCount, d.get_stack_count, unused) &&
-                      lookup(script, kGetTemplateItem, d.get_template_item, unused) &&
                       lookup(script, kGetEquipSlotFromStack, d.get_equip_slot, unused);
     if (g_diag_resolved) g_diag = d;
     return true;
@@ -475,10 +482,38 @@ bool is_stack_equipped(const Entity& e, int stack, bool& out) {
     return call_bool_int(g_inv_resolved ? g_inv.is_stack_equipped : nullptr, e, stack, out);
 }
 
+bool unequip_stack(const Entity& e, int stack, bool& out) {
+    return call_bool_int(g_inv_resolved ? g_inv.unequip_stack : nullptr, e, stack, out);
+}
+
+bool find_stack_by_equip_slot(const Entity& e, int equip_slot, int& out) {
+    out = -1;
+    if (!g_inv_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_inv.find_stack_by_equip_slot(&e, equip_slot);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = -1;
+        return false;
+    }
+}
+
+bool get_template_item(const Entity& e, int stack, Entity& out) {
+    out.ptr = nullptr;
+    if (!g_inv_resolved || e.ptr == nullptr) return false;
+    __try {
+        g_inv.get_template_item(&e, &out, stack);  // Entity par valeur : sret après this
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out.ptr = nullptr;
+        return false;
+    }
+}
+
 namespace {
 bool stack_raw(const Entity& e, int stack, Entity& item, int& slot) {
     __try {
-        g_diag.get_template_item(&e, &item, stack);
+        g_inv.get_template_item(&e, &item, stack);
         slot = g_diag.get_equip_slot(&e, stack);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {

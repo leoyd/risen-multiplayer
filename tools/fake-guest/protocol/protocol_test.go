@@ -48,6 +48,8 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"death.bin", true, Death{NetId: 2}},
 		{"weapon.bin", true, Weapon{NetId: 2, Name: "It_1H_Sword"}},
 		{"weapon_sheathed.bin", true, Weapon{NetId: 2, Name: ""}},
+		{"armor.bin", true, Armor{NetId: 1, Name: "It_Armor_Inquisitor"}},
+		{"armor_removed.bin", true, Armor{NetId: 1, Name: ""}},
 		{"motion_param.bin", true, MotionParam{NetId: 2, Ms: 1234, Kind: 0, Param: ParamTargetWeight, Value: 1.0, Time: 0.25}},
 		{"motion.bin", true, Motion{NetId: 2, Ms: 1234, Kind: 0, AniId: 7, Flags: 3, D00: 0.25, D04: 0.5, D08: 1, D0C: 1.0,
 			D10: 0, D14: 0.75, D18: 2}},
@@ -120,7 +122,7 @@ func TestAllVectorsCovered(t *testing.T) {
 		"snapshot.bin": true, "snapshot_truncated.bin": true,
 		"motion.bin": true, "motion_bad_type.bin": true, "aniname.bin": true, "death.bin": true,
 		"aniname_empty.bin": true, "motion_param.bin": true, "motion_param_bad.bin": true,
-		"weapon.bin": true, "weapon_sheathed.bin": true}
+		"weapon.bin": true, "weapon_sheathed.bin": true, "armor.bin": true, "armor_removed.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -348,5 +350,31 @@ func TestWeaponBounds(t *testing.T) {
 	}
 	if _, err := DecodeControl([]byte{2, 27}); !errors.Is(err, ErrUnknownType) {
 		t.Fatalf("Weapon en contrôle : %v", err)
+	}
+}
+
+func TestArmorBounds(t *testing.T) {
+	max := Armor{NetId: 0xffffffff, Name: strings.Repeat("a", MaxArmorName)}
+	b, err := EncodeReliable(max)
+	if err != nil || len(b) != 261 {
+		t.Fatalf("Armor maximal : %d octets, %v", len(b), err)
+	}
+	if got, err := DecodeReliable(b); err != nil || got != max {
+		t.Fatalf("Armor maximal décodé : %v, %v", got, err)
+	}
+	if _, err := EncodeReliable(Armor{Name: strings.Repeat("a", MaxArmorName+1)}); !errors.Is(err, ErrOutOfBounds) {
+		t.Fatalf("Armor de 256 octets : %v", err)
+	}
+	raw := vector(t, "armor.bin")
+	for n := 0; n < len(raw); n++ {
+		if _, err := DecodeReliable(raw[:n]); !errors.Is(err, ErrTruncated) {
+			t.Fatalf("armor.bin coupé à %d : %v", n, err)
+		}
+	}
+	if _, err := DecodeReliable(append(append([]byte{}, raw...), 0)); !errors.Is(err, ErrTrailingBytes) {
+		t.Fatalf("armor.bin + 1 octet : %v", err)
+	}
+	if _, err := DecodeControl([]byte{2, 28}); !errors.Is(err, ErrUnknownType) {
+		t.Fatalf("Armor en contrôle : %v", err)
 	}
 }

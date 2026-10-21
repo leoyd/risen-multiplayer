@@ -22,7 +22,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v7, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v8, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte.
 
@@ -32,10 +32,12 @@ Options :
 const exitCodesText = `
 Fautes : --drop, --delay, --jitter, --quit, --kill, --dup-hello, --bad-version (cumulables, sauf --quit/--kill).
 Trajectoire : --scenario <fichier> (snapshots à 20 Hz, gestes horodatés ; sans lui, pose fixe),
-ou --echo (l'avatar refait les gestes, les déplacements et l'arme du joueur hôte, 150 ms plus tard).
+ou --echo (l'avatar refait les gestes, les déplacements, l'arme et l'armure du joueur hôte, 150 ms plus tard).
 Équipement : --equipment <A,B> part dans Hello (même format que guest_equipment).
 Arme : --weapon <nom> part en Weapon juste après le Spawn (« - » : arme rangée) ; directive de
 scénario « weapon [instant s] <nom|-> ».
+Armure : --armor <nom> part en Armor juste après le Weapon (« - » : sans armure ; vide : pas
+d'Armor) ; directive de scénario « armor [instant s] <nom|-> ».
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :
@@ -90,6 +92,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	badVersion := fs.Bool("bad-version", false, "envoie le Hello de hello_future.bin (version 0xFFFF) au lieu du Hello courant")
 	equipment := fs.String("equipment", "", "équipement de l'invité envoyé dans Hello : templates séparés par des virgules (vide : aucun)")
 	weapon := fs.String("weapon", "It_1H_Sword", "arme en main de l'invité, envoyée en Weapon après le Spawn (« - » : arme rangée)")
+	armor := fs.String("armor", "", "armure de l'invité, envoyée en Armor après le Weapon (« - » : sans armure ; vide : pas d'Armor)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
 		fs.PrintDefaults()
@@ -142,6 +145,17 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	if len(weaponName) > protocol.MaxWeaponName {
 		return usageError("--weapon : nom de plus de %d octets", protocol.MaxWeaponName)
 	}
+	var armorName *string
+	if *armor != "" {
+		name := *armor
+		if name == "-" {
+			name = ""
+		}
+		if len(name) > protocol.MaxArmorName {
+			return usageError("--armor : nom de plus de %d octets", protocol.MaxArmorName)
+		}
+		armorName = &name
+	}
 	equipmentNames, err := parseEquipment(*equipment)
 	if err != nil {
 		return usageError("--equipment : %v", err)
@@ -178,6 +192,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 		Jitter:     *jitter,
 		Echo:       *echo,
 		Weapon:     weaponName,
+		Armor:      armorName,
 	}
 	defaultTimings(&cfg)
 	return cfg, parseOK

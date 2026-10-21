@@ -449,6 +449,7 @@ func TestCLI(t *testing.T) {
 		{"--host", "127.0.0.1", "--bogus"},
 		{"--host", "127.0.0.1", "extra"},
 		{"--host", "127.0.0.1", "--weapon", strings.Repeat("w", 256)},
+		{"--host", "127.0.0.1", "--armor", strings.Repeat("a", 256)},
 	}
 	for _, args := range bad {
 		if code := run(args, &out, &errOut); code != exitError {
@@ -471,7 +472,7 @@ func TestParseConfig(t *testing.T) {
 	if cfg.Host != netip.MustParseAddrPort("10.0.0.7:27960") || cfg.Hello.Nickname != "Invite" ||
 		cfg.Hello.ModVersion != "0.1.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != protocol.ProtocolVersion ||
 		cfg.Duration != 0 || cfg.Kill || cfg.Drop != 0 || cfg.Seed != 1 || cfg.DupHello || cfg.BadVersion ||
-		cfg.Weapon != "It_1H_Sword" {
+		cfg.Weapon != "It_1H_Sword" || cfg.Armor != nil {
 		t.Errorf("config par défaut : %+v", cfg)
 	}
 
@@ -492,6 +493,8 @@ func TestParseConfig(t *testing.T) {
 		{[]string{"--bad-version"}, func(c sessionConfig) bool { return c.BadVersion }},
 		{[]string{"--weapon", "It_2H_Axe"}, func(c sessionConfig) bool { return c.Weapon == "It_2H_Axe" }},
 		{[]string{"--weapon", "-"}, func(c sessionConfig) bool { return c.Weapon == "" }},
+		{[]string{"--armor", "It_Armor_Inquisitor"}, func(c sessionConfig) bool { return c.Armor != nil && *c.Armor == "It_Armor_Inquisitor" }},
+		{[]string{"--armor", "-"}, func(c sessionConfig) bool { return c.Armor != nil && *c.Armor == "" }},
 	}
 	for _, c := range cases {
 		cfg, code := parseConfig(append(append([]string{}, base...), c.args...), &errOut)

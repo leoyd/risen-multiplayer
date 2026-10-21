@@ -16,6 +16,8 @@ package main
 //	                                         MotionParam à cet instant (story 2.4b)
 //	weapon [instant s] <nom|->               Weapon à cet instant (story 3.2), « - » = arme rangée ;
 //	                                         sans instant : 0
+//	armor [instant s] <nom|->                Armor à cet instant (story 3.2c), « - » = sans armure ;
+//	                                         sans instant : 0
 //	# commentaire (ligne entière)
 //
 // Axes : avant = (sin lacet, 0, cos lacet), droite = (cos lacet, 0, −sin lacet), comme la
@@ -62,6 +64,7 @@ type event struct {
 	motion protocol.Motion       // Kind, Flags et scalaires ; NetId, AniId et Ms posés à l'envoi
 	param  *protocol.MotionParam // directive param : Kind, Param, Value, Time ; NetId et Ms à l'envoi
 	weapon *string               // directive weapon : nom de l'arme, vide = rangée
+	armor  *string               // directive armor : nom de l'armure, vide = sans armure
 }
 
 func loadScenario(path string) (*scenario, error) {
@@ -82,7 +85,7 @@ func parseScenario(r io.Reader) (*scenario, error) {
 			continue
 		}
 		f := strings.Fields(line)
-		if f[0] == "anim" || f[0] == "mort" || f[0] == "param" || f[0] == "weapon" {
+		if f[0] == "anim" || f[0] == "mort" || f[0] == "param" || f[0] == "weapon" || f[0] == "armor" {
 			ev, err := parseEvent(f)
 			if err != nil {
 				return nil, fmt.Errorf("ligne %d : %v", n, err)
@@ -135,9 +138,9 @@ func parseEvent(f []string) (event, error) {
 		}
 		return v, nil
 	}
-	if f[0] == "weapon" {
+	if f[0] == "weapon" || f[0] == "armor" {
 		if len(f) != 2 && len(f) != 3 {
-			return event{}, fmt.Errorf("« weapon [instant s] <nom|-> » attendu")
+			return event{}, fmt.Errorf("« %s [instant s] <nom|-> » attendu", f[0])
 		}
 		at := 0.0
 		if len(f) == 3 {
@@ -150,6 +153,12 @@ func parseEvent(f []string) (event, error) {
 		name := f[len(f)-1]
 		if name == "-" {
 			name = ""
+		}
+		if f[0] == "armor" {
+			if len(name) > protocol.MaxArmorName {
+				return event{}, fmt.Errorf("nom d'armure de plus de 255 octets")
+			}
+			return event{at: at * 1000, armor: &name}, nil
 		}
 		if len(name) > protocol.MaxWeaponName {
 			return event{}, fmt.Errorf("nom d'arme de plus de 255 octets")

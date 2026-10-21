@@ -37,11 +37,11 @@ struct Entry {
     bool move_error_logged = false;
     bool dead = false;  // en ragdoll (Death) : plus de pose ni d'animation imposées
     bool param_error_logged = false;
-    // Story 3.2 : pile de chaque arme créée dans son inventaire (une fois par nom), noms
-    // inconnus du jeu déjà signalés. Vidés avec l'entrée, au retrait.
-    std::unordered_map<std::string, int> weapon_stacks;
-    std::unordered_set<std::string> weapon_failed;
-    bool weapon_fallback_logged = false;  // repli sur une pile mémorisée (FindStackIndex en SEH)
+    // Stories 3.2 à 3.2c : pile de chaque objet (arme, équipement, armure) trouvé ou créé dans son
+    // inventaire (une par nom), noms en échec déjà signalés. Vidés avec l'entrée, au retrait.
+    std::unordered_map<std::string, int> item_stacks;
+    std::unordered_set<std::string> item_failed;
+    bool stack_fallback_logged = false;  // repli sur une pile mémorisée (FindStackIndex en SEH)
     // Story 3.2b (test en jeu du 2026-10-21) : équipement et arme différés de kInventoryReadyFrames
     // frames après la création. Équipée avant le premier gCInventory_PS::OnCacheIn de l'entité,
     // l'armure est marquée liée, et OnCacheIn ne retire plus l'objet par défaut de l'emplacement
@@ -51,6 +51,8 @@ struct Entry {
     std::vector<std::string> pending_equipment;
     bool pending_weapon_set = false;
     std::string pending_weapon;
+    bool pending_armor_set = false;  // story 3.2c : dernier Armor reçu avant que l'inventaire soit prêt
+    std::string pending_armor;
 };
 constexpr unsigned kInventoryReadyFrames = 15;  // environ 250 ms à 60 images/s
 std::vector<Entry> g_table;
@@ -165,17 +167,17 @@ bool ensure_stack(const game::Entity& entity, const game::Template& tmpl, const 
     stack = -1;
     how = "trouvée";
     const bool found = game::find_stack_index(entity, tmpl, stack);
-    auto known = memory != nullptr ? memory->weapon_stacks.find(name) : std::unordered_map<std::string, int>::iterator{};
-    const bool has_known = memory != nullptr && known != memory->weapon_stacks.end();
+    auto known = memory != nullptr ? memory->item_stacks.find(name) : std::unordered_map<std::string, int>::iterator{};
+    const bool has_known = memory != nullptr && known != memory->item_stacks.end();
     if (found && stack < 0 && has_known) {
-        memory->weapon_stacks.erase(known);  // objet sorti de l'inventaire : pile mémorisée périmée
+        memory->item_stacks.erase(known);  // objet sorti de l'inventaire : pile mémorisée périmée
     }
     if (!found || stack < 0) {
         if (!found && has_known) {
             stack = known->second;  // repli : FindStackIndex a levé une exception (SEH)
             how = "mémorisée";
-            if (!memory->weapon_fallback_logged) {
-                memory->weapon_fallback_logged = true;
+            if (!memory->stack_fallback_logged) {
+                memory->stack_fallback_logged = true;
                 log::warn(who + " : FindStackIndex a levé une exception (SEH) : pile mémorisée reprise");
             }
         } else if (!found) {
@@ -188,7 +190,7 @@ bool ensure_stack(const game::Entity& entity, const game::Template& tmpl, const 
             how = "créée";
         }
     }
-    if (memory != nullptr) memory->weapon_stacks[name] = stack;
+    if (memory != nullptr) memory->item_stacks[name] = stack;
     return true;
 }
 
@@ -258,6 +260,33 @@ void equip_entity(const game::Entity& entity, const std::vector<std::string>& na
     }
     log::info(who + " : " + std::to_string(equipped) + " objet(s) équipé(s), " + std::to_string(failed) +
               " en échec, sur " + std::to_string(names.size()));
+}
+
+// Pile de l'objet `name` dans l'inventaire de l'avatar (arme, story 3.2 ; armure, story 3.2c) :
+// Template(nom) puis IsValid, puis ensure_stack. Un échec est journalisé une fois par nom
+// (Entry::item_failed) et laisse l'avatar inchangé.
+bool avatar_stack(Entry& e, const std::string& name, const std::string& who, int& stack, const char*& how) {
+    stack = -1;
+    how = nullptr;
+    game::Template tmpl;
+    bool valid = false;
+    if (!game::template_from_name(name.c_str(), tmpl, valid)) {
+        if (e.item_failed.insert(name).second) {
+            log::error(who + " : Template(« " + name + " ») a levé une exception (SEH)");
+        }
+        return false;
+    }
+    if (!valid) {
+        game::destroy_template(tmpl);
+        if (e.item_failed.insert(name).second) {
+            log::warn(who + " : template « " + name + " » inconnu du jeu, avatar inchangé");
+        }
+        return false;
+    }
+    const bool ok = ensure_stack(e.entity, tmpl, name, &e, who, stack, how);
+    game::destroy_template(tmpl);
+    if (!ok && e.item_failed.insert(name).second) log::error(who + " : " + stack_failure(how, name, stack));
+    return ok;
 }
 }  // namespace
 
@@ -335,7 +364,8 @@ void despawn(std::uint32_t net_id) {
     log::debug("[sync] avatar " + std::to_string(net_id) + " absent : rien à retirer");
 }
 
-// Équipement puis arme reçus avant que l'inventaire de l'avatar soit prêt (voir Entry::frames).
+// Équipement, armure puis arme reçus avant que l'inventaire de l'avatar soit prêt (voir
+// Entry::frames) : l'armure (Armor, état courant du pair) passe après l'équipement du Hello.
 void apply_pending_inventory(Entry& e) {
     e.inventory_ready = true;
     log::debug("[sync] avatar " + std::to_string(e.net_id) + " : inventaire prêt après " + std::to_string(e.frames) +
@@ -344,6 +374,10 @@ void apply_pending_inventory(Entry& e) {
         const std::vector<std::string> names = std::move(e.pending_equipment);
         e.pending_equipment.clear();
         equip(e.net_id, names);
+    }
+    if (e.pending_armor_set) {
+        e.pending_armor_set = false;
+        set_armor(e.net_id, e.pending_armor);
     }
     if (e.pending_weapon_set) {
         e.pending_weapon_set = false;
@@ -493,31 +527,9 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
             }
             return;
         }
-        game::Template tmpl;
-        bool valid = false;
-        if (!game::template_from_name(name.c_str(), tmpl, valid)) {
-            if (e.weapon_failed.insert(name).second) {
-                log::error(who + " : Template(« " + name + " ») a levé une exception (SEH)");
-            }
-            return;
-        }
-        if (!valid) {
-            game::destroy_template(tmpl);
-            if (e.weapon_failed.insert(name).second) {
-                log::warn(who + " : template « " + name + " » inconnu du jeu, avatar inchangé");
-            }
-            return;
-        }
         int stack = -1;
         const char* how = nullptr;
-        if (!ensure_stack(e.entity, tmpl, name, &e, who, stack, how)) {
-            game::destroy_template(tmpl);
-            if (e.weapon_failed.insert(name).second) {
-                log::error(who + " : " + stack_failure(how, name, stack));
-            }
-            return;
-        }
-        game::destroy_template(tmpl);
+        if (!avatar_stack(e, name, who, stack, how)) return;
         bool ok = false;
         if (!game::hold_right_stack(e.entity, stack, ok)) {
             log::error(who + " : HoldRightStack a levé une exception (SEH)");
@@ -528,6 +540,67 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
         return;
     }
     log::debug("[sync] arme : avatar " + std::to_string(net_id) + " absent : Weapon ignoré");
+}
+
+void set_armor(std::uint32_t net_id, const std::string& name) {
+    for (Entry& e : g_table) {
+        if (e.net_id != net_id) continue;
+        const std::string who = "[sync] armure : avatar " + std::to_string(net_id);
+        if (e.dead) {
+            log::debug(who + " mort : Armor ignoré");
+            return;
+        }
+        if (!e.inventory_ready) {  // appliqué par move(), une fois l'inventaire prêt (dernier reçu)
+            e.pending_armor_set = true;
+            e.pending_armor = name;
+            log::debug(who + " : Armor « " + name + " » différé (inventaire pas encore prêt)");
+            return;
+        }
+        if (name.empty()) {
+            int worn = -1;
+            if (!game::find_stack_by_equip_slot(e.entity, game::kEquipSlotArmor, worn)) {
+                log::error(who + " : FindStackIndex(emplacement " + std::to_string(game::kEquipSlotArmor) +
+                           ") a levé une exception (SEH)");
+                return;
+            }
+            if (worn < 0) {
+                log::debug(who + " : aucune armure portée, rien à retirer");
+                return;
+            }
+            bool ok = false;
+            if (!game::unequip_stack(e.entity, worn, ok)) {
+                log::error(who + " : UnEquipStack(" + std::to_string(worn) + ") a levé une exception (SEH)");
+                return;
+            }
+            log::info(who + " retire son armure (pile " + std::to_string(worn) + ", UnEquipStack → " +
+                      (ok ? "true" : "false") + ")");
+            log_inventory(e.entity, "[sync] diagnostic : avatar " + std::to_string(net_id) + " sans armure");
+            return;
+        }
+        int stack = -1;
+        const char* how = nullptr;
+        if (!avatar_stack(e, name, who, stack, how)) return;
+        bool already = false;
+        if (!game::is_stack_equipped(e.entity, stack, already)) {
+            log::error(who + " : IsStackEquiped(" + std::to_string(stack) + ") a levé une exception (SEH)");
+            return;
+        }
+        if (already) {
+            log::info(who + " porte déjà « " + name + " » (pile " + std::to_string(stack) + " " + how + ")");
+            log_inventory(e.entity, "[sync] diagnostic : avatar " + std::to_string(net_id) + " en armure");
+            return;
+        }
+        bool ok = false;
+        if (!game::equip_stack(e.entity, stack, ok)) {
+            log::error(who + " : EquipStack(" + std::to_string(stack) + ") a levé une exception (SEH)");
+            return;
+        }
+        log::info(who + " porte « " + name + " » (pile " + std::to_string(stack) + " " + how + ", EquipStack → " +
+                  (ok ? "true" : "false") + ")");
+        log_inventory(e.entity, "[sync] diagnostic : avatar " + std::to_string(net_id) + " en armure");
+        return;
+    }
+    log::debug("[sync] armure : avatar " + std::to_string(net_id) + " absent : Armor ignoré");
 }
 
 void equip(std::uint32_t net_id, const std::vector<std::string>& names) {
@@ -569,6 +642,19 @@ bool local_weapon(std::string& name) {
     game::Entity item;
     if (!game::get_right_hold_item(player, item)) return false;
     if (item.ptr == nullptr) return true;
+    return game::get_entity_name(item, name);
+}
+
+bool local_armor(std::string& name) {
+    name.clear();
+    game::Entity player;
+    if (!game::get_player(player) || player.ptr == nullptr) return false;
+    int stack = -1;
+    if (!game::find_stack_by_equip_slot(player, game::kEquipSlotArmor, stack)) return false;
+    if (stack < 0) return true;  // aucune armure (ou pas d'inventaire)
+    game::Entity item;
+    if (!game::get_template_item(player, stack, item)) return false;
+    if (item.ptr == nullptr) return true;  // objet nul : traité comme sans armure, comme local_weapon
     return game::get_entity_name(item, name);
 }
 

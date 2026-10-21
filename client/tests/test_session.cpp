@@ -2258,3 +2258,146 @@ TEST("équipement hôte : Hello.equipment invalide → session acceptée, Warn u
     CHECK_EQ(commands_of<SpawnAvatar>(out).size(), 1u);
     CHECK(commands_of<EquipAvatar>(out).empty());
 }
+
+// --- Armure portée (story 3.2c) ------------------------------------------------------------
+
+namespace {
+
+std::vector<Input> local_armor(const std::string& name) { return {LocalArmor{name}}; }
+
+}  // namespace
+
+TEST("armure : LocalArmor en session → Armor au changement seulement ; retirée → nom vide") {
+    Session s = host_with_avatar();
+    Output out = s.tick(1200, loaded_world(), local_armor("It_Armor_Inquisitor"));
+    auto a = sent_of<proto::Armor>(out);
+    CHECK(a.size() == 1 && a[0].net_id == proto::kHostNetId && a[0].name == "It_Armor_Inquisitor");
+    CHECK(has_log(out, "Armor envoyé : NetId 1 (hôte), « It_Armor_Inquisitor »"));
+    CHECK(sent_of<proto::Weapon>(out).empty());  // l'arme garde son propre état
+    CHECK(sent_of<proto::Armor>(s.tick(1210, loaded_world(), local_armor("It_Armor_Inquisitor"))).empty());
+    a = sent_of<proto::Armor>(s.tick(1220, loaded_world(), local_armor("It_Armor_Don_Fighter")));
+    CHECK(a.size() == 1 && a[0].name == "It_Armor_Don_Fighter");
+    out = s.tick(1230, loaded_world(), local_armor(""));
+    a = sent_of<proto::Armor>(out);
+    CHECK(a.size() == 1 && a[0].name.empty());
+    CHECK(has_log(out, "Armor envoyé : NetId 1 (hôte), sans armure"));
+    // Arme et armure dans le même tick : un message chacune.
+    out = s.tick(1240, loaded_world(), {LocalWeapon{"It_1H_Sword"}, LocalArmor{"It_Armor_Inquisitor"}});
+    CHECK_EQ(sent_of<proto::Weapon>(out).size(), 1u);
+    CHECK_EQ(sent_of<proto::Armor>(out).size(), 1u);
+}
+
+TEST("armure : retenue hors session, envoyée à l'entrée en session après le Spawn et le Weapon") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {LocalArmor{"It_Armor_Inquisitor"}, LocalWeapon{""}});  // Inactive → Hosting
+    CHECK(sent_of<proto::Armor>(s.tick(100, loaded_world(), {})).empty());
+    const Output out = s.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    const auto sent = reliables_sent(out);
+    CHECK_EQ(sent.size(), 4u);  // Spawn, Weapon, Armor, Heartbeat
+    if (sent.size() >= 3) {
+        CHECK(std::holds_alternative<proto::Spawn>(sent[0]));
+        CHECK(std::holds_alternative<proto::Weapon>(sent[1]));
+        const auto* a = std::get_if<proto::Armor>(&sent[2]);
+        CHECK(a != nullptr && a->net_id == proto::kHostNetId && a->name == "It_Armor_Inquisitor");
+    }
+    // Invité : idem, sous NetId 2, sans armure comprise.
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), local_armor(""));
+    const auto ga = sent_of<proto::Armor>(g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0)))));
+    CHECK(ga.size() == 1 && ga[0].net_id == proto::kGuestNetId && ga[0].name.empty());
+}
+
+TEST("armure : jamais lue → pas d'Armor à l'entrée ; nouvelle session → renvoyée") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    s.tick(1100, loaded_world(), local_armor("It_Armor_Inquisitor"));
+    s.tick(1300, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+    s.tick(2400, loaded_world(), {});
+    const auto a = sent_of<proto::Armor>(s.tick(2500, loaded_world(), control_from(kGuestA, encode(make_hello()))));
+    CHECK(a.size() == 1 && a[0].name == "It_Armor_Inquisitor");
+    Session fresh(host_settings());
+    fresh.tick(0, loaded_world(), local_weapon("It_1H_Sword"));
+    CHECK(sent_of<proto::Armor>(fresh.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())))).empty());
+}
+
+TEST("armure : Armor du pair → AvatarArmor à l'instant d'affichage, dans l'ordre d'arrivée avec Weapon") {
+    Session s = host_with_clock();  // dernier snapshot : 150 ms ; affiché = now − 1350
+    Output out = s.tick(1400, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));
+    CHECK(commands_of<AvatarArmor>(out).empty());  // affiché 50 < 150
+    CHECK(has_log(out, "Armor reçu : avatar 2 (invité), « It_Armor_Inquisitor »"));
+    s.tick(1410, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));
+    CHECK(commands_of<AvatarArmor>(s.tick(1499, loaded_world(), {})).empty());
+    out = s.tick(1500, loaded_world(), {});
+    const auto aa = commands_of<AvatarArmor>(out);
+    CHECK(aa.size() == 1 && aa[0]->net_id == proto::kGuestNetId && aa[0]->name == "It_Armor_Inquisitor");
+    CHECK_EQ(commands_of<AvatarWeapon>(out).size(), 1u);
+    CHECK(index_of<AvatarArmor>(out) < index_of<AvatarWeapon>(out));
+    // Armure retirée : nom vide transmis tel quel.
+    out = s.tick(1510, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, ""})));
+    const auto removed = commands_of<AvatarArmor>(out);
+    CHECK(removed.size() == 1 && removed[0]->name.empty());
+    CHECK(has_log(out, "Armor reçu : avatar 2 (invité), sans armure"));
+}
+
+TEST("armure : avant tout snapshot (apparition), AvatarArmor part aussitôt, après SpawnAvatar") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    const Output out = s.tick(1100, loaded_world(),
+                              reliable2(spawn_of(proto::kGuestNetId), proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"}));
+    CHECK_EQ(commands_of<AvatarArmor>(out).size(), 1u);
+    CHECK(index_of<SpawnAvatar>(out) < index_of<AvatarArmor>(out));
+}
+
+TEST("armure : Armor sans avatar, d'un autre NetId, avatar mort ou mort en attente → ignoré (debug)") {
+    std::uint32_t conv = 0;
+    Session s = hosting_with_a(conv);
+    Output out = s.tick(1100, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));
+    CHECK(commands_of<AvatarArmor>(out).empty());
+    bool debug = false;
+    for (const auto& l : out.logs) {
+        if (l.text.find("Armor reçu") != std::string::npos && l.text.find("pas d'avatar") != std::string::npos) {
+            debug = l.level == Level::Debug;
+        }
+    }
+    CHECK(debug);
+    Session c = host_with_clock();
+    out = c.tick(1400, loaded_world(), reliable(encode_r(proto::Armor{proto::kHostNetId, "X"})));
+    CHECK(has_log(out, "pas l'avatar du pair"));
+    c.tick(1410, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));  // en attente
+    c.tick(1420, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
+    for (std::uint64_t t = 1430; t < 3000; t += 100) CHECK(commands_of<AvatarArmor>(c.tick(t, loaded_world(), {})).empty());
+    Session d = host_with_clock();
+    d.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    out = d.tick(1410, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));
+    CHECK(has_log(out, "mort de l'avatar en attente"));
+    d.tick(1500, loaded_world(), {});  // ragdoll appliqué
+    CHECK(d.avatar_dead());
+    out = d.tick(1510, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));
+    CHECK(has_log(out, "avatar mort"));
+    CHECK(commands_of<AvatarArmor>(d.tick(3000, loaded_world(), {})).empty());
+}
+
+TEST("armure : Armor tronqué → message fiable illisible, ignoré") {
+    Session s = host_with_avatar();
+    Bytes b = encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"});
+    b.pop_back();
+    const Output out = s.tick(1200, loaded_world(), reliable(b));
+    CHECK(commands_of<AvatarArmor>(out).empty());
+    CHECK(has_log(out, "message fiable illisible : message tronqué"));
+}
+
+TEST("armure : file pleine de Weapon → l'Armor en attente n'est pas évincé") {
+    Session s = host_with_clock();  // affiché = now − 1350 : rien n'est appliqué avant 1500
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));
+    for (std::size_t i = 0; i < kMaxPendingCarried + 4; ++i) {
+        const Output out = s.tick(1401 + i, loaded_world(),
+                                  reliable(encode_r(proto::Weapon{proto::kGuestNetId, "W" + std::to_string(i)})));
+        CHECK(commands_of<AvatarArmor>(out).empty());
+    }
+    const Output out = s.tick(1500, loaded_world(), {});
+    const auto aa = commands_of<AvatarArmor>(out);
+    CHECK(aa.size() == 1 && aa[0]->name == "It_Armor_Inquisitor");
+    const auto aw = commands_of<AvatarWeapon>(out);
+    CHECK_EQ(aw.size(), kMaxPendingCarried - 1);
+    if (!aw.empty()) CHECK_EQ(aw.back()->name, "W" + std::to_string(kMaxPendingCarried + 3));  // les plus récents gardés
+}

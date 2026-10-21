@@ -327,6 +327,8 @@ if start_host_weapon arme $p 30000 Host_Sword; then
     l_sa=$(grep -n -- "SpawnAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
     l_aw=$(grep -n -- "AvatarWeapon NetId 2" "$h" | head -1 | cut -d: -f1)
     if [[ -n $l_sa && -n $l_aw && $l_sa -lt $l_aw ]]; then ok "arme : avatar armé après son apparition"; else ko "arme : SpawnAvatar puis AvatarWeapon (lignes ${l_sa:-?} et ${l_aw:-?})"; fi
+    # Story 3.2c : sans --armor, jamais d'AvatarArmor.
+    expect_count "armure : pas d'AvatarArmor sans --armor (arme)" "$h" "AvatarArmor" 0
 fi
 
 # --- Story 3.2b : équipement de l'invité — Hello.equipment, EquipAvatar après SpawnAvatar ----
@@ -342,6 +344,57 @@ if start_host equipement $p 20000; then
     l_sa=$(grep -n -- "SpawnAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
     l_ea=$(grep -n -- "\[test\] EquipAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
     if [[ -n $l_sa && -n $l_ea && $l_sa -lt $l_ea ]]; then ok "équipement : après SpawnAvatar"; else ko "équipement : SpawnAvatar puis EquipAvatar (lignes ${l_sa:-?} et ${l_ea:-?})"; fi
+fi
+
+# --- Story 3.2c : armure — Armor dans les deux sens, après le Spawn et le Weapon, puis retirée --
+p=$((base_port + 16))
+cat > "$work/armure.txt" <<'EOS'
+pause 3
+armor 1.0 -
+armor 1.5 It_Armor_Don_Fighter
+EOS
+start_host_armor() {  # comme start_host, avec --weapon et --armor
+    "$host_bin" --port "$2" --max-ms "$3" --weapon "$4" --armor "$5" > "$work/$1.host.log" 2>&1 &
+    host_pid=$!
+    for _ in $(seq 100); do
+        grep -q "transport démarré" "$work/$1.host.log" && return 0
+        sleep 0.05
+    done
+    ko "$1 : l'hôte n'a pas démarré (scénario sauté)"; sed 's/^/    /' "$work/$1.host.log"
+    kill "$host_pid" 2>/dev/null; wait "$host_pid" 2>/dev/null
+    return 1
+}
+if start_host_armor armure $p 30000 Host_Sword It_Armor_Inquisitor; then
+    h=$work/armure.host.log
+    "$guest" --host 127.0.0.1 --port $p --duration 2500ms --quit --armor It_Armor_Inquisitor --scenario "$work/armure.txt" \
+        > "$work/armure.guest.log" 2>&1 &
+    g_pid=$!
+    if wait_count "$work/armure.guest.log" '<- Armor netid=1 nom="It_Armor_Inquisitor"' 1; then
+        kill -HUP $host_pid  # l'hôte range son arme et retire son armure
+    else
+        ko "armure : Armor de l'hôte non reçu"
+    fi
+    wait $g_pid; rc=$?
+    wait $host_pid
+    g=$work/armure.guest.log
+    expect_code "armure : invité" 0 $rc "$g"
+    expect_log "armure : Armor de l'hôte envoyé" "$h" "Armor envoyé : NetId 1 (hôte), « It_Armor_Inquisitor »"
+    expect_log "armure : Armor retiré de l'hôte reçu" "$g" '<- Armor netid=1 nom=""'
+    l_weapon=$(grep -n -- "<- Weapon netid=1" "$g" | head -1 | cut -d: -f1)
+    l_armor=$(grep -n -- "<- Armor netid=1" "$g" | head -1 | cut -d: -f1)
+    if [[ -n $l_weapon && -n $l_armor && $l_weapon -lt $l_armor ]]; then
+        ok "armure : Armor de l'hôte après son Spawn et son Weapon"
+    else
+        ko "armure : Armor de l'hôte après son Weapon (lignes ${l_weapon:-?} et ${l_armor:-?})"; sed 's/^/    /' "$g"
+    fi
+    expect_count "armure : armure de l'invité appliquée" "$h" "AvatarArmor NetId 2 « It_Armor_Inquisitor »" 1
+    expect_count "armure : armure de l'invité retirée" "$h" "AvatarArmor NetId 2 «  »" 1
+    expect_count "armure : nouvelle armure de l'invité" "$h" "AvatarArmor NetId 2 « It_Armor_Don_Fighter »" 1
+    order=$(grep -o "AvatarArmor NetId 2 « [^»]* »" "$h" | sed -E 's/.*« (.*) »/\1/' | tr '\n' ,)
+    if [[ $order == "It_Armor_Inquisitor,,It_Armor_Don_Fighter," ]]; then ok "armure : dans l'ordre"; else ko "armure : ordre $order"; fi
+    l_sa=$(grep -n -- "SpawnAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
+    l_aa=$(grep -n -- "AvatarArmor NetId 2" "$h" | head -1 | cut -d: -f1)
+    if [[ -n $l_sa && -n $l_aa && $l_sa -lt $l_aa ]]; then ok "armure : avatar vêtu après son apparition"; else ko "armure : SpawnAvatar puis AvatarArmor (lignes ${l_sa:-?} et ${l_aa:-?})"; fi
 fi
 
 # --- Story 1.5 : mort de l'hôte en session → SessionEnd{3} ----------------------------

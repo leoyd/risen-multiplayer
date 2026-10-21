@@ -30,6 +30,7 @@ type hostConfig struct {
 	PeerTimeout        time.Duration
 	SendMotions        bool   // AniName{0,"Host_Run"} puis un Motion toutes les 100 ms (story 2.4)
 	SendWeapon         string // non vide : Weapon{1, nom} juste après le Spawn (story 3.2)
+	SendArmor          string // non vide : Armor{1, nom} juste après le Spawn et le Weapon (story 3.2c)
 }
 
 func defaultHost() hostConfig {
@@ -57,13 +58,14 @@ type hostRecord struct {
 	sessionEnds  []uint8
 	spawns       []protocol.Spawn    // Spawn reçus de l'invité (v3)
 	despawns     []uint32            // NetId des Despawn reçus
-	order        []protocol.MsgType  // Spawn, Weapon, Despawn et SessionEnd, dans l'ordre de réception
+	order        []protocol.MsgType  // Spawn, Weapon, Armor, Despawn et SessionEnd, dans l'ordre de réception
 	snapshots    []protocol.Snapshot // snapshots reçus de l'invité (v4)
 	aniNames     []protocol.AniName  // reçus de l'invité (v5)
 	motions      []protocol.Motion
 	params       []protocol.MotionParam
 	deaths       []uint32
 	weapons      []protocol.Weapon // reçus de l'invité (v7)
+	armors       []protocol.Armor  // reçus de l'invité (v8)
 	snapshotAt   []time.Time       // heure de réception de chacun
 	lastDatagram time.Time         // dernier datagramme du pair de session
 	timeoutAt    time.Time         // fin « timeout » constatée
@@ -323,6 +325,9 @@ func (h *simHost) openSession(peer netip.AddrPort) {
 	if h.cfg.SendWeapon != "" {
 		h.sendReliable(protocol.Weapon{NetId: protocol.HostNetId, Name: h.cfg.SendWeapon})
 	}
+	if h.cfg.SendArmor != "" {
+		h.sendReliable(protocol.Armor{NetId: protocol.HostNetId, Name: h.cfg.SendArmor})
+	}
 	if h.cfg.SilentAfterWelcome {
 		h.silent = true
 	}
@@ -368,6 +373,11 @@ func (h *simHost) drain() {
 			h.mu.Lock()
 			h.rec.weapons = append(h.rec.weapons, m)
 			h.rec.order = append(h.rec.order, protocol.TypeWeapon)
+			h.mu.Unlock()
+		case protocol.Armor:
+			h.mu.Lock()
+			h.rec.armors = append(h.rec.armors, m)
+			h.rec.order = append(h.rec.order, protocol.TypeArmor)
 			h.mu.Unlock()
 		case protocol.Despawn:
 			h.mu.Lock()

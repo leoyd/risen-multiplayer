@@ -85,7 +85,7 @@ dossier ; il n'est enregistré que si `go` est trouvé (cgo demande aussi `gcc`)
 après `--ends E` fins de session (défaut 1) ou `--max-ms T`. `SIGUSR1` simule une fin de monde
 (rechargement : le héros change d'adresse) et `SIGUSR2` la mort du héros de l'hôte.
 `--weapon NOM` met une arme dans la main du héros de l'hôte (story 3.2), que `SIGHUP` range ou
-ressort.
+ressort ; `--armor NOM` lui met une armure (story 3.2c), que ce même `SIGHUP` retire ou remet.
 `tests/session_fake_guest.sh` le lance face au faux invité (compilé à la volée par `go build`)
 et vérifie les codes de sortie et les logs : nominal, `--dup-hello`, `--bad-version`, deux
 invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte), puis
@@ -100,9 +100,13 @@ horodatés et une mort rejoués dans l'ordre (`PlayAvatarMotion`, `AvatarDeath`)
 (story 3.2) l'arme dans les deux sens : `Weapon` de l'hôte reçu après son `Spawn` puis rangé, et
 celle du faux invité (`--weapon It_1H_Sword`, puis rangée et changée par le scénario) appliquée
 dans l'ordre (`AvatarWeapon`), après `SpawnAvatar` ; (story 3.2b) `--equipment` reçu dans le
-`Hello` et appliqué à l'avatar (`EquipAvatar`) juste après `SpawnAvatar`, rien sans l'option. Le test CTest
+`Hello` et appliqué à l'avatar (`EquipAvatar`) juste après `SpawnAvatar`, rien sans l'option ;
+(story 3.2c) l'armure dans les deux sens : `Armor` de l'hôte reçu après son `Spawn` et son
+`Weapon`, puis retiré, et celle du faux invité (`--armor It_Armor_Inquisitor`, puis retirée et
+changée par le scénario) appliquée dans l'ordre (`AvatarArmor`), après `SpawnAvatar` ; aucun
+`AvatarArmor` sans `--armor`. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
-70 s. Lancement à la main :
+80 s. Lancement à la main :
 
 ```bash
 client/tests/session_fake_guest.sh client/build-tests/session_host tools/fake-guest
@@ -365,6 +369,47 @@ Prérequis : `probe = 0`, overlay Steam désactivé. Au démarrage, la ligne
    l'objet est dans l'inventaire et porté. Quitter, revenir en session : `pile N trouvée` (ou
    `déjà équipé`), aucune copie ajoutée.
 5. Rapporter les lignes `[sync] équipement …` et `[sync] EquipAvatar …`.
+
+### Armure portée en jeu (story 3.2c, une machine)
+
+Chaque joueur lit à chaque frame l'armure de son héros (pile équipée à l'emplacement 8,
+`FindStackIndex(gEEquipSlot)`, nom de son objet par `GetTemplateItem`) et l'envoie en `Armor`
+(protocole v8) à chaque changement, et une fois à l'entrée en session, après le `Spawn` et le
+`Weapon` ; sans armure, le nom est vide. Chez le pair, au même instant d'affichage qu'un `Weapon`,
+l'avatar équipe cette armure (pile trouvée ou créée, partagée avec l'arme et l'équipement :
+une par nom) ou, sur un nom vide, retire celle de l'emplacement 8 (`UnEquipStack`) : la tunique
+par défaut doit revenir. Un `Armor` reçu dans les 15 premières frames de l'avatar est différé
+(le dernier reçu), comme l'arme. `Hello.equipment` reste appliqué à la création de l'avatar.
+
+Prérequis : `role = host`, `probe = 0`, overlay Steam désactivé, `log_level = debug` pour voir
+les lectures (`[sync] armure du héros : …`) et le diagnostic d'inventaire. La ligne
+`[hooks] inventaire de session résolu (arme de l'avatar)` (inchangée) couvre aussi
+`FindStackIndex(gEEquipSlot)`, `GetTemplateItem` et `UnEquipStack`.
+
+1. **Armure de l'hôte** : `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s --echo`.
+   Changer d'armure, puis la retirer. Attendu côté faux invité :
+   `<- Armor netid=1 nom="It_Armor_…"` à chaque changement, puis `<- Armor netid=1 nom=""` ; côté
+   hôte, `[sync] Armor envoyé : NetId 1 (hôte), « It_Armor_… »` puis `…, sans armure`. Avec l'écho,
+   l'avatar change d'armure avec toi (`[sync] armure : avatar 2 porte « … » (pile N …,
+   EquipStack → true)`), puis la retire (`[sync] armure : avatar 2 retire son armure (pile N,
+   UnEquipStack → true)`).
+2. **Avatar en armure dès l'apparition** :
+   `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 60s --armor It_Armor_Inquisitor`.
+   Attendu : l'avatar apparaît en armure, **sans** la tunique. Log :
+   `[sync] Armor reçu : avatar 2 (invité), « It_Armor_Inquisitor » …`, en debug
+   `[sync] armure : avatar 2 : Armor « It_Armor_Inquisitor » différé`, puis après
+   `inventaire prêt après 15 frames`, `[sync] armure : avatar 2 porte « It_Armor_Inquisitor » …`.
+3. **Retour de la tunique** : un scénario avec `armor 2 -` (par exemple `pause 4` puis
+   `armor 2 -` et `armor 3 It_Armor_Inquisitor`) et `--armor It_Armor_Inquisitor`. Attendu :
+   l'armure disparaît et la **tunique par défaut revient** (point à vérifier : si elle ne revient
+   pas, le noter, voir le plan B de `docs/re/equipement.md`), puis l'armure revient.
+4. **A remplacée par B** (`log_level = debug`) : avec l'écho, passer d'une armure A à une
+   armure B. Attendu : la ligne de diagnostic qui suit
+   (`[sync] diagnostic : avatar 2 en armure : inventaire, …`) ne montre que B « équipée »
+   à l'emplacement 8 ; A y figure encore, mais sans « équipée ».
+5. **Nom lu = nom accepté** : avec l'écho, vérifier que le log de l'hôte ne contient **aucune**
+   ligne `template « … » inconnu du jeu` pour les armures portées.
+6. Rapporter les lignes `[sync] armure …`, `[sync] Armor …` et le côté faux invité (`<- Armor`).
 
 ### Fin de session en jeu (story 1.5, une machine)
 

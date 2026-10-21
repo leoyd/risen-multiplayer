@@ -156,3 +156,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2b-equipement-invite.md`
   summary: Résolu le 2026-10-21 — l'entrée « équiper l'avatar dans la frame de sa création » est confirmée en jeu (tunique par défaut restée visible) et corrigée (équipement et arme différés de 15 frames, `docs/re/equipement.md`).
   evidence: Test en jeu de l'utilisateur, deux essais.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2c-armure-hote.md`
+  summary: Colle sync/game de l'armure (`avatar::set_armor`, `avatar::local_armor`, armure différée dans `apply_pending_inventory`, branche `AvatarArmor` d'`execute()`) jamais exécutée par un test automatique ; le retour de la tunique après `UnEquipStack` n'est vérifié qu'en jeu.
+  evidence: Revue de la story 3.2c (verification-gap) : même couture `game::` que 3.1, 3.2 et 3.2b ; procédure manuelle « Armure portée en jeu » de `client/README.md`.

@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v7 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v8 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -51,6 +51,7 @@ raccourcis (100 ms au lieu de 500 ms, etc.). Ils sont aussi lancés par `ctest` 
 | `--mod-version` | `0.1.0` | version du mod du `Hello` (comparée octet par octet par l'hôte) |
 | `--duration` | `0` | durée de la session, comptée à partir de `InSession` ; `0` = jusqu'à Ctrl-C |
 | `--weapon` | `It_1H_Sword` | arme en main de l'invité : `Weapon{2, nom}` part juste après le `Spawn` (story 3.2) ; `-` = arme rangée (nom vide) |
+| `--armor` | (vide) | armure de l'invité : `Armor{2, nom}` part juste après le `Weapon` (story 3.2c) ; `-` = sans armure (nom vide) ; vide = pas d'`Armor` |
 | `--equipment` | (vide) | équipement de l'invité envoyé dans `Hello` (story 3.2b) : templates séparés par des virgules, même format que `guest_equipment` (vérifié, envoyé sous forme canonique) ; l'hôte en équipe l'avatar juste après sa création |
 
 Empreintes du `Hello` : celles de `hello.bin` (Risen Steam x64, janvier 2023). Équipement : vide.
@@ -84,6 +85,7 @@ ligne, jouées dans l'ordre puis en boucle ; chacune part de la pose du `Spawn` 
 | `mort <instant s>` | `Death{2}`, une seule fois |
 | `param <instant s> <type> <poids\|vitesse\|fondu\|arret> <valeur> [durée s]` | `MotionParam` (story 2.4b) : `SetTargetWeight`, `SetPlaySpeed`, `SwitchFadeOut`, `StopMotion` ; valeur 0 ou 1 pour `fondu` et `arret` |
 | `weapon [instant s] <nom\|->` | `Weapon{2, nom}` à cet instant de chaque boucle (story 3.2) ; `-` = arme rangée ; sans instant : 0 |
+| `armor [instant s] <nom\|->` | `Armor{2, nom}` à cet instant de chaque boucle (story 3.2c) ; `-` = sans armure ; sans instant : 0 |
 | `# …` | commentaire (ligne entière) |
 
 Exemples dans `scenarios/` : `cercle.txt`, `aller-retour.txt`, `mixte.txt` (tout à la fois, à deux
@@ -91,14 +93,16 @@ vitesses), `gestes.txt` (noms d'animation relevés par la sonde : course, saut, 
 `mort.txt` (debout 2 s, puis `Death`). La ligne
 de bilan donne chaque seconde les snapshots envoyés et reçus, et les `Motion` reçus de l'hôte ;
 chaque `AniName` reçu est journalisé (`<- AniName id=… nom=…`), comme chaque `Weapon` reçu
-(`<- Weapon netid=1 nom="It_1H_Sword"`, `nom=""` pour une arme rangée).
+(`<- Weapon netid=1 nom="It_1H_Sword"`, `nom=""` pour une arme rangée) et chaque `Armor` reçu
+(`<- Armor netid=1 nom="It_Armor_Inquisitor"`, `nom=""` sans armure).
 
 ### Écho (`--echo`, story 2.4)
 
 Exclusif avec `--scenario`. Le faux invité renvoie chaque snapshot de l'hôte comme le sien
 (décalé de son `Spawn`, 2 m devant l'hôte), et chaque `Motion` de l'hôte, nom réinterné, comme
 le sien, ainsi que chaque `Weapon` de l'hôte (story 3.2 : l'avatar sort et range l'arme comme
-le joueur, et ses attaques rejouées se font arme en main) : chez l'hôte, l'avatar imite le joueur avec un léger retard (150 ms d'affichage, plus
+le joueur, et ses attaques rejouées se font arme en main) et chaque `Armor` (story 3.2c : l'avatar
+change d'armure comme le joueur) : chez l'hôte, l'avatar imite le joueur avec un léger retard (150 ms d'affichage, plus
 l'aller-retour vers le faux invité). La mort de l'hôte n'est pas renvoyée : elle termine la session. C'est l'essai à une
 machine de « l'autre voit les mêmes gestes, synchronisés avec le déplacement ».
 

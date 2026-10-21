@@ -49,6 +49,9 @@ sync::Capture g_captures[sync::kCaptureRing];
 bool g_weapon_known = false;
 std::string g_weapon;
 bool g_weapon_error_logged = false;
+bool g_armor_known = false;  // story 3.2c : armure portée par le héros, comme l'arme
+std::string g_armor;
+bool g_armor_error_logged = false;
 
 std::uint64_t now_ms() {
     LARGE_INTEGER t{};
@@ -185,6 +188,10 @@ void execute(cs::Output out) {
                 avatar::set_weapon(aw->net_id, aw->name);
                 continue;
             }
+            if (const auto* aa = std::get_if<cs::AvatarArmor>(&cmd)) {  // story 3.2c
+                avatar::set_armor(aa->net_id, aa->name);
+                continue;
+            }
             if (const auto* eh = std::get_if<cs::EquipHero>(&cmd)) {  // story 3.2b
                 avatar::equip_player(eh->names);
                 continue;
@@ -241,6 +248,8 @@ void local_captures(const cs::World& world) {
         g_motion_names.clear();
         g_weapon_known = false;
         g_weapon_error_logged = false;
+        g_armor_known = false;
+        g_armor_error_logged = false;
         filter.drain(g_captures, sync::kCaptureRing, dropped);
     }
     void* ps = nullptr;
@@ -264,6 +273,19 @@ void local_captures(const cs::World& world) {
             g_weapon = weapon;
             log::debug("[sync] arme du héros : " + (weapon.empty() ? std::string("rangée") : "« " + weapon + " »"));
             g_inputs.push_back(cs::LocalWeapon{weapon});
+        }
+        // Armure portée (story 3.2c), mêmes règles.
+        std::string armor;
+        if (!avatar::local_armor(armor)) {
+            if (!g_armor_error_logged) {
+                g_armor_error_logged = true;
+                log::error("[sync] armure du héros illisible (SEH) : dernier état gardé, pas d'Armor");
+            }
+        } else if (!g_armor_known || armor != g_armor) {
+            g_armor_known = true;
+            g_armor = armor;
+            log::debug("[sync] armure du héros : " + (armor.empty() ? std::string("aucune") : "« " + armor + " »"));
+            g_inputs.push_back(cs::LocalArmor{armor});
         }
     }
     const std::size_t n = filter.drain(g_captures, sync::kCaptureRing, dropped);
