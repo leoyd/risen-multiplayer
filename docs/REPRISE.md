@@ -13,7 +13,7 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 | 3.1 | Registre des entités (AD-12) ; avatar solide **abandonné** | fait |
 | 3.2 | Arme de l’avatar (message `Weapon`, protocole **v7**) | fait, **validé en jeu sur une machine** le 2026-10-21 (7 armes, écho) |
 | 3.2b | Équipement de l’invité : `guest_equipment`, héros invité, avatar équipé chez l’hôte (protocole toujours v7) | fait, **avatar validé en jeu sur une machine** le 2026-10-21 ; équipement de l’avatar différé de 15 frames (`docs/re/equipement.md`) ; héros d’un invité réel non testé |
-| 3.2c | Armure portée par l’hôte, transmise à son avatar | **à faire** : objectif dans `deferred-work.md` |
+| 3.2c | Armure portée, transmise à l’avatar dans les deux sens (message `Armor`, protocole **v8**) | fait, **validé en jeu sur une machine** le 2026-10-21 (changements d’armure suivis, tunique de retour quand l’armure est retirée) |
 | 3.3 → 3.7 | Répliques des PNJ, dégâts dans les deux sens, à terre et réapparition | à faire |
 
 - **Branche** : tout est dans `main` (avance rapide depuis `story/3-2b-equipement-invite`).
@@ -30,7 +30,7 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre demain
 
-1. **Lancer la prochaine story** : `/bmad-build story 3.2c` (armure de l’hôte, objectif dans `deferred-work.md`, plan B de `docs/re/equipement.md`) ou `/bmad-build story 3.3` pour passer aux PNJ. Le contexte compilé `epic-3-context.md` est à jour.
+1. **Lancer la prochaine story** : `/bmad-build story 3.3` (répliques des PNJ : apparition, position, PV). Le contexte compilé `epic-3-context.md` est à jour.
 2. **Recompiler et installer** :
    ```bash
    cmake --build client/build && cmake --build client/build-tests && ctest --test-dir client/build-tests

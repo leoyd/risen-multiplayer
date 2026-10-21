@@ -14,7 +14,7 @@ Explore Faranga together, clear dungeons side by side, fight the same monsters.
 </div>
 
 > [!WARNING]
-> **Early development.** The mod loads natively, hosts or joins a session, and shows the other player's avatar moving, animating, holding the same weapon and wearing the guest's starting equipment (milestone J1, start of J2). This has been validated in-game on one machine against a scripted fake guest; showing the armour each player wears (story 3.2c) is implemented and awaits its in-game test. The two-machine validation and co-op combat (rest of J2) are next. See the [roadmap](#️-roadmap).
+> **Early development.** The mod loads natively, hosts or joins a session, and shows the other player's avatar moving, animating, holding the same weapon, wearing the same armour and the guest's starting equipment (milestone J1, start of J2). This has been validated in-game on one machine against a scripted fake guest. The two-machine validation and co-op combat (rest of J2) are next. See the [roadmap](#️-roadmap).
 
 > [!IMPORTANT]
 > Fan project, **not affiliated** with Piranha Bytes, THQ Nordic or Plaion. The repository contains **no game files**. You need to own Risen on Steam to use it.
@@ -60,7 +60,7 @@ This is a **hobby project**, released as open source so that others can pick it 
 | 👥 | Each player sees the other's avatar: appears next to the host, moves smoothly (20 Hz, interpolated), replays gestures (walk, run, jump, draw, attacks, death) | J1 | ✅ Validated on one machine — two-machine test pending |
 | 🗡️ | The avatar holds the same weapon as its player, drawn or sheathed (any one-handed weapon, axe, fists) | J2 | ✅ Validated on one machine |
 | 🎽 | Guest equipment from `guest_equipment`: the guest's hero is equipped on joining (items created only if missing), and its avatar on the host wears it | J2 | ✅ Validated on one machine (avatar side) |
-| 🛡️ | The avatar wears the same armour as its player, both ways, changed or removed during the session | J2 | 🧪 Implemented, in-game test pending (story 3.2c) |
+| 🛡️ | The avatar wears the same armour as its player, both ways, changed or removed during the session | J2 | ✅ Validated on one machine |
 | ⚔️ | Melee co-op combat against the same monsters (shared HP, host-authoritative) | J2 | 🚧 In progress (stories 3.3 to 3.7) |
 | 💬 | NPC dialogues played on both sides | J3 | 💭 Later |
 | 💾 | Persistent guest profile (gear, XP, loot), shared side quests | J4 | 💭 Later |
@@ -69,7 +69,7 @@ This is a **hobby project**, released as open source so that others can pick it 
 **Known J1 limitations** (tracked in [`deferred-work.md`](_bmad-output/implementation-artifacts/deferred-work.md)):
 - the avatar has no collisions in your world: you walk through it. This is a choice (story 3.1): the "solid" setup found in the J2 spike detaches its animated model. NPCs still target and hit it;
 - the walk → stop transition is not very smooth, and the walk animation can occasionally stall for a moment;
-- only the right hand is replicated (no shield or torch yet), and the host's armour is not shown on its avatar yet (story 3.2c);
+- only the right hand and the armour are replicated (no shield, torch, rings or amulets);
 - a guest who sells or drops an item listed in `guest_equipment` gets it back on the next session (items are created when missing).
 
 ## 📦 Installation (players)
@@ -258,7 +258,7 @@ Established on the Steam x64 build. Useful for anyone picking up the project.
 
 - [x] **J0 — It loads:** native loading, version check, config, log
 - [ ] **J1 — I can see you:** host/guest session ✅, avatar that appears, moves and animates ✅ (one machine) — two-machine validation pending
-- [ ] **J2 — We fight together** ← **MVP goal**: J2 spike ✅, entity registry ✅, weapon in hand ✅ (one machine), guest equipment ✅ (one machine), armour worn (3.2c, in-game test pending); next: host-driven NPC replicas (3.3, 3.4), damage both ways (3.5, 3.6), downed and respawn (3.7)
+- [ ] **J2 — We fight together** ← **MVP goal**: J2 spike ✅, entity registry ✅, weapon in hand ✅ (one machine), guest equipment ✅ (one machine), armour worn ✅ (one machine); next: host-driven NPC replicas (3.3, 3.4), damage both ways (3.5, 3.6), downed and respawn (3.7)
 - [ ] J3 — Mirrored dialogues
 - [ ] J4 — Persistent guest profile, shared side quests
 - [ ] J5 — Reviving a downed ally

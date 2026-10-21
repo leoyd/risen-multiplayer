@@ -98,6 +98,8 @@ context:
 - Non vérifié en jeu : le retour de la tunique après `UnEquipStack` (plan B :
   `docs/re/equipement.md`).
 
+- **2026-10-21, test en jeu (utilisateur, une machine, Risen hôte + faux invité `--echo`) : validé.** L’avatar suit chaque changement d’armure de l’hôte (6 armures, `EquipStack → true`, environ 150 ms après l’envoi). L’armure retirée (`UnEquipStack → true`, 3 fois) rend la tunique par défaut. Une pile par armure portée s’accumule dans l’inventaire de l’avatar jusqu’à son retrait (sans effet visible). Non fait : deux machines.
+
 ## Spec Change Log
 
 ## Review Triage Log
