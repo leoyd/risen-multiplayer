@@ -144,6 +144,11 @@ context:
 - **PV du héros** : `World::hp` (`GetHitPoints` du joueur), dans l'entrée du héros de chaque
   snapshot, des deux côtés.
 
+- **2026-10-22, test en jeu (utilisateur, une machine, Risen hôte + faux invité) : annonces, GUID et PV corrects, aucune erreur ; correctif.**
+  - 107 `Spawn{1}` et 78 `Despawn` en 2 min, tous « absent de la liste » : `Entity::ms_arrNPCs` ne garde que les PNJ traités par le moteur (environ 40 m), qui y entrent et en sortent sans cesse à cette limite (PNJ 1007 : trois allers-retours en 1,5 s). Le rayon de 50 m n’est jamais atteint.
+  - Correctif : délai de grâce `kNpcAbsentGraceTicks` = 40 ticks (2 s) avant de retirer un PNJ absent de la liste. Pendant ce délai, il n’est plus dans les snapshots ; revenu, il garde son NetId sans nouveau `Spawn`. Test ajouté, `PROTOCOL.md` §8 et README à jour.
+  - Non fait : côté invité (deux machines).
+
 ## Spec Change Log
 
 ## Review Triage Log

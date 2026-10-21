@@ -900,8 +900,8 @@ d'appels.
   - **Annonce** : un PNJ qui entre dans la sélection est annoncé par `Spawn{NetId, 1, pose, guid}`
     et n'est porté par les snapshots qu'à partir du suivant (le `Spawn` passe par KCP, le snapshot
     part aussitôt : l'invité ignorerait l'entité, faute d'annonce) ; un PNJ annoncé qui en sort
-    (hors du rayon, mort, absent de la liste, ou évincé par plus proche) reçoit `Despawn{NetId}`,
-    envoyé avant le snapshot du même tick, qui ne le porte plus. Il n'y a rien à envoyer à la fin de session : l'invité libère tout à `Ended`.
+    (hors du rayon, mort, absent de la liste des PNJ du moteur depuis 2 s — 40 ticks —, ou évincé par plus proche) reçoit `Despawn{NetId}`,
+    envoyé avant le snapshot du même tick, qui ne le porte plus. Pendant le délai de grâce, un PNJ absent n'est pas dans les snapshots ; revenu, il y reprend sa place sous le même NetId, sans nouveau `Spawn`. Il n'y a rien à envoyer à la fin de session : l'invité libère tout à `Ended`.
   - **PV** : chaque entrée du snapshot porte `PSSkills::GetHitPoints`, borné à [0, 65535] (héros
     compris).
   - **Invité, `Spawn{1}`** : accepté seulement de l'hôte, `NetId` ≥ 1000, pose finie (sinon

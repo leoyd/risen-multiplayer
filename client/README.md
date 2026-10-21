@@ -440,7 +440,7 @@ gCScriptRoutine_PS::OnProcess)`.
    `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s`, puis s'approcher d'un camp de
    monstres et s'en éloigner. Attendu côté hôte : `[sync] PNJ 1000 annoncé (Spawn) : GUID …, 40.0 m,
    PV …` à l'entrée dans le rayon, `[sync] PNJ 1000 retiré (Despawn) : hors du rayon` (ou `mort`,
-   `évincé par plus proche`, `absent de la liste`) à la sortie, et le même NetId au retour. Côté
+   `évincé par plus proche`, `absent de la liste depuis 2 s` : la liste du moteur ne garde que les PNJ à 40 m environ) à la sortie, et le même NetId au retour. Côté
    faux invité : `<- Spawn PNJ netid=1000 guid=…`, `PNJ netid=1000 premier snapshot … PV=…`,
    `PNJ netid=1000 PV a -> b` quand on frappe le monstre, `<- Despawn PNJ netid=1000`, la ligne
    par seconde `PNJ suivis=… poses=… inattendues=…`, et à la fin `Bilan PNJ : … au plus N entités

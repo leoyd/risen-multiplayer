@@ -660,6 +660,7 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     npc_ids_.clear();  // story 3.3 : NetId de PNJ propres à la session
     npc_guids_.clear();
     npc_active_.clear();
+    npc_absent_ticks_.clear();
     next_npc_id_ = proto::kFirstNpcNetId;
     replicas_.clear();  // vide en pratique : libérées à Ended
     npc_ = NpcCounters{};
@@ -771,17 +772,24 @@ void Session::select_npcs(const World& world, std::vector<proto::SnapshotEntity>
     // Sorties d'abord, puis entrées : tout part avant le snapshot.
     for (auto it = npc_active_.begin(); it != npc_active_.end();) {
         if (retained.count(*it) != 0) {
+            npc_absent_ticks_.erase(*it);
             ++it;
             continue;
         }
         const std::uint32_t id = *it;
+        const auto why = outside.find(npc_guids_[id]);
+        // Absent de la liste (limite de traitement du moteur) : délai de grâce avant le retrait.
+        if (why == outside.end() && ++npc_absent_ticks_[id] < kNpcAbsentGraceTicks) {
+            ++it;
+            continue;
+        }
+        npc_absent_ticks_.erase(id);
         it = npc_active_.erase(it);
         Bytes bytes;
         if (proto::encode_reliable(proto::Despawn{id}, bytes)) out.commands.push_back(SendReliable{std::move(bytes)});
         ++npc_.despawned;
-        const auto why = outside.find(npc_guids_[id]);
         out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(id) + " retiré (Despawn) : " +
-                                             (why != outside.end() ? why->second : "absent de la liste")});
+                                             (why != outside.end() ? why->second : "absent de la liste depuis 2 s")});
     }
     for (std::size_t i = 0; i < kept.size(); ++i) {
         const NpcState& n = *kept[i].npc;
@@ -895,6 +903,7 @@ void Session::release_npcs(const std::string& why, Output& out) {
     npc_ids_.clear();
     npc_guids_.clear();
     npc_active_.clear();
+    npc_absent_ticks_.clear();
     next_npc_id_ = proto::kFirstNpcNetId;
 }
 

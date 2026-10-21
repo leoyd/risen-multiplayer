@@ -131,6 +131,11 @@ struct World {
 };
 
 inline constexpr float kNpcRadius = 5000.0f;  // 50 m (unités du monde = cm) autour d'un joueur
+// Test en jeu du 2026-10-22 : Entity::ms_arrNPCs ne garde que les PNJ traités par le moteur
+// (environ 40 m), qui y entrent et en sortent sans cesse à cette limite. Un PNJ annoncé absent
+// de la liste n'est retiré qu'après ce nombre de ticks de snapshot (2 s) ; il n'est plus dans les
+// snapshots pendant ce temps, et revenu, il garde son NetId sans nouveau Spawn.
+inline constexpr std::uint32_t kNpcAbsentGraceTicks = 40;
 // Le snapshot porte au plus 54 entités, héros de l'hôte compris (AD-7).
 inline constexpr std::size_t kMaxSnapshotNpcs = protocol::kMaxSnapshotEntities - 1;
 inline constexpr std::size_t kMaxNpcHpChanges = 16;  // PV d'une réplique en attente d'affichage
@@ -451,6 +456,7 @@ private:
     std::map<protocol::Guid, std::uint32_t> npc_ids_;
     std::unordered_map<std::uint32_t, protocol::Guid> npc_guids_;
     std::set<std::uint32_t> npc_active_;
+    std::unordered_map<std::uint32_t, std::uint32_t> npc_absent_ticks_;  // NetId annoncé absent de la liste
     std::uint32_t next_npc_id_ = protocol::kFirstNpcNetId;
     bool avatar_pose_ok_ = false;  // hôte : dernière pose affichée de l'avatar (rayon)
     Pose avatar_pose_;

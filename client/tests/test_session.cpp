@@ -2559,11 +2559,49 @@ TEST("PNJ hôte : sortie du rayon ou mort → Despawn ; retour → même NetId, 
     out = s.tick(1150, host_world({npc_at(1, 5000.0f)}), {});
     auto spawns = npc_spawns_sent(out);
     CHECK(spawns.size() == 1 && spawns[0].net_id == 1000u);
-    // Absent de la liste → Despawn ; un nouveau GUID reçoit 1002 (jamais de réutilisation).
+    // Absent de la liste : retiré seulement après kNpcAbsentGraceTicks ticks ; un nouveau GUID
+    // reçoit 1002 (jamais de réutilisation).
     out = s.tick(1200, host_world({npc_at(3, 100.0f)}), {});
-    CHECK(has_log(out, "PNJ 1000 retiré (Despawn) : absent de la liste"));
+    CHECK(sent_of<proto::Despawn>(out).empty());
     spawns = npc_spawns_sent(out);
     CHECK(spawns.size() == 1 && spawns[0].net_id == 1002u);
+    std::uint64_t t = 1200;
+    for (std::uint32_t i = 1; i + 1 < kNpcAbsentGraceTicks; ++i) {
+        t += 50;
+        out = s.tick(t, host_world({npc_at(3, 100.0f)}), {});
+        CHECK(sent_of<proto::Despawn>(out).empty());
+    }
+    t += 50;
+    out = s.tick(t, host_world({npc_at(3, 100.0f)}), {});
+    CHECK(has_log(out, "PNJ 1000 retiré (Despawn) : absent de la liste depuis 2 s"));
+    CHECK_EQ(sent_of<proto::Despawn>(out).size(), 1u);
+}
+
+TEST("PNJ hôte : absent de la liste puis revenu pendant le délai de grâce → ni Despawn ni Spawn") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 1000.0f)}), {});
+    CHECK_EQ(s.npc_count(), 1u);
+    std::uint64_t t = 1050;
+    for (std::uint32_t i = 0; i + 1 < kNpcAbsentGraceTicks; ++i) {
+        t += 50;
+        const Output out = s.tick(t, host_world({}), {});
+        CHECK(sent_of<proto::Despawn>(out).empty());
+        const auto sn = snapshots_sent(out);
+        CHECK(sn.size() == 1 && sn[0].entities.size() == 1);  // absent : hors du snapshot
+    }
+    t += 50;
+    Output out = s.tick(t, host_world({npc_at(1, 1000.0f)}), {});
+    CHECK(sent_of<proto::Despawn>(out).empty());
+    CHECK(npc_spawns_sent(out).empty());
+    const auto sn = snapshots_sent(out);
+    CHECK(sn.size() == 1 && sn[0].entities.size() == 2 && sn[0].entities[1].net_id == 1000u);
+    // Le compteur repart de zéro : une nouvelle absence a droit au délai entier.
+    for (std::uint32_t i = 0; i + 1 < kNpcAbsentGraceTicks; ++i) {
+        t += 50;
+        out = s.tick(t, host_world({}), {});
+        CHECK(sent_of<proto::Despawn>(out).empty());
+    }
+    CHECK_EQ(s.npc_count(), 1u);
 }
 
 TEST("PNJ hôte : plus de 53 PNJ → les 53 plus proches, 54 entités ; les autres attendent") {
