@@ -144,3 +144,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2-equipement-arme.md`
   summary: Colle sync/game de l'arme (avatar::set_weapon, avatar::local_weapon, pick() de combat.cpp, branche AvatarWeapon d'execute) jamais exécutée par un test automatique.
   evidence: Revue de la story 3.2 (verification-gap) : le build Linux n'inclut ni sync/avatar.cpp ni game/combat.cpp, et le banc Wine n'appelle pas OnProcess ; même couture game:: simulée que celle reportée en 3.1.
+- source_spec: none
+  summary: Story 3.2c — armure portée par l'hôte transmise à son avatar chez l'invité (emplacements `gEEquipSlot` à rétro-concevoir, lecture de l'armure portée, message ou champ dédié, version du protocole incrémentée).
+  evidence: Story 3.2b découpée par l'utilisateur le 2026-10-21 : livrable indépendant de l'équipement de l'invité, bloqué par la rétro-ingénierie des emplacements ; il réutilisera l'équipement de l'avatar par liste de noms livré en 3.2b.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2b-equipement-invite.md`
+  summary: Colle sync/game de l'équipement (`ensure_stack`, `equip_entity`, `avatar::equip`, `avatar::equip_player`, branches `EquipHero`/`EquipAvatar` d'`execute()`) et `set_weapon` réécrit autour d'`ensure_stack`, jamais exécutés par un test automatique.
+  evidence: Revue de la story 3.2b (verification-gap) : même couture `game::` simulée que celles reportées en 3.1 et 3.2 ; inverser `if (already)` ou réutiliser une pile périmée passe tous les tests.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2b-equipement-invite.md`
+  summary: Équiper l'avatar dans la frame même de sa création (`EquipAvatar` juste après `SpawnAvatar`) : le `PSInventory` de la nouvelle entité est-il prêt ? Sinon l'avatar reste nu, sans nouvel essai.
+  evidence: maybe-false, medium si vrai. En 3.2, `AvatarWeapon` n'arrivait qu'environ 150 ms après la création. À trancher au test en jeu : lignes `[sync] équipement : avatar … EquipStack → true` et armure visible.

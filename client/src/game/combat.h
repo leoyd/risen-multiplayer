@@ -72,6 +72,8 @@ bool get_inventory_template(const Entity& e, int stack, Template& out);  // à d
 bool create_items(const Entity& e, const Template& t, int count, int stack_type, int& out);
 bool hold_right_stack(const Entity& e, int stack, bool& out);
 bool equip_stack(const Entity& e, int stack, bool& out);
+// PSInventory::IsStackEquiped(int) const (story 3.2b) : pile déjà équipée ? resolve_inventory seulement.
+bool is_stack_equipped(const Entity& e, int stack, bool& out);
 bool get_combat_mode(const Entity& e, int& out);
 bool get_entity_name(const Entity& e, std::string& out);   // Entity::GetName
 // Template(const char* nom) (Script.dll) puis Template::IsValid. `out` est construit dès que

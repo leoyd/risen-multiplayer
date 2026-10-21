@@ -185,6 +185,14 @@ void execute(cs::Output out) {
                 avatar::set_weapon(aw->net_id, aw->name);
                 continue;
             }
+            if (const auto* eh = std::get_if<cs::EquipHero>(&cmd)) {  // story 3.2b
+                avatar::equip_player(eh->names);
+                continue;
+            }
+            if (const auto* ea = std::get_if<cs::EquipAvatar>(&cmd)) {
+                avatar::equip(ea->net_id, ea->names);
+                continue;
+            }
             if (g_transport == nullptr) continue;
             bool posted = true;
             if (auto* s = std::get_if<cs::Send>(&cmd)) {

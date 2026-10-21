@@ -25,7 +25,10 @@ struct Config {
     std::string host_ip;          // obligatoire en invité
     std::uint16_t port = kDefaultPort;
     std::string nickname = "Joueur";
-    std::string guest_equipment;  // texte libre, interprété en J1
+    // Templates équipés sur le héros de l'invité (story 3.2b), forme canonique `A,B` (validée au
+    // chargement dans les deux rôles, core/equipment.h) ; vide = aucun. Appliquée en invité
+    // seulement (envoyée dans Hello) ; l'hôte ne s'en sert pas.
+    std::string guest_equipment;
     bool probe = false;           // mode sonde du spike J1 (hooks + journaux de rétro-ingénierie)
     LogLevel log_level = LogLevel::Info;  // debug : lignes supplémentaires (par frame comprises)
 };
@@ -45,7 +48,7 @@ struct ConfigResult {
 // uniquement (pas de commentaire en fin de ligne), sections `[...]` ignorées,
 // BOM UTF-8 et fins de ligne CRLF tolérés, clés insensibles à la casse.
 // Champs : role (host|guest, obligatoire), host_ip (validé en invité seulement),
-// port (vide = défaut), nickname, guest_equipment, probe (0|1, vide = défaut 0),
+// port (vide = défaut), nickname, guest_equipment (liste de templates, core/equipment.h), probe (0|1, vide = défaut 0),
 // log_level (debug|info, insensible à la casse, vide = défaut info).
 ConfigResult parse_config(std::string_view text);
 

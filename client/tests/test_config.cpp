@@ -22,13 +22,13 @@ TEST("config : nominal invité, commentaires, section, CRLF, BOM, casse") {
         "HOST_IP = 192.168.1.20\r\n"
         "port = 4000\r\n"
         "nickname = Max le Rouge\r\n"
-        "guest_equipment = It_Sword_01, It_Armor_02\r\n");
+        "guest_equipment = It_Armor_Don_Fighter , It_1H_Sword_Rusty\r\n");
     CHECK(r.ok);
     CHECK(r.config.role == Role::Guest);
     CHECK_EQ(r.config.host_ip, std::string("192.168.1.20"));
     CHECK_EQ(r.config.port, 4000);
     CHECK_EQ(r.config.nickname, std::string("Max le Rouge"));
-    CHECK_EQ(r.config.guest_equipment, std::string("It_Sword_01, It_Armor_02"));
+    CHECK_EQ(r.config.guest_equipment, std::string("It_Armor_Don_Fighter,It_1H_Sword_Rusty"));
 }
 
 TEST("config : port par défaut") {
@@ -208,4 +208,24 @@ TEST("config : log_level invalide -> erreur nommant le champ") {
         CHECK_EQ(r.error_field, std::string("log_level"));
         CHECK_EQ(r.error_value, std::string(v));
     }
+}
+
+TEST("config : guest_equipment absent ou vide -> aucun équipement") {
+    CHECK_EQ(parse_config("role=host\n").config.guest_equipment, std::string());
+    const auto r = parse_config("role=host\nguest_equipment =\n");
+    CHECK(r.ok);
+    CHECK_EQ(r.config.guest_equipment, std::string());
+}
+
+TEST("config : guest_equipment invalide -> erreur nommant le champ") {
+    for (const char* v : {"It-Sword", "A,,B", "A,A", "A,", "Épée"}) {
+        const auto r = parse_config(std::string("role=guest\nhost_ip=1.2.3.4\nguest_equipment=") + v + "\n");
+        CHECK(!r.ok);
+        CHECK_EQ(r.error_field, std::string("guest_equipment"));
+        CHECK_EQ(r.error_value, std::string(v));
+        CHECK(!r.error_message.empty());
+    }
+    const auto long_name = parse_config("role=host\nguest_equipment=" + std::string(65, 'a') + "\n");
+    CHECK(!long_name.ok);
+    CHECK_EQ(long_name.error_field, std::string("guest_equipment"));
 }

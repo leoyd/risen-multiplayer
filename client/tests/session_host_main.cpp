@@ -221,6 +221,10 @@ int main(int argc, char** argv) {
                                       " valeur " + std::to_string(pp->param.value));
                 } else if (const auto* aw = std::get_if<AvatarWeapon>(&cmd)) {
                     print("INFO", "[test] AvatarWeapon NetId " + std::to_string(aw->net_id) + " « " + aw->name + " »");
+                } else if (const auto* ea = std::get_if<EquipAvatar>(&cmd)) {
+                    std::string names;
+                    for (const auto& n : ea->names) names += (names.empty() ? "" : ",") + n;
+                    print("INFO", "[test] EquipAvatar NetId " + std::to_string(ea->net_id) + " « " + names + " »");
                 } else if (const auto* ad = std::get_if<AvatarDeath>(&cmd)) {
                     print("INFO", "[test] AvatarDeath NetId " + std::to_string(ad->net_id));
                 } else if (const auto* sa = std::get_if<SpawnAvatar>(&cmd)) {

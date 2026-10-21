@@ -1,5 +1,6 @@
 #include "core/session.h"
 
+#include "core/equipment.h"
 #include "core/protocol.h"
 
 #include <cmath>
@@ -75,6 +76,17 @@ const char* state_name(State state) {
 Session::Session(Settings settings) : settings_(std::move(settings)) {
     // splitmix64 : la graine 0 reste utilisable.
     rng_ = settings_.seed;
+    // Story 3.2b : l'hôte ignore sa propre guest_equipment ; l'invité envoie la forme canonique.
+    if (settings_.role == Role::Guest) {
+        std::string error;
+        if (!parse_equipment(settings_.equipment, own_equipment_, error)) {
+            equipment_warning_ = "[sync] équipement « " + settings_.equipment + " » invalide (" + error +
+                                 ") : traité comme vide";
+        }
+        settings_.equipment = join_equipment(own_equipment_);
+    } else {
+        settings_.equipment.clear();
+    }
 }
 
 std::uint32_t Session::draw_conv() {
@@ -113,6 +125,7 @@ void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t loc
     transition(State::Ended, reason + " ; retour au solo", out, level);
     remove_avatar("fin de session", out);  // AD-11 : la transition unique vers Ended retire l'avatar
     pending_weapons_.clear();              // story 3.2 : rien ne survit à la session
+    peer_equipment_.clear();               // story 3.2b
     weapon_sent_valid_ = false;
     weapon_sent_.clear();
     linger_until_ = now + kLingerMs;  // le KCP reste ouvert pour laisser partir le SessionEnd
@@ -172,6 +185,10 @@ void Session::maybe_arm(std::uint64_t now, const World& world, Output& out) {
 
 Output Session::tick(std::uint64_t now, const World& world, const std::vector<Input>& inputs) {
     Output out;
+    if (!equipment_warning_.empty()) {
+        out.logs.push_back({Level::Warn, std::move(equipment_warning_)});
+        equipment_warning_.clear();
+    }
     const bool revived = world_.dead && !world.dead;  // world_ = monde du tick précédent
     world_ = world;
     // Arme du héros local : retenue dans tous les états (envoyée à l'entrée en session).
@@ -394,6 +411,14 @@ void Session::host_on_hello(std::uint64_t now, const ControlIn& in, Output& out)
     welcome_ = bytes;
     conv_ = welcome.conv;
     peer_ = in.source;
+    // Équipement de l'invité (story 3.2b) : appliqué à son avatar à chaque création.
+    std::string equipment_error;
+    if (!parse_equipment(hello.equipment, peer_equipment_, equipment_error)) {
+        out.logs.push_back({Level::Warn, "[sync] équipement de l'invité « " + hello.equipment + " » invalide (" +
+                                             equipment_error + ") : avatar non équipé"});
+    } else if (!peer_equipment_.empty()) {
+        out.logs.push_back({Level::Info, "[sync] équipement de l'invité : " + join_equipment(peer_equipment_)});
+    }
     reliable_seen_ = false;
     out.commands.push_back(Send{in.source, std::move(bytes)});
     out.commands.push_back(OpenReliable{conv_, peer_});
@@ -446,6 +471,11 @@ void Session::guest_on_control(std::uint64_t now, const ControlIn& in, Output& o
             out.commands.push_back(Teleport{own});
             out.logs.push_back({Level::Info, "[sync] héros téléporté devant l'hôte : " +
                                                  pose_text(own.x, own.y, own.z, own.yaw)});
+        }
+        // Story 3.2b : à chaque entrée en session, après la téléportation.
+        if (!own_equipment_.empty()) {
+            out.commands.push_back(EquipHero{own_equipment_});
+            out.logs.push_back({Level::Info, "[sync] équipement du héros : " + join_equipment(own_equipment_)});
         }
         enter_session(now, own, out);
         return;
@@ -536,6 +566,11 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         clear_peer_avatar_state();
         out.commands.push_back(SpawnAvatar{sp->net_id, Pose{sp->x, sp->y, sp->z, sp->yaw}});
         out.logs.push_back({Level::Info, "[sync] " + what + " : avatar créé"});
+        if (settings_.role == Role::Host && !peer_equipment_.empty()) {  // story 3.2b
+            out.commands.push_back(EquipAvatar{sp->net_id, peer_equipment_});
+            out.logs.push_back({Level::Info, "[sync] EquipAvatar : avatar " + net_id_text(sp->net_id) + ", " +
+                                                 join_equipment(peer_equipment_)});
+        }
         return;
     }
     if (const auto* dp = std::get_if<proto::Despawn>(&decoded.message)) {

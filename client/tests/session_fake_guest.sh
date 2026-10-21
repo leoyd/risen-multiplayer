@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4 et 3.2 : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2 et 3.2b : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -58,6 +58,8 @@ if start_host nominal $p 20000; then
     expect_log "nominal : maintien puis Inactive" "$h" "Ended → Inactive : transport arrêté ; réarmement immédiat"
     expect_log "nominal : réarmé (même monde)" "$h" "état final : Hosting"
     expect_log "nominal : heartbeats reçus par l'invité" "$work/nominal.guest.log" "Heartbeat envoyés=1 reçus=[1-9]"
+    # Story 3.2b : sans --equipment, pas d'EquipAvatar.
+    expect_count "nominal : pas d'EquipAvatar sans --equipment" "$h" "EquipAvatar" 0
 fi
 
 # --- --dup-hello : même Welcome, Hello en session ignoré ------------------------------
@@ -325,6 +327,21 @@ if start_host_weapon arme $p 30000 Host_Sword; then
     l_sa=$(grep -n -- "SpawnAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
     l_aw=$(grep -n -- "AvatarWeapon NetId 2" "$h" | head -1 | cut -d: -f1)
     if [[ -n $l_sa && -n $l_aw && $l_sa -lt $l_aw ]]; then ok "arme : avatar armé après son apparition"; else ko "arme : SpawnAvatar puis AvatarWeapon (lignes ${l_sa:-?} et ${l_aw:-?})"; fi
+fi
+
+# --- Story 3.2b : équipement de l'invité — Hello.equipment, EquipAvatar après SpawnAvatar ----
+p=$((base_port + 15))
+if start_host equipement $p 20000; then
+    "$guest" --host 127.0.0.1 --port $p --duration 2s --equipment " It_Armor_Don_Fighter , It_1H_Sword " \
+        > "$work/equipement.guest.log" 2>&1; rc=$?
+    wait $host_pid
+    h=$work/equipement.host.log
+    expect_code "équipement : invité" 0 $rc "$work/equipement.guest.log"
+    expect_log "équipement : reçu dans Hello" "$h" "équipement de l'invité : It_Armor_Don_Fighter,It_1H_Sword"
+    expect_count "équipement : EquipAvatar" "$h" "\[test\] EquipAvatar NetId 2 « It_Armor_Don_Fighter,It_1H_Sword »" 1
+    l_sa=$(grep -n -- "SpawnAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
+    l_ea=$(grep -n -- "\[test\] EquipAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
+    if [[ -n $l_sa && -n $l_ea && $l_sa -lt $l_ea ]]; then ok "équipement : après SpawnAvatar"; else ko "équipement : SpawnAvatar puis EquipAvatar (lignes ${l_sa:-?} et ${l_ea:-?})"; fi
 fi
 
 # --- Story 1.5 : mort de l'hôte en session → SessionEnd{3} ----------------------------

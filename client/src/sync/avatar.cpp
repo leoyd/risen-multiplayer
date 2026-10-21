@@ -126,6 +126,113 @@ bool same_world(const Entry& e) {
            game::game_running(running) && running;
 }
 
+// Pile de `tmpl` (nom `name`) dans l'inventaire de `entity`, trouvée (FindStackIndex(-1, false))
+// ou, à défaut, créée (CreateItems(…, 1, 0)). Avec `memory` (avatar), la pile est mémorisée par nom
+// (partagée entre l'arme de la 3.2 et l'équipement de la 3.2b) et sert de repli si FindStackIndex
+// lève une exception (SEH, signalée une fois). True : `stack` ≥ 0 et `how` = « trouvée »,
+// « mémorisée » ou « créée ». False : FindStackIndex a levé une exception sans pile mémorisée
+// (`how` = « FindStackIndex », rien n'est créé : pas de doublon) ou CreateItems a échoué (`how` =
+// « CreateItems », `stack` = sa valeur de retour) ; rien n'est journalisé ici. Le template reste à
+// l'appelant.
+bool ensure_stack(const game::Entity& entity, const game::Template& tmpl, const std::string& name, Entry* memory,
+                  const std::string& who, int& stack, const char*& how) {
+    stack = -1;
+    how = "trouvée";
+    const bool found = game::find_stack_index(entity, tmpl, stack);
+    auto known = memory != nullptr ? memory->weapon_stacks.find(name) : std::unordered_map<std::string, int>::iterator{};
+    const bool has_known = memory != nullptr && known != memory->weapon_stacks.end();
+    if (found && stack < 0 && has_known) {
+        memory->weapon_stacks.erase(known);  // objet sorti de l'inventaire : pile mémorisée périmée
+    }
+    if (!found || stack < 0) {
+        if (!found && has_known) {
+            stack = known->second;  // repli : FindStackIndex a levé une exception (SEH)
+            how = "mémorisée";
+            if (!memory->weapon_fallback_logged) {
+                memory->weapon_fallback_logged = true;
+                log::warn(who + " : FindStackIndex a levé une exception (SEH) : pile mémorisée reprise");
+            }
+        } else if (!found) {
+            how = "FindStackIndex";  // SEH : on ne sait pas si l'objet est là, on ne crée rien
+            return false;
+        } else {
+            stack = -1;
+            how = "CreateItems";
+            if (!game::create_items(entity, tmpl, 1, 0, stack) || stack < 0) return false;
+            how = "créée";
+        }
+    }
+    if (memory != nullptr) memory->weapon_stacks[name] = stack;
+    return true;
+}
+
+// Raison d'un échec d'ensure_stack, d'après `how`.
+std::string stack_failure(const char* how, const std::string& name, int stack) {
+    if (how != nullptr && std::string(how) == "FindStackIndex") {
+        return "FindStackIndex(« " + name + " ») a levé une exception (SEH), rien de créé";
+    }
+    return "CreateItems(« " + name + " ») a échoué (pile " + std::to_string(stack) + ")";
+}
+
+// Équipe `entity`, nom par nom (story 3.2b) : Template(nom) puis IsValid, pile trouvée ou créée
+// (ensure_stack), puis EquipStack sauf si IsStackEquiped. Un nom en échec est journalisé et
+// n'empêche pas les suivants. `memory` : entrée de l'avatar (piles mémorisées), nul pour le héros.
+void equip_entity(const game::Entity& entity, const std::vector<std::string>& names, Entry* memory,
+                  const std::string& who) {
+    unsigned equipped = 0, failed = 0;
+    for (const std::string& name : names) {
+        game::Template tmpl;
+        bool valid = false;
+        if (!game::template_from_name(name.c_str(), tmpl, valid)) {
+            log::error(who + " : Template(« " + name + " ») a levé une exception (SEH)");
+            ++failed;
+            continue;
+        }
+        if (!valid) {
+            game::destroy_template(tmpl);
+            log::warn(who + " : template « " + name + " » inconnu du jeu, ignoré");
+            ++failed;
+            continue;
+        }
+        int stack = -1;
+        const char* how = nullptr;
+        const bool ok_stack = ensure_stack(entity, tmpl, name, memory, who, stack, how);
+        game::destroy_template(tmpl);
+        if (!ok_stack) {
+            log::error(who + " : " + stack_failure(how, name, stack));
+            ++failed;
+            continue;
+        }
+        bool already = false;
+        if (!game::is_stack_equipped(entity, stack, already)) {
+            log::error(who + " : IsStackEquiped(" + std::to_string(stack) + ") a levé une exception (SEH)");
+            ++failed;
+            continue;
+        }
+        if (already) {
+            log::info(who + " : « " + name + " » déjà équipé (pile " + std::to_string(stack) + " " + how + ")");
+            ++equipped;
+            continue;
+        }
+        bool ok = false;
+        if (!game::equip_stack(entity, stack, ok)) {
+            log::error(who + " : EquipStack(" + std::to_string(stack) + ") a levé une exception (SEH)");
+            ++failed;
+            continue;
+        }
+        if (ok) {
+            log::info(who + " : « " + name + " » équipé (pile " + std::to_string(stack) + " " + how +
+                      ", EquipStack → true)");
+            ++equipped;
+        } else {
+            log::warn(who + " : « " + name + " » non équipé (pile " + std::to_string(stack) + " " + how +
+                      ", EquipStack → false)");
+            ++failed;
+        }
+    }
+    log::info(who + " : " + std::to_string(equipped) + " objet(s) équipé(s), " + std::to_string(failed) +
+              " en échec, sur " + std::to_string(names.size()));
+}
 }  // namespace
 
 void spawn(std::uint32_t net_id, const Pose& pose) {
@@ -353,36 +460,15 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
             return;
         }
         int stack = -1;
-        const char* how = "trouvée";
-        const bool found = game::find_stack_index(e.entity, tmpl, stack);
-        auto known = e.weapon_stacks.find(name);
-        if (found && stack < 0 && known != e.weapon_stacks.end()) {
-            e.weapon_stacks.erase(known);  // objet sorti de l'inventaire : pile mémorisée périmée
-            known = e.weapon_stacks.end();
-        }
-        if (!found || stack < 0) {
-            if (!found && known != e.weapon_stacks.end()) {
-                stack = known->second;  // repli : FindStackIndex a levé une exception (SEH)
-                how = "mémorisée";
-                if (!e.weapon_fallback_logged) {
-                    e.weapon_fallback_logged = true;
-                    log::warn(who + " : FindStackIndex a levé une exception (SEH) : pile mémorisée reprise");
-                }
-            } else {
-                stack = -1;
-                if (!game::create_items(e.entity, tmpl, 1, 0, stack) || stack < 0) {
-                    game::destroy_template(tmpl);
-                    if (e.weapon_failed.insert(name).second) {
-                        log::error(who + " : CreateItems(« " + name + " ») a échoué (pile " + std::to_string(stack) +
-                                   ")");
-                    }
-                    return;
-                }
-                how = "créée";
+        const char* how = nullptr;
+        if (!ensure_stack(e.entity, tmpl, name, &e, who, stack, how)) {
+            game::destroy_template(tmpl);
+            if (e.weapon_failed.insert(name).second) {
+                log::error(who + " : " + stack_failure(how, name, stack));
             }
+            return;
         }
         game::destroy_template(tmpl);
-        e.weapon_stacks[name] = stack;
         bool ok = false;
         if (!game::hold_right_stack(e.entity, stack, ok)) {
             log::error(who + " : HoldRightStack a levé une exception (SEH)");
@@ -393,6 +479,29 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
         return;
     }
     log::debug("[sync] arme : avatar " + std::to_string(net_id) + " absent : Weapon ignoré");
+}
+
+void equip(std::uint32_t net_id, const std::vector<std::string>& names) {
+    for (Entry& e : g_table) {
+        if (e.net_id != net_id) continue;
+        const std::string who = "[sync] équipement : avatar " + std::to_string(net_id);
+        if (e.dead) {
+            log::warn(who + " mort : non équipé");
+            return;
+        }
+        equip_entity(e.entity, names, &e, who);
+        return;
+    }
+    log::warn("[sync] équipement : avatar " + std::to_string(net_id) + " absent : non équipé");
+}
+
+void equip_player(const std::vector<std::string>& names) {
+    game::Entity player;
+    if (!game::get_player(player) || player.ptr == nullptr) {
+        log::error("[sync] équipement : pas de héros local, non équipé");
+        return;
+    }
+    equip_entity(player, names, nullptr, "[sync] équipement : héros");
 }
 
 bool local_weapon(std::string& name) {

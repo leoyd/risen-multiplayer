@@ -51,6 +51,7 @@ raccourcis (100 ms au lieu de 500 ms, etc.). Ils sont aussi lancés par `ctest` 
 | `--mod-version` | `0.1.0` | version du mod du `Hello` (comparée octet par octet par l'hôte) |
 | `--duration` | `0` | durée de la session, comptée à partir de `InSession` ; `0` = jusqu'à Ctrl-C |
 | `--weapon` | `It_1H_Sword` | arme en main de l'invité : `Weapon{2, nom}` part juste après le `Spawn` (story 3.2) ; `-` = arme rangée (nom vide) |
+| `--equipment` | (vide) | équipement de l'invité envoyé dans `Hello` (story 3.2b) : templates séparés par des virgules, même format que `guest_equipment` (vérifié, envoyé sous forme canonique) ; l'hôte en équipe l'avatar juste après sa création |
 
 Empreintes du `Hello` : celles de `hello.bin` (Risen Steam x64, janvier 2023). Équipement : vide.
 

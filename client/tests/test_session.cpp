@@ -597,14 +597,20 @@ TEST("session invité : nom d'hôte ou IPv6 → « IPv4 attendue », reste Inact
     }
 }
 
-TEST("session invité : équipement hors bornes → erreur, reste Inactive") {
+TEST("session invité : équipement invalide (300 octets) → Warn, traité comme vide, Hello envoyé") {
     Settings st = guest_settings();
     st.equipment.assign(300, 'x');
     Session s(st);
     const Output out = s.tick(0, loaded_world(), {});
-    CHECK(s.state() == State::Inactive);
-    CHECK(out.commands.empty());
-    CHECK(has_log(out, "Hello non encodable"));
+    CHECK(s.state() == State::Connecting);
+    CHECK_EQ(hellos_sent(out), 1u);
+    CHECK(!has_log(out, "Hello non encodable"));
+    bool warned = false;
+    for (const auto& l : out.logs) {
+        if (l.level == Level::Warn && l.text.find("équipement") != std::string::npos) warned = true;
+    }
+    CHECK(warned);
+    CHECK(!has_log(s.tick(500, loaded_world(), {}), "équipement"));  // une seule fois
 }
 
 TEST("session : bouclage hôte ⇄ invité en mémoire") {
@@ -2095,4 +2101,160 @@ TEST("arme : Weapon reçu pendant qu'un Death attend l'affichage → ignoré (de
     CHECK(debug);
     for (std::uint64_t t = 1420; t < 3000; t += 40) CHECK(commands_of<AvatarWeapon>(s.tick(t, loaded_world(), {})).empty());
     CHECK(s.avatar_dead());
+}
+
+// --- Équipement de l'invité (story 3.2b) ---------------------------------------------------
+
+namespace {
+
+// Équipement du premier Hello envoyé dans `out`.
+bool hello_equipment(const Output& out, std::string& equipment) {
+    for (const auto* snd : commands_of<Send>(out)) {
+        const auto d = proto::decode_control(snd->bytes.data(), snd->bytes.size());
+        if (!d.ok()) continue;
+        if (const auto* h = std::get_if<proto::Hello>(&d.message)) {
+            equipment = h->equipment;
+            return true;
+        }
+    }
+    return false;
+}
+
+const std::vector<std::string> kTwoItems{"It_Armor_Don_Fighter", "It_1H_Sword_Rusty"};
+
+Settings equipped_guest() {
+    Settings st = guest_settings();
+    st.equipment = " It_Armor_Don_Fighter ,It_1H_Sword_Rusty ";
+    return st;
+}
+
+proto::Hello hello_with(const std::string& equipment) {
+    proto::Hello h = make_hello();
+    h.equipment = equipment;
+    return h;
+}
+
+}  // namespace
+
+TEST("équipement invité : Hello porte la forme canonique") {
+    Session s(equipped_guest());
+    const Output out = s.tick(0, loaded_world(), {});
+    std::string eq;
+    CHECK(hello_equipment(out, eq));
+    CHECK_EQ(eq, std::string("It_Armor_Don_Fighter,It_1H_Sword_Rusty"));
+    CHECK(!has_log(out, "invalide"));
+}
+
+TEST("équipement invité : Welcome → Teleport, EquipHero, puis Spawn ; à chaque entrée en session") {
+    Session s(equipped_guest());
+    s.tick(0, loaded_world(), {});
+    Output out = s.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1.0f, 2.0f, 3.0f, 0.0f))));
+    auto eq = commands_of<EquipHero>(out);
+    CHECK_EQ(eq.size(), 1u);
+    if (!eq.empty()) CHECK(eq[0]->names == kTwoItems);
+    CHECK(index_of<Teleport>(out) < index_of<EquipHero>(out));
+    CHECK(index_of<EquipHero>(out) < index_of_sent<proto::Spawn>(out));
+    CHECK(commands_of<EquipAvatar>(out).empty());
+    // Fin, puis nouvelle session au monde suivant : équipé de nouveau.
+    s.tick(500, loaded_world(), reliable(encode_r(proto::SessionEnd{2})));
+    s.tick(1600, loaded_world(), {});
+    CHECK(s.state() == State::Inactive);
+    s.tick(4000, loaded_world(kPlayer2), {});
+    CHECK(s.state() == State::Connecting);
+    out = s.tick(4100, loaded_world(kPlayer2), control_from(kHost, encode(welcome_at(1.0f, 2.0f, 3.0f, 0.0f))));
+    CHECK(s.state() == State::InSession);
+    eq = commands_of<EquipHero>(out);
+    CHECK_EQ(eq.size(), 1u);
+    if (!eq.empty()) CHECK(eq[0]->names == kTwoItems);
+}
+
+TEST("équipement invité : Welcome à pose nulle → EquipHero quand même") {
+    Session s(equipped_guest());
+    s.tick(0, loaded_world(), {});
+    const Output out = s.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(0, 0, 0, 0))));
+    CHECK(commands_of<Teleport>(out).empty());
+    CHECK_EQ(commands_of<EquipHero>(out).size(), 1u);
+}
+
+TEST("équipement invité : vide ou invalide → pas d'EquipHero") {
+    for (const char* v : {"", "It-Sword", "A,,B"}) {
+        Settings st = guest_settings();
+        st.equipment = v;
+        Session s(st);
+        const Output first = s.tick(0, loaded_world(), {});
+        std::string eq = "?";
+        CHECK(hello_equipment(first, eq));
+        CHECK_EQ(eq, std::string());
+        CHECK_EQ(has_log(first, "invalide"), std::string(v).size() > 0);
+        const Output out = s.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+        CHECK(s.state() == State::InSession);
+        CHECK(commands_of<EquipHero>(out).empty());
+    }
+}
+
+TEST("équipement hôte : sa propre guest_equipment est ignorée") {
+    Settings st = host_settings();
+    st.equipment = "It-Sword";
+    Session s(st);
+    const Output out = s.tick(0, loaded_world(), {});
+    CHECK(!has_log(out, "équipement"));
+    const Output acc = s.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    CHECK(s.state() == State::InSession);
+    const Output sp = s.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK(commands_of<EquipAvatar>(sp).empty());
+    CHECK(commands_of<EquipHero>(acc).empty());
+}
+
+TEST("équipement hôte : SpawnAvatar puis EquipAvatar ; de nouveau après Despawn ; rien après Ended") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {});
+    Output out = s.tick(1000, loaded_world(),
+                        control_from(kGuestA, encode(hello_with("It_Armor_Don_Fighter,It_1H_Sword_Rusty"))));
+    CHECK(s.state() == State::InSession);
+    CHECK(commands_of<EquipAvatar>(out).empty());  // pas d'avatar encore
+    CHECK(has_log(out, "équipement de l'invité : It_Armor_Don_Fighter,It_1H_Sword_Rusty"));
+    out = s.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    auto ea = commands_of<EquipAvatar>(out);
+    CHECK_EQ(ea.size(), 1u);
+    if (!ea.empty()) {
+        CHECK_EQ(ea[0]->net_id, proto::kGuestNetId);
+        CHECK(ea[0]->names == kTwoItems);
+    }
+    CHECK(index_of<SpawnAvatar>(out) < index_of<EquipAvatar>(out));
+    CHECK(has_log(out, "EquipAvatar"));
+    // Spawn en double : ni avatar ni équipement.
+    out = s.tick(1150, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK(commands_of<EquipAvatar>(out).empty());
+    // Despawn puis nouveau Spawn : nouvel avatar, équipé de nouveau.
+    s.tick(1200, loaded_world(), reliable(encode_r(proto::Despawn{proto::kGuestNetId})));
+    out = s.tick(1300, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK_EQ(commands_of<EquipAvatar>(out).size(), 1u);
+    // Ended, réarmement, invité suivant sans équipement : rien ne survit.
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+    s.tick(1400 + kLingerMs + 10, loaded_world(), {});
+    CHECK(s.state() == State::Hosting);
+    s.tick(3000, loaded_world(), control_from(kGuestB, encode(make_hello())));
+    CHECK(s.state() == State::InSession);
+    out = s.tick(3100, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK_EQ(commands_of<SpawnAvatar>(out).size(), 1u);
+    CHECK(commands_of<EquipAvatar>(out).empty());
+}
+
+TEST("équipement hôte : Hello.equipment invalide → session acceptée, Warn une fois, avatar non équipé") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {});
+    Output out = s.tick(1000, loaded_world(), control_from(kGuestA, encode(hello_with("It-Sword"))));
+    CHECK(s.state() == State::InSession);
+    CHECK(!sent_reject(out, kGuestA, 5));
+    unsigned warns = 0;
+    for (const auto& l : out.logs) {
+        if (l.level == Level::Warn && l.text.find("équipement de l'invité") != std::string::npos) ++warns;
+    }
+    CHECK_EQ(warns, 1u);
+    // Hello retransmis : même Welcome, pas de nouveau Warn.
+    out = s.tick(1050, loaded_world(), control_from(kGuestA, encode(hello_with("It-Sword"))));
+    CHECK(!has_log(out, "équipement de l'invité"));
+    out = s.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK_EQ(commands_of<SpawnAvatar>(out).size(), 1u);
+    CHECK(commands_of<EquipAvatar>(out).empty());
 }

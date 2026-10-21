@@ -52,6 +52,7 @@ constexpr const char* kInventoryGetTemplate = "?GetTemplate@PSInventory@@QEBA?AV
 constexpr const char* kCreateItems = "?CreateItems@PSInventory@@QEAAHAEBVTemplate@@HW4gEStackType@@@Z";
 constexpr const char* kHoldRightStack = "?HoldRightStack@PSInventory@@QEAA_NH@Z";
 constexpr const char* kEquipStack = "?EquipStack@PSInventory@@QEAA_NH@Z";
+constexpr const char* kIsStackEquiped = "?IsStackEquiped@PSInventory@@QEBA_NH@Z";
 constexpr const char* kGetCombatMode = "?GetCombatMode@PSCombatSystem@@QEBA?AW4gECombatMode@@XZ";
 constexpr const char* kGetName = "?GetName@Entity@@QEBA?AVbCString@@XZ";
 constexpr const char* kGetCollisionGroup = "?GetCollisionGroup@Entity@@QEBA?AW4eECollisionGroup@@XZ";
@@ -146,6 +147,7 @@ struct InventoryAbi {
     CreateItemsFn create_items = nullptr;
     BoolIntFn hold_right_stack = nullptr;
     BoolIntFn equip_stack = nullptr;
+    BoolIntFn is_stack_equipped = nullptr;  // story 3.2b
     GetNameFn get_name = nullptr;
     BCStringDtorFn bcstring_dtor = nullptr;
     TemplateCtorFn template_ctor = nullptr;
@@ -243,6 +245,7 @@ bool resolve_inventory(const char*& missing) {
                     lookup(script, kCreateItems, a.create_items, missing) &&
                     lookup(script, kHoldRightStack, a.hold_right_stack, missing) &&
                     lookup(script, kEquipStack, a.equip_stack, missing) &&
+                    lookup(script, kIsStackEquiped, a.is_stack_equipped, missing) &&
                     lookup(script, kGetName, a.get_name, missing) &&
                     lookup(script, kTemplateCtor, a.template_ctor, missing) &&
                     lookup(script, kTemplateIsValid, a.template_is_valid, missing) &&
@@ -443,6 +446,10 @@ bool hold_right_stack(const Entity& e, int stack, bool& out) {
 
 bool equip_stack(const Entity& e, int stack, bool& out) {
     return call_bool_int(pick(g_inv.equip_stack, g_abi.equip_stack), e, stack, out);
+}
+
+bool is_stack_equipped(const Entity& e, int stack, bool& out) {
+    return call_bool_int(g_inv_resolved ? g_inv.is_stack_equipped : nullptr, e, stack, out);
 }
 
 bool get_combat_mode(const Entity& e, int& out) { return call_int(g_abi.get_combat_mode, e, out); }

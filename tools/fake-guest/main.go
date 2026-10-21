@@ -33,6 +33,7 @@ const exitCodesText = `
 Fautes : --drop, --delay, --jitter, --quit, --kill, --dup-hello, --bad-version (cumulables, sauf --quit/--kill).
 Trajectoire : --scenario <fichier> (snapshots à 20 Hz, gestes horodatés ; sans lui, pose fixe),
 ou --echo (l'avatar refait les gestes, les déplacements et l'arme du joueur hôte, 150 ms plus tard).
+Équipement : --equipment <A,B> part dans Hello (même format que guest_equipment).
 Arme : --weapon <nom> part en Weapon juste après le Spawn (« - » : arme rangée) ; directive de
 scénario « weapon [instant s] <nom|-> ».
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
@@ -87,6 +88,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	delay := fs.Duration("delay", 0, "latence ajoutée à chaque datagramme sortant, ex. 100ms")
 	jitter := fs.Duration("jitter", 0, "gigue ± ajoutée à --delay, ex. 20ms")
 	badVersion := fs.Bool("bad-version", false, "envoie le Hello de hello_future.bin (version 0xFFFF) au lieu du Hello courant")
+	equipment := fs.String("equipment", "", "équipement de l'invité envoyé dans Hello : templates séparés par des virgules (vide : aucun)")
 	weapon := fs.String("weapon", "It_1H_Sword", "arme en main de l'invité, envoyée en Weapon après le Spawn (« - » : arme rangée)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
@@ -140,6 +142,10 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	if len(weaponName) > protocol.MaxWeaponName {
 		return usageError("--weapon : nom de plus de %d octets", protocol.MaxWeaponName)
 	}
+	equipmentNames, err := parseEquipment(*equipment)
+	if err != nil {
+		return usageError("--equipment : %v", err)
+	}
 	var sc *scenario
 	if *scenarioPath != "" {
 		var err error
@@ -152,6 +158,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 		ModVersion:      *modVersion,
 		Fingerprint:     steamFingerprint,
 		Nickname:        *nickname,
+		Equipment:       joinEquipment(equipmentNames),
 	}
 	if _, err := protocol.EncodeControl(hello); err != nil {
 		return usageError("Hello hors bornes (pseudo 1 à 32 octets, version du mod 0 à 255 octets)")

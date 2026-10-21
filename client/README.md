@@ -99,7 +99,8 @@ un saut max (du `Spawn` au dernier `MoveAvatar`) de moins de 10 cm ; (story 2.4)
 horodatés et une mort rejoués dans l'ordre (`PlayAvatarMotion`, `AvatarDeath`), et `--echo` ;
 (story 3.2) l'arme dans les deux sens : `Weapon` de l'hôte reçu après son `Spawn` puis rangé, et
 celle du faux invité (`--weapon It_1H_Sword`, puis rangée et changée par le scénario) appliquée
-dans l'ordre (`AvatarWeapon`), après `SpawnAvatar`. Le test CTest
+dans l'ordre (`AvatarWeapon`), après `SpawnAvatar` ; (story 3.2b) `--equipment` reçu dans le
+`Hello` et appliqué à l'avatar (`EquipAvatar`) juste après `SpawnAvatar`, rien sans l'option. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
 70 s. Lancement à la main :
 
@@ -303,8 +304,8 @@ chaque changement, et une fois à l'entrée en session, juste après le `Spawn` 
 part avec un nom vide. Chez le pair, au même retard que les gestes (150 ms), l'avatar crée cette
 arme dans son inventaire si elle manque (une seule fois par nom), puis la tient
 (`HoldRightStack`) ; un nom vide la range (`EquipStack`). Pas de mode de combat transmis : la
-posture est dans le nom des animations rejouées. L'équipement et l'armure viendront avec la
-story 3.2b.
+posture est dans le nom des animations rejouées. L'équipement de l'invité : story 3.2b
+ci-dessous ; l'armure portée par l'hôte : story 3.2c.
 
 Prérequis : `role = host`, `probe = 0`, overlay Steam désactivé ; `log_level = debug` pour voir
 aussi les lectures de l'arme du héros (`[sync] arme du héros : …`). Au démarrage, le log doit
@@ -331,6 +332,37 @@ contenir `[hooks] inventaire de session résolu (arme de l'avatar)` ; sinon la c
 5. **Nom inconnu** : `--weapon It_Inexistant`. Attendu : une seule ligne
    `[sync] arme : avatar 2 : template « It_Inexistant » inconnu du jeu, avatar inchangé`.
 6. Rapporter les lignes `[sync] arme …`, `[sync] Weapon …` et le côté faux invité (`<- Weapon`).
+
+### Équipement de l'invité en jeu (story 3.2b)
+
+`guest_equipment` (config de l'invité) est une liste de templates (`It_Armor_Don_Fighter,
+It_1H_Sword_Rusty`), validée au chargement (une valeur mal formée nomme le champ
+`guest_equipment` au log et le mod reste inactif). Elle part dans le `Hello`. L'invité équipe son
+héros à chaque entrée en session, après la téléportation ; l'hôte équipe l'avatar de l'invité
+juste après sa création. Pour chaque nom : objet créé dans l'inventaire **seulement s'il manque**,
+puis équipé (`EquipStack`) s'il ne l'est pas déjà. Un nom inconnu du jeu est journalisé et les
+suivants s'appliquent.
+
+Prérequis : `probe = 0`, overlay Steam désactivé. Au démarrage, la ligne
+`[hooks] inventaire de session résolu (arme de l'avatar)` (inchangée) couvre aussi
+`IsStackEquiped`.
+
+1. **Avatar équipé chez l'hôte** (une machine, Risen en hôte) :
+   `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 60s --equipment It_Armor_Don_Fighter`.
+   Attendu : l'avatar apparaît en armure. Log : `[sync] équipement de l'invité : It_Armor_Don_Fighter`,
+   `[sync] EquipAvatar : avatar 2 (invité), It_Armor_Don_Fighter`, puis
+   `[sync] équipement : avatar 2 : « It_Armor_Don_Fighter » équipé (pile N créée, EquipStack → true)`
+   et le bilan `1 objet(s) équipé(s), 0 en échec, sur 1`.
+2. **Arme commune** : `--equipment It_1H_Sword --weapon It_1H_Sword`. Attendu : l'arme tenue
+   reprend la pile de l'équipement (`pile N trouvée`), pas de seconde copie.
+3. **Nom inconnu** : `--equipment It_Inexistant,It_Armor_Don_Fighter`. Attendu :
+   `template « It_Inexistant » inconnu du jeu, ignoré`, puis l'armure équipée quand même.
+4. **Héros invité** (deux machines, ou Risen en invité face à un hôte) : `role = guest`,
+   `guest_equipment` sur un objet absent de l'inventaire. Attendu à l'entrée en session :
+   `[sync] équipement du héros : …` puis `[sync] équipement : héros : « … » équipé (pile N créée, …)` ;
+   l'objet est dans l'inventaire et porté. Quitter, revenir en session : `pile N trouvée` (ou
+   `déjà équipé`), aucune copie ajoutée.
+5. Rapporter les lignes `[sync] équipement …` et `[sync] EquipAvatar …`.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "core/session.h"
 
@@ -42,6 +43,12 @@ void die(std::uint32_t net_id);
 // vide → objet en main rangé (EquipStack), sans effet si la main est vide. Nom inconnu du jeu :
 // journalisé une fois par nom, avatar inchangé.
 void set_weapon(std::uint32_t net_id, const std::string& name);
+// Équipement (story 3.2b), nom par nom : Template(nom) puis IsValid ; pile cherchée
+// (FindStackIndex) ou, à défaut, créée (CreateItems, 1) ; puis EquipStack sauf si IsStackEquiped.
+// Un nom en échec est journalisé et n'empêche pas les suivants. `equip` : avatar `net_id` (piles
+// partagées avec set_weapon, une par nom) ; `equip_player` : héros local (invité, en session).
+void equip(std::uint32_t net_id, const std::vector<std::string>& names);
+void equip_player(const std::vector<std::string>& names);
 // Arme en main du héros local : nom de l'objet tenu (GetRightHoldStack ≥ 0, GetRightHoldItem,
 // Entity::GetName), vide si rien. False sur SEH ou sans héros : `name` est alors sans valeur.
 bool local_weapon(std::string& name);

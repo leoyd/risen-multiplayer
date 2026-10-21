@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Logique pure (config, version, protocole) : aucune dépendance Windows, compilée partout.
 add_library(mp_core STATIC
     src/core/config.cpp
+    src/core/equipment.cpp
     src/core/protocol.cpp
     src/core/session.cpp
     src/core/interpolation.cpp
@@ -113,6 +114,7 @@ else()
         tests/test_main.cpp
         tests/test_anim_filter.cpp
         tests/test_config.cpp
+        tests/test_equipment.cpp
         tests/test_interpolation.cpp
         tests/test_local_capture.cpp
         tests/test_motion_desc.cpp

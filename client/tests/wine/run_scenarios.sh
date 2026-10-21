@@ -102,11 +102,12 @@ for sym in '?Kill@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' '?Defeat@@YA_JPEAV
     fi
 done
 
-# Story 3.2 : symboles d'inventaire de la session présents dans la Script.dll du jeu.
+# Stories 3.2 et 3.2b : symboles d'inventaire de la session présents dans la Script.dll du jeu.
 for sym in '?GetRightHoldStack@PSInventory@@QEBAHXZ' '?GetRightHoldItem@PSInventory@@QEBA?AVEntity@@XZ' \
     '?CreateItems@PSInventory@@QEAAHAEBVTemplate@@HW4gEStackType@@@Z' '?HoldRightStack@PSInventory@@QEAA_NH@Z' \
     '?EquipStack@PSInventory@@QEAA_NH@Z' '?GetName@Entity@@QEBA?AVbCString@@XZ' '??0Template@@QEAA@PEBD@Z' \
-    '?IsValid@Template@@QEBA_NXZ' '?FindStackIndex@PSInventory@@QEBAHAEBVTemplate@@H_N@Z'; do
+    '?IsValid@Template@@QEBA_NXZ' '?FindStackIndex@PSInventory@@QEBAHAEBVTemplate@@H_N@Z' \
+    '?IsStackEquiped@PSInventory@@QEBA_NH@Z'; do
     if grep -qaF -- "$sym" "$risen_bin/Script.dll"; then
         echo "[ OK ] Script.dll exporte $sym"
     else

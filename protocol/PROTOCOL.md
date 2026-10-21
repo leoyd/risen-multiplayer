@@ -69,9 +69,19 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 | empreinte Script.dll | `u32`, `u32` | idem |
 | empreinte SharedBase.dll | `u32`, `u32` | idem |
 | `pseudo` | `str8` | **1 à 32** octets UTF-8 |
-| `équipement` | `str8` | 0 à 255 octets (appliqué à partir de J2) |
+| `équipement` | `str8` | 0 à 255 octets : liste de templates, voir ci-dessous (appliquée depuis la story 3.2b) |
 
 Taille : 40 à 581 octets (canal compris).
+
+Format du champ `équipement` (story 3.2b, même règle que `guest_equipment` dans
+`multiplayer.ini`) : noms de templates séparés par des virgules, sans espaces (forme canonique,
+ex. `It_Armor_Don_Fighter,It_1H_Sword_Rusty`). Chaque nom compte 1 à 64 octets `[A-Za-z0-9_]` ;
+16 noms au plus, sans doublon. Vide : aucun équipement. Le récepteur applique la même règle
+d'analyse que l'émetteur : blancs ASCII tolérés autour de chaque nom, noms sensibles à la casse et
+comparés octet par octet (doublons compris) ; une valeur invalide est ignorée (aucun nom appliqué)
+et journalisée. Le décodeur ne vérifie que la longueur
+(`str8` de 0 à 255 octets) : un contenu hors format n'est **pas** une cause de `Reject` (voir §8,
+« Équipement »).
 
 ### `Welcome` (2) — contrôle
 
@@ -714,6 +724,22 @@ d'appels.
   fois par nom et par avatar, puis tenu en main (`HoldRightStack`) ; nom vide → l'objet en main
   est rangé (`EquipStack`), sans effet si la main est vide. Un nom que le jeu ne connaît pas est
   journalisé une fois et laisse l'avatar inchangé.
+- **Équipement** (story 3.2b, sans changement de format : champ `équipement` du `Hello`) :
+  - l'invité envoie la forme canonique de sa `guest_equipment`, validée au chargement de la
+    config ; l'hôte ignore la sienne ;
+  - à **chaque** entrée en session, juste après sa téléportation devant l'hôte (ou à la place,
+    si le `Welcome` porte une pose nulle), l'invité équipe son propre héros ;
+  - l'hôte lit les noms du `Hello` accepté avec la même règle d'analyse que l'émetteur (blancs
+    ASCII tolérés autour de chaque nom, noms sensibles à la casse, comparés octet par octet) et
+    les garde jusqu'à la fin de la session ; il équipe l'avatar de l'invité **juste après chaque
+    création** (`Spawn{2}` reçu). Une valeur invalide est ignorée et journalisée (Warn, une
+    fois) : la session est acceptée et l'avatar reste non équipé ;
+  - équiper une entité, nom par nom : `Template(nom)` puis `IsValid` ; la pile de ce template est
+    cherchée dans l'inventaire (`FindStackIndex`) ou, à défaut, créée (`CreateItems`, 1 objet :
+    rien n'est créé si l'objet est déjà là) ; puis `EquipStack`, sauf si la pile est déjà
+    équipée (`IsStackEquiped`). Un nom en échec (inconnu du jeu…) est journalisé et n'empêche
+    pas les suivants. Sur l'avatar, ces piles sont les mêmes que celles de l'arme (`Weapon`) :
+    une pile par nom et par avatar.
 - **Avatars** (v3) :
   - à l'entrée en session, chaque pair envoie le `Spawn` de son héros : l'hôte `Spawn{1, 0, sa
     pose du Welcome}` juste après le `Welcome`, l'invité `Spawn{2, 0, sa pose}` dès le `Welcome`

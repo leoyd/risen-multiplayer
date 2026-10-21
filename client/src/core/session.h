@@ -31,6 +31,12 @@
 // Arme (story 3.2) : le nom de l'objet en main du héros local (LocalWeapon, vide si l'arme est
 // rangée) part en Weapon à chaque changement, et une fois à l'entrée en session, après le Spawn.
 // Celui du pair devient AvatarWeapon au même instant d'affichage qu'un Death.
+//
+// Équipement (story 3.2b) : `Settings.equipment` (forme de core/equipment.h) part dans le Hello
+// de l'invité ; invalide, il est traité comme vide (Warn au premier tick). L'invité équipe son
+// héros à chaque entrée en session, après la Teleport (EquipHero). L'hôte garde les noms du Hello
+// accepté jusqu'à Ended et équipe l'avatar de l'invité juste après chaque SpawnAvatar
+// (EquipAvatar) ; un Hello.equipment invalide donne un Warn et un avatar non équipé (pas de Reject).
 #pragma once
 
 #include <array>
@@ -171,13 +177,20 @@ struct PlayAvatarParam {  // rejouer un réglage de locomotion du pair sur l'ava
     std::uint32_t net_id = 0;
     protocol::MotionParam param;
 };
+struct EquipHero {  // invité : équiper son propre héros (story 3.2b), nom par nom
+    std::vector<std::string> names;
+};
+struct EquipAvatar {  // hôte : équiper l'avatar de l'invité, juste après sa création (story 3.2b)
+    std::uint32_t net_id = 0;
+    std::vector<std::string> names;
+};
 struct AvatarWeapon {  // faire tenir (nom non vide) ou ranger (nom vide) l'arme de l'avatar (story 3.2)
     std::uint32_t net_id = 0;
     std::string name;
 };
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
-                             AvatarWeapon>;
+                             AvatarWeapon, EquipHero, EquipAvatar>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -336,6 +349,12 @@ private:
         std::string name;
     };
     std::deque<PendingWeapon> pending_weapons_;  // pair : vidée au retrait de l'avatar
+
+    // Équipement (story 3.2b). Invité : noms de sa config (vides si invalides), Warn en attente
+    // jusqu'au premier tick. Hôte : noms du Hello accepté, gardés jusqu'à Ended.
+    std::vector<std::string> own_equipment_;
+    std::string equipment_warning_;
+    std::vector<std::string> peer_equipment_;
 
     std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)
     std::uint64_t linger_until_ = 0;   // Ended : fin du maintien du KCP

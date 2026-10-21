@@ -1,5 +1,7 @@
 #include "config.h"
 
+#include "equipment.h"
+
 #include <algorithm>
 #include <cctype>
 #include <set>
@@ -143,7 +145,10 @@ ConfigResult parse_config(std::string_view text) {
             }
             r.config.nickname = std::string(value);
         } else if (key == "guest_equipment") {
-            r.config.guest_equipment = std::string(value);
+            std::vector<std::string> names;
+            std::string message;
+            if (!core::parse_equipment(value, names, message)) return fail(std::move(r), key, value, message);
+            r.config.guest_equipment = core::join_equipment(names);  // forme canonique (Hello)
         } else if (key == "probe") {
             if (value.empty() || value == "0") {
                 r.config.probe = false;  // `probe =` : valeur par défaut
