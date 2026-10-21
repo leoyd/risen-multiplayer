@@ -349,8 +349,10 @@ Prérequis : `probe = 0`, overlay Steam désactivé. Au démarrage, la ligne
 
 1. **Avatar équipé chez l'hôte** (une machine, Risen en hôte) :
    `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 60s --equipment It_Armor_Don_Fighter`.
-   Attendu : l'avatar apparaît en armure. Log : `[sync] équipement de l'invité : It_Armor_Don_Fighter`,
-   `[sync] EquipAvatar : avatar 2 (invité), It_Armor_Don_Fighter`, puis
+   Attendu : l'avatar apparaît en armure, **sans** la tunique ni le bâton par défaut du héros
+   (validé le 2026-10-21). Log : `[sync] équipement de l'invité : It_Armor_Don_Fighter`,
+   `[sync] EquipAvatar : avatar 2 (invité), It_Armor_Don_Fighter`, en debug
+   `[sync] avatar 2 : inventaire prêt après 15 frames` (équipement et arme différés), puis
    `[sync] équipement : avatar 2 : « It_Armor_Don_Fighter » équipé (pile N créée, EquipStack → true)`
    et le bilan `1 objet(s) équipé(s), 0 en échec, sur 1`.
 2. **Arme commune** : `--equipment It_1H_Sword --weapon It_1H_Sword`. Attendu : l'arme tenue

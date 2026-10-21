@@ -53,6 +53,10 @@ constexpr const char* kCreateItems = "?CreateItems@PSInventory@@QEAAHAEBVTemplat
 constexpr const char* kHoldRightStack = "?HoldRightStack@PSInventory@@QEAA_NH@Z";
 constexpr const char* kEquipStack = "?EquipStack@PSInventory@@QEAA_NH@Z";
 constexpr const char* kIsStackEquiped = "?IsStackEquiped@PSInventory@@QEBA_NH@Z";
+// Diagnostic de l'inventaire (story 3.2b), facultatif : hors du tout ou rien.
+constexpr const char* kGetStackCount = "?GetStackCount@PSInventory@@QEBAHXZ";
+constexpr const char* kGetTemplateItem = "?GetTemplateItem@PSInventory@@QEBA?AVEntity@@H@Z";
+constexpr const char* kGetEquipSlotFromStack = "?GetEquipSlotFromStack@PSInventory@@QEBA?AW4gEEquipSlot@@H@Z";
 constexpr const char* kGetCombatMode = "?GetCombatMode@PSCombatSystem@@QEBA?AW4gECombatMode@@XZ";
 constexpr const char* kGetName = "?GetName@Entity@@QEBA?AVbCString@@XZ";
 constexpr const char* kGetCollisionGroup = "?GetCollisionGroup@Entity@@QEBA?AW4eECollisionGroup@@XZ";
@@ -157,6 +161,19 @@ struct InventoryAbi {
 InventoryAbi g_inv;
 bool g_inv_resolved = false;
 
+// Diagnostic de l'inventaire (story 3.2b) : résolu au mieux avec resolve_inventory, sans
+// conséquence s'il manque (la session reste active).
+using GetEntityAtFn = Entity* (*)(const Entity* self, Entity* sret, int stack);
+using IntIntFn = int (*)(const Entity* self, int value);
+struct InventoryDiagAbi {
+    IntGetterFn get_stack_count = nullptr;
+    GetEntityAtFn get_template_item = nullptr;
+    IntIntFn get_equip_slot = nullptr;
+};
+
+InventoryDiagAbi g_diag;
+bool g_diag_resolved = false;
+
 // Pointeur d'inventaire : celui de resolve_inventory, sinon celui de resolve_combat, sinon nul.
 template <typename Fn>
 Fn pick(Fn inventory, Fn combat) {
@@ -254,6 +271,12 @@ bool resolve_inventory(const char*& missing) {
     if (!ok) return false;
     g_inv = a;
     g_inv_resolved = true;
+    InventoryDiagAbi d;
+    const char* unused = nullptr;
+    g_diag_resolved = lookup(script, kGetStackCount, d.get_stack_count, unused) &&
+                      lookup(script, kGetTemplateItem, d.get_template_item, unused) &&
+                      lookup(script, kGetEquipSlotFromStack, d.get_equip_slot, unused);
+    if (g_diag_resolved) g_diag = d;
     return true;
 }
 
@@ -450,6 +473,36 @@ bool equip_stack(const Entity& e, int stack, bool& out) {
 
 bool is_stack_equipped(const Entity& e, int stack, bool& out) {
     return call_bool_int(g_inv_resolved ? g_inv.is_stack_equipped : nullptr, e, stack, out);
+}
+
+namespace {
+bool stack_raw(const Entity& e, int stack, Entity& item, int& slot) {
+    __try {
+        g_diag.get_template_item(&e, &item, stack);
+        slot = g_diag.get_equip_slot(&e, stack);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        item.ptr = nullptr;
+        return false;
+    }
+}
+}  // namespace
+
+bool inventory_stacks(const Entity& e, std::vector<StackInfo>& out) {
+    out.clear();
+    if (!g_diag_resolved || !g_inv_resolved || e.ptr == nullptr) return false;
+    int count = 0;
+    if (!call_int(g_diag.get_stack_count, e, count)) return false;
+    for (int i = 0; i < count && i < 64; ++i) {
+        StackInfo info;
+        info.index = i;
+        Entity item;
+        if (!stack_raw(e, i, item, info.slot)) return false;
+        if (item.ptr != nullptr) get_entity_name(item, info.name);
+        if (!call_bool_int(g_inv.is_stack_equipped, e, i, info.equipped)) return false;
+        out.push_back(std::move(info));
+    }
+    return true;
 }
 
 bool get_combat_mode(const Entity& e, int& out) { return call_int(g_abi.get_combat_mode, e, out); }

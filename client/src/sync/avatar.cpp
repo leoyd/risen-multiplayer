@@ -42,7 +42,17 @@ struct Entry {
     std::unordered_map<std::string, int> weapon_stacks;
     std::unordered_set<std::string> weapon_failed;
     bool weapon_fallback_logged = false;  // repli sur une pile mémorisée (FindStackIndex en SEH)
+    // Story 3.2b (test en jeu du 2026-10-21) : équipement et arme différés de kInventoryReadyFrames
+    // frames après la création. Équipée avant le premier gCInventory_PS::OnCacheIn de l'entité,
+    // l'armure est marquée liée, et OnCacheIn ne retire plus l'objet par défaut de l'emplacement
+    // (tunique du héros) : les deux s'affichent (désassemblage de Game.dll).
+    unsigned frames = 0;
+    bool inventory_ready = false;
+    std::vector<std::string> pending_equipment;
+    bool pending_weapon_set = false;
+    std::string pending_weapon;
 };
+constexpr unsigned kInventoryReadyFrames = 15;  // environ 250 ms à 60 images/s
 std::vector<Entry> g_table;
 
 // Rejeu par nom : ressource de chaque nom (nul : introuvable), vidée au retrait d'un avatar ;
@@ -124,6 +134,22 @@ bool same_world(const Entry& e) {
     bool running = false;
     return game::get_player(player) && player.ptr != nullptr && player.ptr == e.player &&
            game::game_running(running) && running;
+}
+
+// Diagnostic (story 3.2b), en debug : inventaire de `entity`, pile par pile.
+void log_inventory(const game::Entity& entity, const std::string& who) {
+    if (!log::debug_enabled()) return;
+    std::vector<game::StackInfo> stacks;
+    if (!game::inventory_stacks(entity, stacks)) {
+        log::debug(who + " : inventaire illisible (symboles de diagnostic absents ou SEH)");
+        return;
+    }
+    std::string text = who + " : inventaire, " + std::to_string(stacks.size()) + " pile(s)";
+    for (const game::StackInfo& st : stacks) {
+        text += " | " + std::to_string(st.index) + " « " + st.name + " »" + (st.equipped ? " équipée" : "") +
+                " emplacement " + std::to_string(st.slot);
+    }
+    log::debug(text);
 }
 
 // Pile de `tmpl` (nom `name`) dans l'inventaire de `entity`, trouvée (FindStackIndex(-1, false))
@@ -309,10 +335,27 @@ void despawn(std::uint32_t net_id) {
     log::debug("[sync] avatar " + std::to_string(net_id) + " absent : rien à retirer");
 }
 
+// Équipement puis arme reçus avant que l'inventaire de l'avatar soit prêt (voir Entry::frames).
+void apply_pending_inventory(Entry& e) {
+    e.inventory_ready = true;
+    log::debug("[sync] avatar " + std::to_string(e.net_id) + " : inventaire prêt après " + std::to_string(e.frames) +
+               " frames");
+    if (!e.pending_equipment.empty()) {
+        const std::vector<std::string> names = std::move(e.pending_equipment);
+        e.pending_equipment.clear();
+        equip(e.net_id, names);
+    }
+    if (e.pending_weapon_set) {
+        e.pending_weapon_set = false;
+        set_weapon(e.net_id, e.pending_weapon);
+    }
+}
+
 void move(std::uint32_t net_id, const Pose& pose) {
     for (Entry& e : g_table) {
         if (e.net_id != net_id) continue;
         if (e.move_error_logged || e.dead) return;  // après une SEH, ou mort : plus de pose imposée
+        if (!e.inventory_ready && ++e.frames >= kInventoryReadyFrames) apply_pending_inventory(e);
         // Corps cinématique (AD-8, story 3.1) : pose de l'entité puis du corps, sans MoveTo
         // (StopMovement) ni SetGoalPose.
         // Story 3.1 (tests en jeu du 2026-10-20) : les réglages d'avatar solide du spike J2
@@ -425,6 +468,12 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
             log::debug(who + " mort : Weapon ignoré");
             return;
         }
+        if (!e.inventory_ready) {  // appliqué par move(), une fois l'inventaire prêt
+            e.pending_weapon_set = true;
+            e.pending_weapon = name;
+            log::debug(who + " : Weapon « " + name + " » différé (inventaire pas encore prêt)");
+            return;
+        }
         if (name.empty()) {
             int held = -1;
             if (!game::get_right_hold_stack(e.entity, held)) {
@@ -489,7 +538,13 @@ void equip(std::uint32_t net_id, const std::vector<std::string>& names) {
             log::warn(who + " mort : non équipé");
             return;
         }
+        if (!e.inventory_ready) {  // appliqué par move(), une fois l'inventaire prêt
+            e.pending_equipment = names;
+            log::debug(who + " : équipement différé (inventaire pas encore prêt)");
+            return;
+        }
         equip_entity(e.entity, names, &e, who);
+        log_inventory(e.entity, "[sync] diagnostic : avatar " + std::to_string(net_id) + " équipé");
         return;
     }
     log::warn("[sync] équipement : avatar " + std::to_string(net_id) + " absent : non équipé");

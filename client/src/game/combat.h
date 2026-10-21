@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace mp::game {
 
@@ -74,6 +75,16 @@ bool hold_right_stack(const Entity& e, int stack, bool& out);
 bool equip_stack(const Entity& e, int stack, bool& out);
 // PSInventory::IsStackEquiped(int) const (story 3.2b) : pile déjà équipée ? resolve_inventory seulement.
 bool is_stack_equipped(const Entity& e, int stack, bool& out);
+// Diagnostic (story 3.2b), en debug : chaque pile de l'inventaire (au plus 64), nom de son objet
+// (GetTemplateItem + GetName), équipée ou non, emplacement (gEEquipSlot brut). False si les
+// symboles facultatifs manquent ou sur SEH.
+struct StackInfo {
+    int index = 0;
+    std::string name;
+    bool equipped = false;
+    int slot = 0;
+};
+bool inventory_stacks(const Entity& e, std::vector<StackInfo>& out);
 bool get_combat_mode(const Entity& e, int& out);
 bool get_entity_name(const Entity& e, std::string& out);   // Entity::GetName
 // Template(const char* nom) (Script.dll) puis Template::IsValid. `out` est construit dès que

@@ -94,6 +94,13 @@ context:
 - Équipement invalide dans `Settings` (invité) : Warn au premier tick, Hello envoyé avec un équipement vide (le test de la l. 602 attend désormais ce comportement au lieu de « Hello non encodable »).
 - `equip_entity` journalise chaque nom (Info/Warn/Error) puis un bilan ; appelé une fois par entrée en session ou création d'avatar, jamais par frame.
 
+- **2026-10-21, test en jeu (utilisateur, une machine, Risen hôte + faux invité `--equipment It_Armor_Don_Fighter --echo`) : validé après correctif.**
+  - 1ᵉʳ essai : armure et épée visibles, mais la tunique et le bâton par défaut du héros restaient affichés. L'inventaire de l'avatar était vide à sa création : ce sont les objets par défaut des emplacements de `gCInventory_PS`, liés par `OnCacheIn`. Équipée avant ce premier `OnCacheIn`, l'armure empêchait le retrait de la tunique (`docs/re/equipement.md`). `UpdateVisibility` essayé, sans effet, retiré.
+  - Correctif : `sync/avatar` diffère l'équipement et l'arme de l'avatar de 15 frames après sa création (`kInventoryReadyFrames`, appliqués par `move()`). 2ᵉ essai : plus de tunique, le bâton disparaît.
+  - Gardé : diagnostic d'inventaire de l'avatar en debug (`game::inventory_stacks`, symboles facultatifs hors du tout ou rien).
+  - Le n° 8 du tri (équiper dans la frame de création) est donc confirmé et corrigé.
+  - Non fait : invité réel (héros équipé, pas de copie à la session suivante), deux machines.
+
 ## Spec Change Log
 
 ## Review Triage Log

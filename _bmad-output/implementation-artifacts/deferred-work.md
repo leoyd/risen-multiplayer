@@ -153,3 +153,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2b-equipement-invite.md`
   summary: Équiper l'avatar dans la frame même de sa création (`EquipAvatar` juste après `SpawnAvatar`) : le `PSInventory` de la nouvelle entité est-il prêt ? Sinon l'avatar reste nu, sans nouvel essai.
   evidence: maybe-false, medium si vrai. En 3.2, `AvatarWeapon` n'arrivait qu'environ 150 ms après la création. À trancher au test en jeu : lignes `[sync] équipement : avatar … EquipStack → true` et armure visible.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2b-equipement-invite.md`
+  summary: Résolu le 2026-10-21 — l'entrée « équiper l'avatar dans la frame de sa création » est confirmée en jeu (tunique par défaut restée visible) et corrigée (équipement et arme différés de 15 frames, `docs/re/equipement.md`).
+  evidence: Test en jeu de l'utilisateur, deux essais.
