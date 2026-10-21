@@ -61,11 +61,19 @@ bool resolve_combat(const char*& missing);
 // enveloppes d'inventaire ci-dessous marchent après l'une ou l'autre. False et `missing` au
 // premier échec. Après resolve_entities (destroy_template).
 bool resolve_inventory(const char*& missing);
+// Répliques des PNJ de la session (story 3.3, AD-3) : Script.dll (Entity::ms_arrNPCs,
+// UpdateEntityLists, IsPlayer, PSSkills::GetHitPoints/SetHitPoints), Engine.dll
+// (eCDynamicEntity::GetID), Game.dll (gCRuntimeInfo::GetEntity, gCScriptRoutine_PS::OnProcess),
+// en tout ou rien, indépendants de resolve_combat (sonde). IsDead, GetPose et MoveTo viennent de
+// resolve_entities (à appeler avant). Les enveloppes get_entity_id, runtime_entity_by_id,
+// get_hit_points et set_hit_points marchent après l'une ou l'autre. False et `missing` au premier
+// échec.
+bool resolve_npc(const char*& missing);
 // Kill et Defeat (Script_Game.dll), facultatifs : module déjà chargé par le jeu, jamais par
 // nous. False et `missing` (module ou symbole) en cas d'échec.
 bool resolve_script_game(const char*& missing);
 
-void* routine_on_process_address();  // gCScriptRoutine_PS::OnProcess (Game.dll)
+void* routine_on_process_address();  // gCScriptRoutine_PS::OnProcess (Game.dll), après resolve_npc ou resolve_combat
 void* kill_address();                // ::Kill (Script_Game.dll)
 // ::DownOrDeadBy{MeleeWeapon,Projectile,Inferno} (Script_Game.dll), which = 0, 1, 2.
 void* down_or_dead_address(int which);
@@ -127,6 +135,14 @@ bool get_entity_id(const Entity& e, std::uint8_t (&out)[kPropertyIdSize]);
 // gCRuntimeInfo::GetEntity(bCPropertyID const&) (this inutilisé : nul).
 bool runtime_entity_by_id(const std::uint8_t (&id)[kPropertyIdSize], void*& out);
 bool get_hit_points(const Entity& e, int& out);
+// Story 3.3 (resolve_npc seulement) : Entity::UpdateEntityLists (reconstruction des listes, une
+// fois par frame au plus, faite par le jeu lui-même), puis lecture directe de Entity::ms_arrNPCs
+// ({Entity* data; u32 count}, donnée de Script.dll), au plus `cap` entités. Pas de GetNPCs : son
+// tampon fuit à chaque appel. Frame seulement.
+// `total` : nombre d'entités du tableau (peut dépasser `cap`).
+bool read_npc_list(std::vector<Entity>& out, std::size_t cap, std::size_t& total);
+// Entity::IsPlayer (resolve_npc seulement).
+bool is_player(const Entity& e, bool& out);
 bool get_hit_points_max(const Entity& e, int& out);
 bool set_hit_points(const Entity& e, int value, int modifier);
 bool get_damage_amount(const Entity& weapon, long& out);     // gCDamage_PS de l'arme

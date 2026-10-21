@@ -5,9 +5,9 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v8 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v9 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
-  `ErrBadLength`, `ErrTrailingBytes`, plus `PeekHelloVersion`), vérifié contre
+  `ErrBadLength`, `ErrTrailingBytes`, `ErrBadValue`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
 - `kcp/` : le **même** `ikcp.c` que la DLL, inclus via cgo depuis `client/third_party/kcp/`
   (pas de copie), avec les mêmes réglages : `nodelay(1,10,2,1)`, MTU 1199, segments préfixés
@@ -95,6 +95,18 @@ de bilan donne chaque seconde les snapshots envoyés et reçus, et les `Motion` 
 chaque `AniName` reçu est journalisé (`<- AniName id=… nom=…`), comme chaque `Weapon` reçu
 (`<- Weapon netid=1 nom="It_1H_Sword"`, `nom=""` pour une arme rangée) et chaque `Armor` reçu
 (`<- Armor netid=1 nom="It_Armor_Inquisitor"`, `nom=""` sans armure).
+
+### Répliques des PNJ (v9, story 3.3)
+
+Le faux invité applique les règles d'acceptation de la DLL et journalise tout ce que l'hôte
+annonce : `Spawn{1}` accepté si `NetId` ≥ 1000, pose finie et `NetId` non annoncé
+(`<- Spawn PNJ netid=1000 guid=… pos=… (annonce N)`, sinon `: ignoré (raison)`), `Despawn` d'un
+PNJ annoncé (`<- Despawn PNJ netid=1000 (poses reçues=…, PV=…)`, sinon `: ignoré (NetId non
+annoncé)`), premier snapshot de chaque PNJ et chaque changement de PV (`PNJ netid=1000 PV a -> b`).
+Une entité de snapshot inattendue (ni le héros de l'hôte ni un PNJ annoncé) est ignorée et
+comptée. La ligne par seconde ajoute `PNJ suivis=… poses=… inattendues=…` ; à la fin, `Bilan PNJ :
+N vus, Spawn=… Despawn=… poses=… entités inattendues=…, au plus K entités par snapshot`, puis une ligne par `NetId` (GUID,
+annonces, retraits, poses, PV du premier au dernier, nombre de changements).
 
 ### Écho (`--echo`, story 2.4)
 

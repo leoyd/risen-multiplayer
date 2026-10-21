@@ -43,6 +43,8 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"heartbeat.bin", true, Heartbeat{}},
 		{"session_end.bin", true, SessionEnd{Reason: 1}},
 		{"spawn.bin", true, Spawn{NetId: 2, Kind: SpawnTypeHero, X: 100.0, Y: -50.5, Z: 2000.0, Yaw: 1.5}},
+		{"spawn_npc.bin", true, Spawn{NetId: FirstNpcNetId, Kind: SpawnTypeNpc, X: 100.0, Y: -50.5, Z: 2000.0, Yaw: 1.5,
+			GUID: [GuidSize]byte{0xc3, 0x62, 0x46, 0x68, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc}}},
 		{"despawn.bin", true, Despawn{NetId: 2}},
 		{"aniname.bin", true, AniName{AniId: 7, Name: "Hero_Stand_None_None_P0_Move_Run_N_Fwd_00_%_00_P0_400"}},
 		{"death.bin", true, Death{NetId: 2}},
@@ -122,7 +124,8 @@ func TestAllVectorsCovered(t *testing.T) {
 		"snapshot.bin": true, "snapshot_truncated.bin": true,
 		"motion.bin": true, "motion_bad_type.bin": true, "aniname.bin": true, "death.bin": true,
 		"aniname_empty.bin": true, "motion_param.bin": true, "motion_param_bad.bin": true,
-		"weapon.bin": true, "weapon_sheathed.bin": true, "armor.bin": true, "armor_removed.bin": true}
+		"weapon.bin": true, "weapon_sheathed.bin": true, "armor.bin": true, "armor_removed.bin": true,
+		"spawn_npc.bin": true, "spawn_bad_type.bin": true, "snapshot_multi.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -376,5 +379,65 @@ func TestArmorBounds(t *testing.T) {
 	}
 	if _, err := DecodeControl([]byte{2, 28}); !errors.Is(err, ErrUnknownType) {
 		t.Fatalf("Armor en contrôle : %v", err)
+	}
+}
+
+// v9 (story 3.3) : Spawn de taille variable, type inconnu refusé, snapshot multi-entités.
+func TestSpawnNpcV9(t *testing.T) {
+	raw := vector(t, "spawn_npc.bin")
+	if len(raw) != SpawnNpcSize {
+		t.Fatalf("spawn_npc.bin : %d octets", len(raw))
+	}
+	for n := 0; n < len(raw); n++ {
+		if _, err := DecodeReliable(raw[:n]); !errors.Is(err, ErrTruncated) {
+			t.Fatalf("coupé à %d : %v", n, err)
+		}
+	}
+	if _, err := DecodeReliable(append(append([]byte{}, raw...), 0)); !errors.Is(err, ErrTrailingBytes) {
+		t.Fatalf("+1 octet : %v", err)
+	}
+	if _, err := DecodeReliable(vector(t, "spawn_bad_type.bin")); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("spawn_bad_type.bin : %v", err)
+	}
+	for _, kind := range []uint8{2, 7, 200, 255} {
+		if _, err := EncodeReliable(Spawn{NetId: 2, Kind: kind}); !errors.Is(err, ErrOutOfBounds) {
+			t.Errorf("type %d encodé : %v", kind, err)
+		}
+		b := append([]byte{}, vector(t, "spawn.bin")...)
+		b[5] = kind
+		if _, err := DecodeReliable(append(b, make([]byte, GuidSize)...)); !errors.Is(err, ErrBadValue) {
+			t.Errorf("type %d décodé : %v", kind, err)
+		}
+	}
+	// Type 0 : GUID ni écrit ni lu.
+	hero := Spawn{NetId: 2, Kind: SpawnTypeHero, X: 100, Y: -50.5, Z: 2000, Yaw: 1.5, GUID: [GuidSize]byte{1, 2, 3}}
+	enc, err := EncodeReliable(hero)
+	if err != nil || !bytes.Equal(enc, vector(t, "spawn.bin")) || len(enc) != SpawnHeroSize {
+		t.Fatalf("Spawn{0} : % x (%v)", enc, err)
+	}
+	if _, err := DecodeReliable(append(enc, make([]byte, GuidSize)...)); !errors.Is(err, ErrTrailingBytes) {
+		t.Fatalf("Spawn{0} + 16 octets : %v", err)
+	}
+}
+
+func TestSnapshotMultiVector(t *testing.T) {
+	raw := vector(t, "snapshot_multi.bin")
+	want := Snapshot{Tick: 1234, Entities: []SnapshotEntity{
+		{NetId: 1, X: 100, Y: -50.5, Z: 2000, Yaw: 1.5, HP: 75},
+		{NetId: 1000, X: 150, Y: -50.5, Z: 2500, Yaw: -0.5, HP: 150},
+		{NetId: 1001, X: -300, Y: 10, Z: 1800, Yaw: 3, HP: 65535},
+	}}
+	got, err := DecodeSnapshot(raw)
+	if err != nil || got.Tick != want.Tick || len(got.Entities) != len(want.Entities) {
+		t.Fatalf("snapshot_multi.bin : %+v, %v", got, err)
+	}
+	for i := range want.Entities {
+		if got.Entities[i] != want.Entities[i] {
+			t.Fatalf("entité %d : %+v, attendu %+v", i, got.Entities[i], want.Entities[i])
+		}
+	}
+	enc, err := EncodeSnapshot(want)
+	if err != nil || !bytes.Equal(enc, raw) {
+		t.Fatalf("réencodage différent :\n% x\n% x (%v)", enc, raw, err)
 	}
 }

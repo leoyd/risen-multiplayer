@@ -2,7 +2,7 @@
 // avec un monde simulé chargé. Même boucle que le pilote Windows (sync/session) : lire le
 // monde, vider poll(), tick, exécuter les commandes, écrire les logs.
 //
-// Usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM]
+// Usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N]
 // Sort après la E-ième fin de session (défaut 1), une fois le maintien terminé (Ended →
 // Inactive), ou après T ms (défaut 30000). Log sur stdout ; la dernière ligne est
 // « état final : <état> ». Code de sortie : 0, ou 1 sur erreur d'usage.
@@ -14,6 +14,11 @@
 // (LocalWeapon) ; SIGHUP la range ou la ressort.
 // Armure (story 3.2c) : --armor NOM la met sur le héros de l'hôte dès le départ (LocalArmor) ;
 // SIGHUP la retire ou la remet (en même temps que l'arme).
+// PNJ (story 3.3) : --npcs N simule N PNJ autour du héros de l'hôte (GUID propre à chacun), le
+// PNJ i à 5 m + 50 cm × i, PV qui baissent avec le temps. Après l'entrée en session : de 1,5 à
+// 2,5 s, les PNJ impairs partent à 60 m et plus (sortie du rayon, place pour ceux qui
+// attendaient au-delà du 53ᵉ), puis reviennent (même NetId) ; le PNJ 0 meurt à 2 s. Ils sont
+// lus, comme dans la DLL, seulement quand Session::wants_npcs le demande.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -76,15 +81,19 @@ int main(int argc, char** argv) {
     long max_ends = 1;
     std::string weapon;
     std::string armor;
+    long npc_count = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
+        if (std::strcmp(argv[i], "--npcs") == 0) npc_count = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--weapon") == 0) weapon = argv[i + 1];
         if (std::strcmp(argv[i], "--armor") == 0) armor = argv[i + 1];
         if (std::strcmp(argv[i], "--port") == 0) port = std::strtol(argv[i + 1], nullptr, 10);
         else if (std::strcmp(argv[i], "--max-ms") == 0) max_ms = std::strtol(argv[i + 1], nullptr, 10);
         else if (std::strcmp(argv[i], "--ends") == 0) max_ends = std::strtol(argv[i + 1], nullptr, 10);
     }
-    if (port <= 0 || port > 65535 || max_ms <= 0 || max_ends <= 0 || argc % 2 == 0) {
-        std::fprintf(stderr, "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM]\n");
+    if (port <= 0 || port > 65535 || max_ms <= 0 || max_ends <= 0 || npc_count < 0 || npc_count > 255 ||
+        argc % 2 == 0) {
+        std::fprintf(stderr,
+                     "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N]\n");
         return 1;
     }
     std::signal(SIGUSR1, on_sigusr1);
@@ -118,6 +127,32 @@ int main(int argc, char** argv) {
     auto now_ms = [&] {
         return static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - origin).count());
+    };
+
+    // Story 3.3 : PNJ simulés (pose et PV en fonction du temps depuis l'entrée en session).
+    std::uint64_t session_start = 0;
+    bool in_session = false;
+    auto fill_npcs = [&](std::uint64_t now) {
+        world.npcs.clear();
+        world.npcs_ok = true;
+        const double t = static_cast<double>(now - session_start) / 1000.0;  // s
+        constexpr double kPi = 3.14159265358979323846;
+        for (long i = 0; i < npc_count; ++i) {
+            NpcState n;
+            for (std::size_t b = 0; b < n.guid.size(); ++b) n.guid[b] = static_cast<std::uint8_t>(0xa0 + b);
+            n.guid[0] = static_cast<std::uint8_t>(i);
+            const double angle = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(npc_count);
+            double radius = 500.0 + 50.0 * static_cast<double>(i);  // 5 m à 5 + 0,5 × N m
+            if (i % 2 == 1 && t >= 1.5 && t < 2.5) radius += 6000.0;  // sortie du rayon, puis retour
+            radius += 20.0 * std::sin(4.0 * t + angle);                // petit mouvement
+            n.pose.x = world.x + static_cast<float>(radius * std::sin(angle));
+            n.pose.y = world.y;
+            n.pose.z = world.z + static_cast<float>(radius * std::cos(angle));
+            n.pose.yaw = static_cast<float>(angle);
+            n.hp = 100 + static_cast<int>(i) - static_cast<int>(t * 4.0);
+            n.alive = !(i == 0 && t > 2.0);
+            world.npcs.push_back(n);
+        }
     };
 
     std::vector<Input> inputs;
@@ -187,8 +222,14 @@ int main(int argc, char** argv) {
                 inputs.push_back(SnapshotIn{std::move(std::get<mp::net::SnapshotReceived>(ev).bytes)});
             }
         }
+        const std::uint64_t now = now_ms();
+        if (session.state() == State::InSession && !in_session) session_start = now;
+        in_session = session.state() == State::InSession;
+        world.npcs.clear();
+        world.npcs_ok = false;
+        if (npc_count > 0 && session.wants_npcs(now)) fill_npcs(now);
         std::vector<Output> pending;
-        pending.push_back(session.tick(now_ms(), world, inputs));
+        pending.push_back(session.tick(now, world, inputs));
         for (std::size_t p = 0; p < pending.size(); ++p) {
             for (const auto& line : pending[p].logs) {
                 print(level_name(line.level), line.text);

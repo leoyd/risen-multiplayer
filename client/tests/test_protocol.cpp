@@ -108,7 +108,16 @@ Spawn sample_spawn() {
 
 bool same(const Spawn& a, const Spawn& b) {
     return a.net_id == b.net_id && a.type == b.type && bits(a.x) == bits(b.x) && bits(a.y) == bits(b.y) &&
-           bits(a.z) == bits(b.z) && bits(a.yaw) == bits(b.yaw);
+           bits(a.z) == bits(b.z) && bits(a.yaw) == bits(b.yaw) && a.guid == b.guid;
+}
+
+// spawn_npc.bin (v9, story 3.3).
+Spawn sample_npc_spawn() {
+    Spawn m = sample_spawn();
+    m.net_id = kFirstNpcNetId;
+    m.type = kSpawnTypeNpc;
+    m.guid = {0xc3, 0x62, 0x46, 0x68, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc};
+    return m;
 }
 
 Decoded<ControlMessage> dc(const Bytes& b) { return decode_control(b.data(), b.size()); }
@@ -130,7 +139,7 @@ const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
 const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin", "spawn.bin",
                                       "despawn.bin",   "aniname.bin",     "death.bin",
                                       "motion_param.bin", "weapon.bin", "weapon_sheathed.bin",
-                                      "armor.bin",     "armor_removed.bin"};
+                                      "armor.bin",     "armor_removed.bin", "spawn_npc.bin"};
 
 }  // namespace
 
@@ -282,13 +291,53 @@ TEST("protocole : vecteur despawn.bin") {
     CHECK(enc(Despawn{2}) == b);
 }
 
-TEST("protocole : Spawn d'un type inconnu décodé, valeur brute conservée") {
-    Spawn m = sample_spawn();
-    m.type = 200;
-    m.net_id = 0xFFFFFFFFu;
-    const auto d = dr(enc(m));
+TEST("protocole : vecteur spawn_npc.bin (v9) : 38 octets, GUID après le lacet") {
+    const Bytes b = load_vector("spawn_npc.bin");
+    CHECK_EQ(b.size(), kSpawnNpcSize);
+    const auto d = dr(b);
     const Spawn* got = std::get_if<Spawn>(&d.message);
-    CHECK(d.ok() && got != nullptr && same(*got, m));
+    CHECK(d.ok() && got != nullptr && same(*got, sample_npc_spawn()));
+    CHECK(enc(sample_npc_spawn()) == b);
+    // Coupé dans le GUID → Truncated ; un octet de trop → TrailingBytes.
+    CHECK(dr(Bytes(b.begin(), b.begin() + 22)).error == DecodeError::Truncated);
+    CHECK(dr(Bytes(b.begin(), b.end() - 1)).error == DecodeError::Truncated);
+    Bytes longer = b;
+    longer.push_back(0);
+    CHECK(dr(longer).error == DecodeError::TrailingBytes);
+    // Le type 0 ne porte pas de GUID : 22 octets, GUID ignoré à l'encodage et nul au décodage.
+    Spawn hero = sample_npc_spawn();
+    hero.type = kSpawnTypeHero;
+    hero.net_id = 2;
+    const Bytes h = enc(hero);
+    CHECK_EQ(h.size(), kSpawnHeroSize);
+    CHECK(h == load_vector("spawn.bin"));
+    const auto dh = dr(h);
+    const Spawn* gh = std::get_if<Spawn>(&dh.message);
+    CHECK(dh.ok() && gh != nullptr && gh->guid == Guid{});
+    // Un Spawn{0} suivi de 16 octets n'est pas un Spawn{1} : TrailingBytes.
+    Bytes hero_plus = h;
+    hero_plus.insert(hero_plus.end(), 16, 0);
+    CHECK(dr(hero_plus).error == DecodeError::TrailingBytes);
+}
+
+TEST("protocole : Spawn d'un type inconnu refusé (v9) : BadValue au décodage, rien à l'encodage") {
+    CHECK(dr(load_vector("spawn_bad_type.bin")).error == DecodeError::BadValue);
+    Spawn m = sample_spawn();
+    for (int type : {2, 7, 200, 255}) {
+        m.type = static_cast<std::uint8_t>(type);
+        Bytes out = {0xAA};
+        CHECK(!encode_reliable(m, out));
+        CHECK(out == Bytes{0xAA});
+        Bytes raw = load_vector("spawn.bin");
+        raw[5] = static_cast<std::uint8_t>(type);
+        CHECK(dr(raw).error == DecodeError::BadValue);
+        raw.resize(38, 0);  // même avec la place d'un GUID
+        CHECK(dr(raw).error == DecodeError::BadValue);
+    }
+    // Coupé avant le type : Truncated, pas BadValue.
+    Bytes raw = load_vector("spawn_bad_type.bin");
+    CHECK(dr(Bytes(raw.begin(), raw.begin() + 5)).error == DecodeError::Truncated);
+    CHECK(dr(Bytes(raw.begin(), raw.begin() + 21)).error == DecodeError::Truncated);
 }
 
 // --- Champ hors domaine -----------------------------------------------------------
@@ -345,14 +394,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v8 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v9 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 8);
+    CHECK_EQ(version, 9);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 8);
+    CHECK_EQ(version, 9);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -363,12 +412,12 @@ TEST("protocole : peek_hello_version sur v8 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 8") {
+TEST("protocole : l'encodeur refuse une version autre que 9") {
     Hello h = sample_hello();
-    h.protocol_version = 7;
+    h.protocol_version = 8;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 9;
+    h.protocol_version = 10;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -494,7 +543,12 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 8);
+    CHECK_EQ(kProtocolVersion, 9);
+    CHECK_EQ(static_cast<int>(kSpawnTypeHero), 0);
+    CHECK_EQ(static_cast<int>(kSpawnTypeNpc), 1);
+    CHECK_EQ(kFirstNpcNetId, 1000u);
+    CHECK_EQ(kSpawnHeroSize, 22u);
+    CHECK_EQ(kSpawnNpcSize, 38u);
     CHECK_EQ(static_cast<int>(Channel::Reliable), 0);
     CHECK_EQ(static_cast<int>(Channel::Snapshot), 1);
     CHECK_EQ(static_cast<int>(Channel::Control), 2);
@@ -560,6 +614,21 @@ TEST("protocole : vecteur snapshot.bin") {
     Bytes out;
     CHECK(encode_snapshot(sample_snapshot(), out));
     CHECK(out == b);
+}
+
+TEST("protocole : vecteur snapshot_multi.bin (v9) : héros et deux PNJ, PV jusqu'à 65535") {
+    const Bytes b = load_vector("snapshot_multi.bin");
+    Snapshot s;
+    s.tick = 1234;
+    s.entities = {{1, 100.0f, -50.5f, 2000.0f, 1.5f, 75},
+                  {1000, 150.0f, -50.5f, 2500.0f, -0.5f, 150},
+                  {1001, -300.0f, 10.0f, 1800.0f, 3.0f, 65535}};
+    const auto d = ds(b);
+    CHECK(d.ok() && same(d.message, s));
+    Bytes out;
+    CHECK(encode_snapshot(s, out));
+    CHECK(out == b);
+    CHECK_EQ(b.size(), 6u + 3u * kSnapshotEntitySize);
 }
 
 TEST("protocole : snapshot_truncated.bin → Truncated ; coupé, + 1 octet, autre canal") {

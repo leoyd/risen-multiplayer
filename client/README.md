@@ -86,6 +86,9 @@ après `--ends E` fins de session (défaut 1) ou `--max-ms T`. `SIGUSR1` simule 
 (rechargement : le héros change d'adresse) et `SIGUSR2` la mort du héros de l'hôte.
 `--weapon NOM` met une arme dans la main du héros de l'hôte (story 3.2), que `SIGHUP` range ou
 ressort ; `--armor NOM` lui met une armure (story 3.2c), que ce même `SIGHUP` retire ou remet.
+`--npcs N` (story 3.3) simule N PNJ autour du héros de l'hôte (le PNJ i à 5 m + 50 cm × i, PV qui
+baissent ; de 1,5 à 2,5 s après l'entrée en session, les impairs sortent du rayon puis reviennent ;
+le PNJ 0 meurt à 2 s), lus seulement quand `Session::wants_npcs` le demande, comme dans la DLL.
 `tests/session_fake_guest.sh` le lance face au faux invité (compilé à la volée par `go build`)
 et vérifie les codes de sortie et les logs : nominal, `--dup-hello`, `--bad-version`, deux
 invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte), puis
@@ -104,7 +107,10 @@ dans l'ordre (`AvatarWeapon`), après `SpawnAvatar` ; (story 3.2b) `--equipment`
 (story 3.2c) l'armure dans les deux sens : `Armor` de l'hôte reçu après son `Spawn` et son
 `Weapon`, puis retiré, et celle du faux invité (`--armor It_Armor_Inquisitor`, puis retirée et
 changée par le scénario) appliquée dans l'ordre (`AvatarArmor`), après `SpawnAvatar` ; aucun
-`AvatarArmor` sans `--armor`. Le test CTest
+`AvatarArmor` sans `--armor` ; (story 3.3) 80 PNJ simulés (`--npcs 80`) : 53 annoncés au premier
+snapshot (`Spawn{1}`, NetId dès 1000), les autres attendent, sorties du rayon, mort et éviction
+(`Despawn`), réannonce sous le même NetId, PV suivis par le faux invité, au plus 54 entités par
+snapshot et aucun message de PNJ ignoré. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
 80 s. Lancement à la main :
 
@@ -410,6 +416,47 @@ les lectures (`[sync] armure du héros : …`) et le diagnostic d'inventaire. La
 5. **Nom lu = nom accepté** : avec l'écho, vérifier que le log de l'hôte ne contient **aucune**
    ligne `template « … » inconnu du jeu` pour les armures portées.
 6. Rapporter les lignes `[sync] armure …`, `[sync] Armor …` et le côté faux invité (`<- Armor`).
+
+### Répliques des PNJ en jeu (story 3.3)
+
+L'hôte fait autorité sur les PNJ (protocole v9). À chaque snapshot, il lit `Entity::ms_arrNPCs`
+(après `UpdateEntityLists`), garde les PNJ vivants à 50 m au plus de son héros ou de l'avatar de
+l'invité, du plus proche au plus loin (53 au plus), leur attribue un NetId ≥ 1000 lié à leur GUID
+pour la session, annonce chaque entrée par `Spawn{1, pose, GUID}` et chaque sortie par `Despawn`,
+puis met leur pose et leurs PV dans le snapshot. L'invité retrouve chaque PNJ natif par
+`gCRuntimeInfo::GetEntity(GUID)`, l'inscrit au registre comme réplique (son
+`gCScriptRoutine_PS::OnProcess` n'est plus appelé : IA figée), le place par `MoveTo` à la pose
+interpolée (150 ms de retard) et écrit ses PV (`SetHitPoints(pv, 2)`) quand ils changent. À la
+sortie du rayon, à la fin de session et à la fin de monde, la réplique retrouve son IA ; elle
+n'est jamais tuée ni détruite. Les animations et la mort des répliques viennent avec la
+story 3.4 : en 3.3, le moteur de l'invité les anime encore.
+
+Prérequis : `probe = 0`, overlay Steam désactivé, la même sauvegarde des deux côtés (les GUID des
+PNJ placés sont stables d'une machine et d'un chargement à l'autre, spike J2). Le log doit
+contenir `[hooks] PNJ de session résolus (répliques)` et `hooks de session installés (…,
+gCScriptRoutine_PS::OnProcess)`.
+
+1. **Risen hôte + faux invité (une machine)** :
+   `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s`, puis s'approcher d'un camp de
+   monstres et s'en éloigner. Attendu côté hôte : `[sync] PNJ 1000 annoncé (Spawn) : GUID …, 40.0 m,
+   PV …` à l'entrée dans le rayon, `[sync] PNJ 1000 retiré (Despawn) : hors du rayon` (ou `mort`,
+   `évincé par plus proche`, `absent de la liste`) à la sortie, et le même NetId au retour. Côté
+   faux invité : `<- Spawn PNJ netid=1000 guid=…`, `PNJ netid=1000 premier snapshot … PV=…`,
+   `PNJ netid=1000 PV a -> b` quand on frappe le monstre, `<- Despawn PNJ netid=1000`, la ligne
+   par seconde `PNJ suivis=… poses=… inattendues=…`, et à la fin `Bilan PNJ : … au plus N entités
+   par snapshot` (N ≤ 54) suivi d'une ligne par NetId.
+2. **Deux machines, même sauvegarde (validation finale)** : l'hôte approche un camp de monstres.
+   Attendu chez l'invité : `[sync] PNJ 1000 : Spawn reçu (GUID …) : réplique`, puis
+   `[sync] PNJ 1000 répliqué : « … », entité 0x…, GUID …, IA figée oui`. Les monstres suivent les
+   positions de l'hôte, sans IA locale (ils ne poursuivent pas le héros de l'invité), et leurs PV
+   baissent quand l'hôte les frappe. Un GUID inconnu chez l'invité donne une seule ligne
+   `[sync] PNJ … : GUID … introuvable chez l'invité : ignoré`. À la fin de session :
+   `[sync] PNJ : N réplique(s) libérée(s) : fin de session`, et les monstres reprennent leur IA.
+3. En `log_level = debug`, le bilan des snapshots (toutes les 5 s) porte
+   `PNJ : suivis …, annoncés …, retirés …, plafond …, liste illisible …, entités inconnues …,
+   OnProcess de routine bloqués …`. Chez l'invité, ce dernier compteur doit croître tant que des
+   répliques sont suivies (IA figée), et retomber à 0 après la fin de session.
+4. Rapporter les lignes `[sync] PNJ …` des deux côtés et le bilan du faux invité.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

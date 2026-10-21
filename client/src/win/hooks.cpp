@@ -3,6 +3,7 @@
 #include "common/log.h"
 #include "game/combat.h"
 #include "game/entity.h"
+#include "sync/anim_filter.h"
 #include "sync/avatar.h"
 #include "sync/probe.h"
 #include "sync/probe_j2.h"
@@ -57,6 +58,12 @@ bool create(void* target, void* detour, void** original, const char* name);
 // Spike J2, Num4 : IA d'un PNJ figée. Le détour ne fait que comparer un pointeur (AD-2).
 void detour_routine_on_process(void* routine_ps) {
     if (sync::probe_j2::on_routine_process(routine_ps)) g_original_routine_on_process(routine_ps);
+}
+
+// Session (story 3.3) : IA figée des répliques de PNJ. Le détour ne fait que lire le registre
+// (comparaison sous le verrou de l'AnimFilter, AD-2) ; sync/npc seul y inscrit les répliques.
+void detour_routine_on_process_session(void* routine_ps) {
+    if (!sync::anim_filter().blocks_routine(routine_ps)) g_original_routine_on_process(routine_ps);
 }
 
 // Spike J2, Num6 : un Kill du héros devient Defeat (même thread, mêmes arguments). Seule
@@ -226,6 +233,12 @@ bool install_session() {
         return false;
     }
     log::info("[hooks] inventaire de session résolu (arme de l'avatar)");
+    // Story 3.3 (AD-3) : répliques des PNJ, en tout ou rien.
+    if (!game::resolve_npc(missing)) {
+        log::error(std::string("[hooks] session inactive : symbole des PNJ introuvable : ") + missing);
+        return false;
+    }
+    log::info("[hooks] PNJ de session résolus (répliques)");
     MH_STATUS s = MH_Initialize();
     if (s != MH_OK) {
         log::error(std::string("[hooks] session inactive : MH_Initialize : ") + MH_StatusToString(s));
@@ -245,7 +258,9 @@ bool install_session() {
         !create(game::switch_fade_out_address(), reinterpret_cast<void*>(&detour_switch_fade_out),
                 reinterpret_cast<void**>(&g_original_switch_fade_out), "SwitchFadeOut") ||
         !create(game::wrapper_stop_motion_address(), reinterpret_cast<void*>(&detour_wrapper_stop_motion),
-                reinterpret_cast<void**>(&g_original_wrapper_stop_motion), "StopMotion")) {
+                reinterpret_cast<void**>(&g_original_wrapper_stop_motion), "StopMotion") ||
+        !create(game::routine_on_process_address(), reinterpret_cast<void*>(&detour_routine_on_process_session),
+                reinterpret_cast<void**>(&g_original_routine_on_process), "gCScriptRoutine_PS::OnProcess")) {
         remove();
         log::error("[hooks] session inactive");
         return false;
@@ -256,7 +271,8 @@ bool install_session() {
         remove();
         return false;
     }
-    log::info("[hooks] hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX)");
+    log::info("[hooks] hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, "
+              "gCScriptRoutine_PS::OnProcess)");
     watchdog::start();
     return true;
 }

@@ -113,6 +113,8 @@ void write(Writer& w, const Motion& m) {
     w.u32(m.d18);
 }
 
+bool valid(const Spawn& m) { return m.type == kSpawnTypeHero || m.type == kSpawnTypeNpc; }
+
 void write(Writer& w, const Spawn& m) {
     w.u8(static_cast<std::uint8_t>(MsgType::Spawn));
     w.u32(m.net_id);
@@ -121,6 +123,9 @@ void write(Writer& w, const Spawn& m) {
     w.f32(m.y);
     w.f32(m.z);
     w.f32(m.yaw);
+    if (m.type == kSpawnTypeNpc) {
+        for (std::uint8_t b : m.guid) w.u8(b);
+    }
 }
 
 bool valid(const MotionParam& m) {
@@ -301,6 +306,12 @@ DecodeError read(Reader& r, Spawn& m) {
     m.y = r.f32();
     m.z = r.f32();
     m.yaw = r.f32();
+    if (r.truncated()) return DecodeError::Truncated;
+    // v9 : la taille dépend du type ; un type inconnu n'est pas lisible.
+    if (!valid(m)) return DecodeError::BadValue;
+    if (m.type == kSpawnTypeNpc) {
+        for (std::uint8_t& b : m.guid) b = r.u8();
+    }
     return r.finish();
 }
 
@@ -369,6 +380,7 @@ bool encode_control(const ControlMessage& message, std::vector<std::uint8_t>& ou
 bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& out) {
     if (const Motion* motion = std::get_if<Motion>(&message); motion != nullptr && !valid(*motion)) return false;
     if (const MotionParam* p = std::get_if<MotionParam>(&message); p != nullptr && !valid(*p)) return false;
+    if (const Spawn* sp = std::get_if<Spawn>(&message); sp != nullptr && !valid(*sp)) return false;
     if (const AniName* a = std::get_if<AniName>(&message);
         a != nullptr && !in_bounds(a->name, kMinAniName, kMaxAniName)) {
         return false;

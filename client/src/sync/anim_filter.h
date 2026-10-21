@@ -101,6 +101,12 @@ public:
     Verdict classify(void* ptr, std::uint32_t thread_id);
     // PS du héros local ? (sans effet sur les compteurs)
     bool is_local(const void* animation_ps) const;
+    // Hook gCScriptRoutine_PS::OnProcess en session (story 3.3) : `routine_ps` est-il le PS de
+    // routine d'une réplique de PNJ (rôle NpcReplica) ? Vrai : son IA est figée, l'original
+    // n'est pas appelé. Simple comparaison sous le verrou ; compte les appels bloqués.
+    bool blocks_routine(const void* routine_ps);
+    // Appels de routine bloqués depuis le dernier appel.
+    unsigned take_routine_blocked();
     // Hook SetRagDollEnabled : une désactivation qui ne vient pas du héros local passe toujours,
     // sans être comptée (le moteur nettoie un avatar : décision du 2026-10-17) ; sinon classify.
     Verdict classify_ragdoll(void* animation_ps, bool on, std::uint32_t thread_id);
@@ -129,6 +135,7 @@ private:
     std::size_t count_ = 0;
     unsigned dropped_ = 0;
     unsigned blocked_ = 0;
+    unsigned routine_blocked_ = 0;
     std::atomic<std::uint32_t> hook_thread_{0};
     std::atomic<bool> hook_thread_varied_{false};
 };

@@ -31,7 +31,17 @@ type hostConfig struct {
 	SendMotions        bool   // AniName{0,"Host_Run"} puis un Motion toutes les 100 ms (story 2.4)
 	SendWeapon         string // non vide : Weapon{1, nom} juste après le Spawn (story 3.2)
 	SendArmor          string // non vide : Armor{1, nom} juste après le Spawn et le Weapon (story 3.2c)
+	// Story 3.3 : PNJ 1000 et 1001 annoncés à l'entrée en session (plus un Spawn{1} en double et
+	// un de NetId 999, à ignorer), dans chaque snapshot avec des PV qui baissent, plus une entité
+	// 1005 jamais annoncée ; 1001 retiré au tick 10 (Despawn répété au tick 12, à ignorer) puis
+	// réannoncé au tick 14.
+	SendNpcs bool
 }
+
+var (
+	npcGuidA = [protocol.GuidSize]byte{0xc3, 0x62, 0x46, 0x68, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	npcGuidB = [protocol.GuidSize]byte{0xf0, 0xac, 0x4f, 0xf5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+)
 
 func defaultHost() hostConfig {
 	return hostConfig{
@@ -328,6 +338,12 @@ func (h *simHost) openSession(peer netip.AddrPort) {
 	if h.cfg.SendArmor != "" {
 		h.sendReliable(protocol.Armor{NetId: protocol.HostNetId, Name: h.cfg.SendArmor})
 	}
+	if h.cfg.SendNpcs {
+		h.sendReliable(protocol.Spawn{NetId: 1000, Kind: protocol.SpawnTypeNpc, X: 10, Y: 2, Z: 3, GUID: npcGuidA})
+		h.sendReliable(protocol.Spawn{NetId: 1001, Kind: protocol.SpawnTypeNpc, X: 20, Y: 2, Z: 3, GUID: npcGuidB})
+		h.sendReliable(protocol.Spawn{NetId: 1000, Kind: protocol.SpawnTypeNpc, X: 10, Y: 2, Z: 3, GUID: npcGuidA})
+		h.sendReliable(protocol.Spawn{NetId: 999, Kind: protocol.SpawnTypeNpc, X: 10, Y: 2, Z: 3, GUID: npcGuidA})
+	}
 	if h.cfg.SilentAfterWelcome {
 		h.silent = true
 	}
@@ -439,8 +455,22 @@ func (h *simHost) tick() {
 	// Snapshot de l'hôte à 20 Hz (pose du Welcome, x croissant de 1 cm par tick).
 	if tick := int64(now.Sub(h.sessionStart) / (50 * time.Millisecond)); tick != h.lastSnapTick {
 		h.lastSnapTick = tick
-		b, _ := protocol.EncodeSnapshot(protocol.Snapshot{Tick: uint32(tick),
-			Entities: []protocol.SnapshotEntity{{NetId: protocol.HostNetId, X: 1 + float32(tick), Y: 2, Z: 3, Yaw: 0.5}}})
+		entities := []protocol.SnapshotEntity{{NetId: protocol.HostNetId, X: 1 + float32(tick), Y: 2, Z: 3, Yaw: 0.5}}
+		if h.cfg.SendNpcs {
+			entities = append(entities, protocol.SnapshotEntity{NetId: 1000, X: 10 + float32(tick), Y: 2, Z: 3,
+				HP: uint16(150 - tick/4)})
+			if tick < 10 || tick >= 16 {
+				entities = append(entities, protocol.SnapshotEntity{NetId: 1001, X: 20, Y: 2, Z: 3, HP: 80})
+			}
+			entities = append(entities, protocol.SnapshotEntity{NetId: 1005, X: 30, Y: 2, Z: 3, HP: 10})
+			switch tick {
+			case 10, 12:
+				h.sendReliable(protocol.Despawn{NetId: 1001})
+			case 14:
+				h.sendReliable(protocol.Spawn{NetId: 1001, Kind: protocol.SpawnTypeNpc, X: 20, Y: 2, Z: 3, GUID: npcGuidB})
+			}
+		}
+		b, _ := protocol.EncodeSnapshot(protocol.Snapshot{Tick: uint32(tick), Entities: entities})
 		h.send(h.peer, b)
 		if h.cfg.SendMotions && tick%2 == 0 {
 			if !h.aniNameSent {

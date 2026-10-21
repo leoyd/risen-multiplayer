@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2 et 3.2b : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c et 3.3 : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -395,6 +395,51 @@ if start_host_armor armure $p 30000 Host_Sword It_Armor_Inquisitor; then
     l_sa=$(grep -n -- "SpawnAvatar NetId 2" "$h" | head -1 | cut -d: -f1)
     l_aa=$(grep -n -- "AvatarArmor NetId 2" "$h" | head -1 | cut -d: -f1)
     if [[ -n $l_sa && -n $l_aa && $l_sa -lt $l_aa ]]; then ok "armure : avatar vêtu après son apparition"; else ko "armure : SpawnAvatar puis AvatarArmor (lignes ${l_sa:-?} et ${l_aa:-?})"; fi
+fi
+
+# --- Story 3.3 : 80 PNJ simulés — Spawn{1}, Despawn, PV, au plus 54 entités par snapshot ----
+# (53 PNJ annoncés, les autres attendent ; les impairs sortent du rayon puis reviennent ; le 0 meurt.)
+p=$((base_port + 17))
+start_host_npcs() {  # comme start_host, avec --npcs
+    "$host_bin" --port "$2" --max-ms "$3" --npcs "$4" > "$work/$1.host.log" 2>&1 &
+    host_pid=$!
+    for _ in $(seq 100); do
+        grep -q "transport démarré" "$work/$1.host.log" && return 0
+        sleep 0.05
+    done
+    ko "$1 : l'hôte n'a pas démarré (scénario sauté)"; sed 's/^/    /' "$work/$1.host.log"
+    kill "$host_pid" 2>/dev/null; wait "$host_pid" 2>/dev/null
+    return 1
+}
+if start_host_npcs pnj $p 30000 80; then
+    h=$work/pnj.host.log
+    "$guest" --host 127.0.0.1 --port $p --duration 4s --quit > "$work/pnj.guest.log" 2>&1; rc=$?
+    wait $host_pid
+    g=$work/pnj.guest.log
+    expect_code "PNJ : invité" 0 $rc "$g"
+    expect_log "PNJ : premier NetId 1000 annoncé par l'hôte" "$h" "PNJ 1000 annoncé (Spawn) : GUID "
+    expect_log "PNJ : sortie du rayon" "$h" "retiré (Despawn) : hors du rayon"
+    expect_log "PNJ : mort → Despawn" "$h" "retiré (Despawn) : mort"
+    first=$(grep -m1 -n "annoncé (Spawn)" "$h" | cut -d: -f1)
+    n53=$(awk -v f="$first" 'NR >= f && /annoncé \(Spawn\)/ { n++ } NR >= f && !/annoncé \(Spawn\)/ && n > 0 { print n; exit }' "$h")
+    if [[ $n53 -eq 53 ]]; then ok "PNJ : 53 PNJ au plus au premier snapshot"; else ko "PNJ : ${n53:-?} annonces au premier snapshot (53 attendu)"; fi
+    expect_log "PNJ : PNJ en attente annoncé quand une place se libère" "$h" "PNJ 1053 annoncé (Spawn)"
+    expect_log "PNJ : évincé au retour de plus proches" "$h" "retiré (Despawn) : évincé par plus proche"
+    expect_log "PNJ : Spawn{1} reçu par l'invité" "$g" "<- Spawn PNJ netid=1000 guid="
+    expect_log "PNJ : Despawn reçu par l'invité" "$g" "<- Despawn PNJ netid=10[0-9][0-9] (poses reçues="
+    expect_log "PNJ : PV suivis par l'invité" "$g" "PNJ netid=10[0-9][0-9] PV [0-9]* -> [0-9]*"
+    expect_log "PNJ : réannonce (même NetId)" "$g" "(annonce 2)"
+    expect_log "PNJ : bilan du faux invité" "$g" "Bilan PNJ : [1-9][0-9]* vus"
+    expect_count "PNJ : rien d'ignoré par l'invité" "$g" ": ignoré (" 0
+    max=$(sed -nE 's/.*au plus ([0-9]+) entités par snapshot.*/\1/p' "$g" | tail -1)
+    if [[ -n $max && $max -le 54 && $max -ge 40 ]]; then
+        ok "PNJ : au plus $max entités par snapshot (≤ 54)"
+    else
+        ko "PNJ : ${max:-?} entités par snapshot au plus (40 à 54 attendu)"; grep "Bilan PNJ" "$g"
+    fi
+    # Un NetId n'est jamais lié à deux GUID : chaque NetId du bilan apparaît une fois.
+    dup=$(grep -oE "^.*  PNJ netid=[0-9]+" "$g" | grep -oE "netid=[0-9]+" | sort | uniq -d | wc -l)
+    if [[ $dup -eq 0 ]]; then ok "PNJ : un NetId par GUID"; else ko "PNJ : NetId en double dans le bilan"; fi
 fi
 
 # --- Story 1.5 : mort de l'hôte en session → SessionEnd{3} ----------------------------

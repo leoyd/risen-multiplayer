@@ -660,6 +660,8 @@ bool local_armor(std::string& name) {
 
 bool present() { return !g_table.empty(); }
 
+void* entity() { return g_table.empty() ? nullptr : g_table.front().entity.ptr; }
+
 void teleport_player(const Pose& pose) {
     game::Entity player;
     if (!game::get_player(player) || player.ptr == nullptr) {

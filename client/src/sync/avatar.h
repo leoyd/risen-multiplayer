@@ -64,6 +64,9 @@ bool local_weapon(std::string& name);
 bool local_armor(std::string& name);
 // Un avatar existe-t-il ? (sentinelle de diagnostic)
 bool present();
+// Entité de l'avatar (nul s'il n'y en a pas) : sync/npc l'exclut de la liste des PNJ et lit sa
+// pose pour le rayon (story 3.3). Le temps de la frame seulement : jamais gardée par l'appelant.
+void* entity();
 // Déplace le héros local (invité, à l'entrée en session) par Entity::MoveTo.
 void teleport_player(const core::session::Pose& pose);
 

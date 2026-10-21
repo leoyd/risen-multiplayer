@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 
@@ -101,7 +102,28 @@ type sessionResult struct {
 	ArmorsTx     int // Armor envoyés (Spawn, scénario ou écho, v8)
 	ArmorsRx     int // Armor reçus de l'hôte
 	DespawnsRx   int // Despawn reçus de l'hôte (v3)
-	EndReason    string
+	// Répliques des PNJ (v9, story 3.3).
+	NpcSpawnsRx   int                  // Spawn{1} acceptés
+	NpcDespawnsRx int                  // Despawn de PNJ annoncés
+	NpcPosesRx    int                  // entités de snapshot d'un PNJ annoncé
+	NpcUnknownRx  int                  // entités de snapshot inattendues (ni le héros de l'hôte ni un PNJ annoncé), ignorées
+	NpcIgnored    int                  // Spawn{1} ou Despawn de PNJ refusés (journalisés)
+	MaxEntities   int                  // plus grand nombre d'entités vu dans un snapshot de l'hôte
+	Npcs          map[uint32]*npcStats // bilan par NetId
+	EndReason     string
+}
+
+// npcStats : bilan d'un PNJ annoncé par l'hôte (v9) : annonces, poses reçues, PV.
+type npcStats struct {
+	GUID      [protocol.GuidSize]byte
+	Present   bool // annoncé, pas encore retiré
+	Spawns    int
+	Despawns  int
+	Poses     int
+	HPSeen    bool
+	FirstHP   uint16
+	LastHP    uint16
+	HPChanges int
 }
 
 // logger : une ligne horodatée par événement.
@@ -159,6 +181,7 @@ type guest struct {
 	deathSent      bool
 	motionRxPeriod int
 	paramRxPeriod  int
+	npcPosePeriod  int       // entités de PNJ reçues depuis la dernière ligne de bilan
 	endAt          time.Time // fin de --duration (zéro = aucune)
 	extraHello     bool      // --dup-hello : Hello supplémentaire encore à envoyer
 	incoming       chan datagram
@@ -168,6 +191,7 @@ type guest struct {
 func runSession(ctx context.Context, conn *net.UDPConn, cfg sessionConfig, out io.Writer) sessionResult {
 	g := &guest{cfg: cfg, conn: conn, log: &logger{out: out}, rng: rand.New(rand.NewSource(cfg.Seed)),
 		start: time.Now()}
+	g.res.Npcs = map[uint32]*npcStats{}
 	return g.run(ctx)
 }
 
@@ -222,9 +246,10 @@ func (g *guest) run(ctx context.Context) sessionResult {
 			g.sendSnapshot(now)
 			g.playEvents(now)
 			if !now.Before(g.nextHBLog) {
-				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d ; MotionParam reçus=%d",
+				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d ; MotionParam reçus=%d ; PNJ suivis=%d poses=%d inattendues=%d",
 					g.hbTxPeriod, g.hbRxPeriod, g.res.HeartbeatsTx, g.res.HeartbeatsRx, g.snapTxPeriod, g.snapRxPeriod,
-					g.motionRxPeriod, g.paramRxPeriod)
+					g.motionRxPeriod, g.paramRxPeriod, g.npcPresent(), g.npcPosePeriod, g.res.NpcUnknownRx)
+				g.npcPosePeriod = 0
 				g.hbTxPeriod, g.hbRxPeriod = 0, 0
 				g.snapTxPeriod, g.snapRxPeriod = 0, 0
 				g.motionRxPeriod = 0
@@ -504,15 +529,27 @@ func (g *guest) handle(d datagram) (sessionResult, bool) {
 			g.res.SnapshotsBad++
 			return sessionResult{}, false
 		}
+		if len(s.Entities) > g.res.MaxEntities {
+			g.res.MaxEntities = len(s.Entities)
+		}
+		hostSeen := false
 		for _, e := range s.Entities {
-			if e.NetId == protocol.HostNetId && finite(e.X, e.Y, e.Z, e.Yaw) {
+			if !finite(e.X, e.Y, e.Z, e.Yaw) {
+				continue
+			}
+			if e.NetId == protocol.HostNetId {
+				if hostSeen {
+					continue
+				}
+				hostSeen = true
 				g.res.SnapshotsRx++
 				g.snapRxPeriod++
 				if g.cfg.Echo {
 					g.echoSnapshot(time.Now(), e)
 				}
-				break
+				continue
 			}
+			g.npcEntity(e)
 		}
 		return sessionResult{}, false
 	case protocol.ChannelReliable:
@@ -638,9 +675,17 @@ func (g *guest) drain() (sessionResult, bool) {
 			g.res.HeartbeatsRx++
 			g.hbRxPeriod++
 		case protocol.Spawn:
+			if m.Kind == protocol.SpawnTypeNpc {
+				g.npcSpawn(m)
+				continue
+			}
 			g.res.SpawnsRx++
 			g.log.printf("<- Spawn netid=%d type=%d pos=(%g, %g, %g) lacet=%g", m.NetId, m.Kind, m.X, m.Y, m.Z, m.Yaw)
 		case protocol.Despawn:
+			if m.NetId >= protocol.FirstNpcNetId {
+				g.npcDespawn(m.NetId)
+				continue
+			}
 			g.res.DespawnsRx++
 			g.log.printf("<- Despawn netid=%d", m.NetId)
 		case protocol.AniName:
@@ -716,7 +761,111 @@ func (g *guest) linger() {
 	}
 }
 
+// --- Répliques des PNJ (v9, story 3.3) : mêmes règles d'acceptation que la DLL (§8) ---
+
+func (g *guest) npcPresent() int {
+	n := 0
+	for _, s := range g.res.Npcs {
+		if s.Present {
+			n++
+		}
+	}
+	return n
+}
+
+// npcSpawn : Spawn{1} de l'hôte. Accepté si NetId ≥ 1000, pose finie et NetId non annoncé.
+func (g *guest) npcSpawn(m protocol.Spawn) {
+	what := fmt.Sprintf("<- Spawn PNJ netid=%d guid=%x pos=(%g, %g, %g) lacet=%g", m.NetId, m.GUID[:], m.X, m.Y, m.Z, m.Yaw)
+	s := g.res.Npcs[m.NetId]
+	reason := ""
+	switch {
+	case m.NetId < protocol.FirstNpcNetId:
+		reason = "NetId < 1000"
+	case !finite(m.X, m.Y, m.Z, m.Yaw):
+		reason = "pose non finie"
+	case s != nil && s.Present:
+		reason = "NetId déjà annoncé"
+	case s != nil && s.GUID != m.GUID:
+		reason = "NetId déjà lié à un autre GUID"
+	}
+	if reason != "" {
+		g.res.NpcIgnored++
+		g.log.printf("%s : ignoré (%s)", what, reason)
+		return
+	}
+	if s == nil {
+		s = &npcStats{GUID: m.GUID}
+		g.res.Npcs[m.NetId] = s
+	}
+	s.Present = true
+	s.Spawns++
+	g.res.NpcSpawnsRx++
+	g.log.printf("%s (annonce %d)", what, s.Spawns)
+}
+
+func (g *guest) npcDespawn(netID uint32) {
+	s := g.res.Npcs[netID]
+	if s == nil || !s.Present {
+		g.res.NpcIgnored++
+		g.log.printf("<- Despawn PNJ netid=%d : ignoré (NetId non annoncé)", netID)
+		return
+	}
+	s.Present = false
+	s.Despawns++
+	g.res.NpcDespawnsRx++
+	g.log.printf("<- Despawn PNJ netid=%d (poses reçues=%d, PV=%d)", netID, s.Poses, s.LastHP)
+}
+
+// npcEntity : entité de snapshot d'un autre NetId que le héros de l'hôte. Tout ce qui n'est pas
+// un PNJ annoncé (NetId < 1000 compris) est compté dans NpcUnknownRx.
+func (g *guest) npcEntity(e protocol.SnapshotEntity) {
+	s := g.res.Npcs[e.NetId]
+	if e.NetId < protocol.FirstNpcNetId || s == nil || !s.Present {
+		g.res.NpcUnknownRx++
+		return
+	}
+	s.Poses++
+	g.res.NpcPosesRx++
+	g.npcPosePeriod++
+	if !s.HPSeen {
+		s.HPSeen = true
+		s.FirstHP = e.HP
+		s.LastHP = e.HP
+		g.log.printf("PNJ netid=%d premier snapshot pos=(%g, %g, %g) PV=%d", e.NetId, e.X, e.Y, e.Z, e.HP)
+		return
+	}
+	if e.HP != s.LastHP {
+		s.HPChanges++
+		g.log.printf("PNJ netid=%d PV %d -> %d", e.NetId, s.LastHP, e.HP)
+		s.LastHP = e.HP
+	}
+}
+
+// npcSummary : une ligne de bilan par PNJ vu, par NetId croissant.
+func (g *guest) npcSummary() {
+	if len(g.res.Npcs) == 0 {
+		return
+	}
+	ids := make([]uint32, 0, len(g.res.Npcs))
+	for id := range g.res.Npcs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	g.log.printf("Bilan PNJ : %d vus, Spawn=%d Despawn=%d poses=%d entités inattendues=%d, au plus %d entités par snapshot",
+		len(ids), g.res.NpcSpawnsRx, g.res.NpcDespawnsRx, g.res.NpcPosesRx, g.res.NpcUnknownRx, g.res.MaxEntities)
+	for _, id := range ids {
+		s := g.res.Npcs[id]
+		present := ""
+		if s.Present {
+			present = " présent"
+		}
+		g.log.printf("  PNJ netid=%d guid=%x Spawn=%d Despawn=%d poses=%d PV %d -> %d (%d changements)%s", id, s.GUID[:],
+			s.Spawns, s.Despawns, s.Poses, s.FirstHP, s.LastHP, s.HPChanges, present)
+	}
+}
+
 func (g *guest) end(code int, reason string) sessionResult {
+	g.npcSummary()
 	g.res.Code = code
 	g.res.EndReason = reason
 	g.log.printf("Ended raison=%s (Hello envoyés=%d, heartbeats envoyés=%d reçus=%d, jetés=%d) sortie=%d",

@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 8 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 9 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 8;
+inline constexpr std::uint16_t kProtocolVersion = 9;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -125,14 +125,23 @@ struct Motion {
 inline constexpr std::uint32_t kHostNetId = 1;   // avatar de l'hôte
 inline constexpr std::uint32_t kGuestNetId = 2;  // avatar de l'invité
 inline constexpr std::uint8_t kSpawnTypeHero = 0;  // Spawn::type : héros d'un joueur
+inline constexpr std::uint8_t kSpawnTypeNpc = 1;   // Spawn::type : PNJ répliqué (v9, story 3.3)
+inline constexpr std::uint32_t kFirstNpcNetId = 1000;  // NetId des PNJ : attribués par l'hôte à partir de 1000
+inline constexpr std::size_t kGuidSize = 16;  // GUID d'un PNJ : 16 premiers octets de eCDynamicEntity::GetID
+inline constexpr std::size_t kSpawnHeroSize = 22;  // Spawn de type 0, MsgType compris
+inline constexpr std::size_t kSpawnNpcSize = 38;   // Spawn de type 1 (GUID après le lacet)
 
-// Apparition d'une entité dont l'émetteur a l'autorité. `type` est gardé brut : un type
-// inconnu se décode, l'appelant l'ignore.
+using Guid = std::array<std::uint8_t, kGuidSize>;
+
+// Apparition d'une entité dont l'émetteur a l'autorité. Taille variable (v9) : le décodeur
+// branche sur `type` ; un type autre que 0 ou 1 est refusé (BadValue), à l'encodage comme au
+// décodage. `guid` n'est transmis que pour le type 1 (ignoré, et décodé à zéro, pour le type 0).
 struct Spawn {
     std::uint32_t net_id = 0;
     std::uint8_t type = kSpawnTypeHero;
     float x = 0.0f, y = 0.0f, z = 0.0f;  // position (unités du monde)
     float yaw = 0.0f;                    // radians, atan2(m[8], m[10]) (AD-7)
+    Guid guid{};                         // type 1 seulement
 };
 
 // Retrait d'une entité annoncée par Spawn.
@@ -149,7 +158,7 @@ struct SnapshotEntity {
     std::uint32_t net_id = 0;
     float x = 0.0f, y = 0.0f, z = 0.0f;
     float yaw = 0.0f;  // radians, atan2(m[8], m[10])
-    std::uint16_t hp = 0;
+    std::uint16_t hp = 0;  // v9 : PSSkills::GetHitPoints, borné à [0, 65535]
 };
 
 struct Snapshot {

@@ -94,6 +94,12 @@ constexpr const char* kFindStackByEquipSlot = "?FindStackIndex@PSInventory@@QEBA
 constexpr const char* kUnEquipStack = "?UnEquipStack@PSInventory@@QEAA_NH@Z";
 constexpr const char* kGui2 = "gui2";
 constexpr const char* kPrintGameLogF = "?PrintGameLogF@GUI2@@QEAAXW4gELogMessageType@@PEBDZZ";
+// Répliques des PNJ (story 3.3). bTObjArray<Entity> : { Entity* data; u32 count; u32 capacité }
+// (désassemblage de Entity::GetNPCs, qui appelle UpdateEntityLists puis copie ms_arrNPCs).
+constexpr const char* kNpcArray = "?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A";
+constexpr const char* kUpdateEntityLists = "?UpdateEntityLists@Entity@@KAXXZ";
+constexpr const char* kIsPlayer = "?IsPlayer@Entity@@QEBA_NXZ";
+using VoidStaticFn = void (*)();
 // Décision « à terre ou mort » sur un coup (self = ce qui frappe, other = la victime ; rend 0
 // sans rien faire si la victime a encore des PV). 5ᵉ test : point d'interception de la mort.
 constexpr const char* kDownOrDead[3] = {
@@ -184,6 +190,26 @@ template <typename Fn>
 Fn pick(Fn inventory, Fn combat) {
     return g_inv_resolved ? inventory : (g_resolved ? combat : nullptr);
 }
+// Répliques des PNJ de la session (story 3.3) : sous-ensemble résolu à part, sans la sonde.
+struct NpcAbi {
+    const void* npc_array = nullptr;  // Entity::ms_arrNPCs (donnée)
+    VoidStaticFn update_entity_lists = nullptr;
+    BoolGetterFn is_player = nullptr;
+    IntGetterFn get_hit_points = nullptr;
+    SetHitPointsFn set_hit_points = nullptr;
+    GetIdFn get_id = nullptr;
+    RuntimeGetEntityFn runtime_get_entity = nullptr;
+    void* routine_on_process = nullptr;
+};
+NpcAbi g_npc;
+bool g_npc_resolved = false;
+
+// Pointeur de PNJ : celui de resolve_npc, sinon celui de resolve_combat, sinon nul.
+template <typename Fn>
+Fn pick_npc(Fn npc, Fn combat) {
+    return g_npc_resolved ? npc : (g_resolved ? combat : nullptr);
+}
+
 ScriptFn g_kill = nullptr;
 ScriptFn g_defeat = nullptr;
 SpuGetEntityFn g_spu_get_other = nullptr;
@@ -287,6 +313,29 @@ bool resolve_inventory(const char*& missing) {
     return true;
 }
 
+bool resolve_npc(const char*& missing) {
+    HMODULE script = GetModuleHandleW(L"Script.dll");
+    HMODULE engine = GetModuleHandleW(L"Engine.dll");
+    HMODULE game = GetModuleHandleW(L"Game.dll");
+    if (script == nullptr || engine == nullptr || game == nullptr) {
+        missing = script == nullptr ? "Script.dll" : (engine == nullptr ? "Engine.dll" : "Game.dll");
+        return false;
+    }
+    NpcAbi a;
+    const bool ok = lookup(script, kNpcArray, a.npc_array, missing) &&
+                    lookup(script, kUpdateEntityLists, a.update_entity_lists, missing) &&
+                    lookup(script, kIsPlayer, a.is_player, missing) &&
+                    lookup(script, kGetHitPoints, a.get_hit_points, missing) &&
+                    lookup(script, kSetHitPoints, a.set_hit_points, missing) &&
+                    lookup(engine, kGetId, a.get_id, missing) &&
+                    lookup(game, kRuntimeGetEntity, a.runtime_get_entity, missing) &&
+                    lookup(game, kRoutineOnProcess, a.routine_on_process, missing);
+    if (!ok) return false;
+    g_npc = a;
+    g_npc_resolved = true;
+    return true;
+}
+
 bool resolve_script_game(const char*& missing) {
     // Jamais chargée par nous : son DllMain et son ScriptInit restent à l'initiative du jeu.
     // [ASSUMPTION] le jeu la charge avant Script_Multiplayer (ordre alphabétique ?) : le log
@@ -319,7 +368,7 @@ bool resolve_script_game(const char*& missing) {
     return true;
 }
 
-void* routine_on_process_address() { return g_abi.routine_on_process; }
+void* routine_on_process_address() { return pick_npc(g_npc.routine_on_process, g_abi.routine_on_process); }
 void* kill_address() { return reinterpret_cast<void*>(g_kill); }
 void* down_or_dead_address(int which) {
     return which >= 0 && which < 3 ? reinterpret_cast<void*>(g_down_or_dead[which]) : nullptr;
@@ -636,9 +685,10 @@ bool get_dcc_radius(const Entity& e, float& out) {
 
 bool get_entity_id(const Entity& e, std::uint8_t (&out)[kPropertyIdSize]) {
     std::memset(out, 0, sizeof out);
-    if (!g_resolved || e.ptr == nullptr) return false;
+    const GetIdFn get_id = pick_npc(g_npc.get_id, g_abi.get_id);
+    if (get_id == nullptr || e.ptr == nullptr) return false;
     __try {
-        const void* id = g_abi.get_id(e.ptr);
+        const void* id = get_id(e.ptr);
         if (id == nullptr) return false;
         raw_copy(out, id, sizeof out);
         return true;
@@ -649,9 +699,10 @@ bool get_entity_id(const Entity& e, std::uint8_t (&out)[kPropertyIdSize]) {
 
 bool runtime_entity_by_id(const std::uint8_t (&id)[kPropertyIdSize], void*& out) {
     out = nullptr;
-    if (!g_resolved) return false;
+    const RuntimeGetEntityFn get_entity = pick_npc(g_npc.runtime_get_entity, g_abi.runtime_get_entity);
+    if (get_entity == nullptr) return false;
     __try {
-        out = g_abi.runtime_get_entity(nullptr, id);  // this ignoré (désassemblage)
+        out = get_entity(nullptr, id);  // this ignoré (désassemblage)
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = nullptr;
@@ -659,17 +710,67 @@ bool runtime_entity_by_id(const std::uint8_t (&id)[kPropertyIdSize], void*& out)
     }
 }
 
-bool get_hit_points(const Entity& e, int& out) { return call_int(g_abi.get_hit_points, e, out); }
+bool get_hit_points(const Entity& e, int& out) {
+    return call_int(pick_npc(g_npc.get_hit_points, g_abi.get_hit_points), e, out);
+}
 bool get_hit_points_max(const Entity& e, int& out) { return call_int(g_abi.get_hit_points_max, e, out); }
 
 bool set_hit_points(const Entity& e, int value, int modifier) {
-    if (!g_resolved || e.ptr == nullptr) return false;
+    const SetHitPointsFn fn = pick_npc(g_npc.set_hit_points, g_abi.set_hit_points);
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
-        g_abi.set_hit_points(&e, value, modifier);
+        fn(&e, value, modifier);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+namespace {
+struct RawEntityArray {
+    Entity* data;
+    std::uint32_t count;
+};
+
+bool update_lists_and_read(RawEntityArray& arr) {
+    __try {
+        g_npc.update_entity_lists();
+        raw_copy(&arr, g_npc.npc_array, sizeof arr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool copy_entities(const Entity* src, Entity* dst, std::size_t n) {
+    __try {
+        raw_copy(dst, src, n * sizeof(Entity));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+}  // namespace
+
+bool read_npc_list(std::vector<Entity>& out, std::size_t cap, std::size_t& total) {
+    out.clear();
+    total = 0;
+    if (!g_npc_resolved) return false;
+    RawEntityArray arr{nullptr, 0};
+    if (!update_lists_and_read(arr)) return false;
+    if (arr.data == nullptr || arr.count == 0) return true;
+    total = arr.count;
+    const std::size_t n = arr.count < cap ? arr.count : cap;
+    out.resize(n);
+    if (!copy_entities(arr.data, out.data(), n)) {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+bool is_player(const Entity& e, bool& out) {
+    return call_bool_getter(g_npc_resolved ? g_npc.is_player : nullptr, e, out);
 }
 
 bool get_damage_amount(const Entity& weapon, long& out) {

@@ -60,12 +60,15 @@ expect_log "nominal : log_level=info par défaut" "$d" "config OK (.*log_level=i
 expect_log "nominal : sonde désactivée par défaut" "$d" "sonde désactivée"
 # Story 1.4 : sans sonde, la session pose ses hooks (OnProcess ; PlayMotion et SetRagDollEnabled
 # pour les avatars depuis la story 2.2). Le banc n'appelle jamais OnProcess : aucun tick.
-expect_log "nominal : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX)"
+expect_log "nominal : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, gCScriptRoutine_PS::OnProcess)"
 expect_no_log "nominal : pas de hooks de la sonde" "$d" "hooks installés (OnProcess, PlayMotion"
 expect_log "nominal : session prête" "$d" "\[sync\] session prête (rôle invité)"
 # Story 3.2 (AD-3) : symboles d'inventaire résolus en tout ou rien à l'installation de la session.
 expect_log "nominal : inventaire de session résolu" "$d" "\[hooks\] inventaire de session résolu (arme de l'avatar)"
 expect_no_log "nominal : aucun symbole d'inventaire manquant" "$d" "symbole d'inventaire introuvable"
+# Story 3.3 (AD-3) : symboles des répliques de PNJ résolus en tout ou rien ; hook de routine posé.
+expect_log "nominal : PNJ de session résolus" "$d" "\[hooks\] PNJ de session résolus (répliques)"
+expect_no_log "nominal : aucun symbole des PNJ manquant" "$d" "symbole des PNJ introuvable"
 expect_no_log "nominal : log_level=info, aucune ligne DEBUG" "$d" "DEBUG"
 
 # Spike J1 : sonde explicitement désactivée (hooks de session), puis activée (hooks posés sur les vraies
@@ -74,7 +77,7 @@ d=$(setup sonde_off $'role = host\nprobe = 0\nlog_level = DEBUG')
 run "sonde off" "$d"
 expect_log "log_level = DEBUG lu" "$d" "config OK (.*log_level=debug)"
 expect_log "probe = 0 : sonde désactivée" "$d" "sonde désactivée"
-expect_log "probe = 0 : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX)"
+expect_log "probe = 0 : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, gCScriptRoutine_PS::OnProcess)"
 expect_no_log "probe = 0 : pas de hooks de la sonde" "$d" "hooks installés (OnProcess, PlayMotion"
 expect_log "probe = 0 : session prête" "$d" "\[sync\] session prête (rôle hôte)"
 expect_no_log "probe = 0 : aucun hook J2" "$d" "\[hooks\] J2"
@@ -85,6 +88,7 @@ run "sonde on" "$d"
 expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, PlayMotion, SetRagDollEnabled)"
 expect_log "probe = 1 : mod actif" "$d" "mod actif"
 expect_no_log "probe = 1 : inventaire de session non résolu" "$d" "inventaire de session résolu"
+expect_no_log "probe = 1 : PNJ de session non résolus" "$d" "PNJ de session résolus"
 expect_no_log "probe = 1 : pas de hook de session" "$d" "hooks de session installés"
 expect_no_log "probe = 1 : aucune session" "$d" "\[sync\]"
 # Spike J2 (story 3.0) : hooks facultatifs. Le banc ne charge jamais Script_Game.dll (et le mod
@@ -116,6 +120,23 @@ for sym in '?GetRightHoldStack@PSInventory@@QEBAHXZ' '?GetRightHoldItem@PSInvent
     fi
 done
 
+# Story 3.3 : symboles de resolve_npc présents dans les DLL du jeu (Script, Engine, Game).
+for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Script.dll|?UpdateEntityLists@Entity@@KAXXZ' \
+    'Script.dll|?IsPlayer@Entity@@QEBA_NXZ' 'Script.dll|?GetHitPoints@PSSkills@@QEBAHXZ' \
+    'Script.dll|?SetHitPoints@PSSkills@@QEAAXHW4gESkillModifier@@@Z' 'Script.dll|?IsDead@Entity@@QEBA_NXZ' \
+    'Script.dll|?GetPose@Entity@@QEBA?AVbCMatrix@@XZ' 'Script.dll|?MoveTo@Entity@@QEAAXAEBVbCMatrix@@@Z' \
+    'Engine.dll|?GetID@eCDynamicEntity@@UEBAAEBVbCPropertyID@@XZ' \
+    'Game.dll|?GetEntity@gCRuntimeInfo@@QEAAPEAVeCEntity@@AEBVbCPropertyID@@@Z' \
+    'Game.dll|?OnProcess@gCScriptRoutine_PS@@UEAAXXZ'; do
+    dll=${entry%%|*}
+    sym=${entry#*|}
+    if grep -qaF -- "$sym" "$risen_bin/$dll"; then
+        echo "[ OK ] $dll exporte $sym"
+    else
+        echo "[ÉCHEC] $dll : $sym introuvable"; failures=$((failures + 1))
+    fi
+done
+
 # Hook impossible : jeu sans Script.dll (Game.dll n'en dépend pas). Attendu : erreur
 # explicite, sonde inactive, mod toujours actif et descripteur intact.
 no_script_bin=$work/no_script_bin
@@ -139,6 +160,7 @@ expect_log "session impossible : retour au solo" "$d" "session impossible"
 expect_no_log "session impossible : aucun hook" "$d" "hooks installés"
 expect_no_log "session impossible : pas de session prête" "$d" "session prête"
 expect_no_log "session impossible : inventaire non résolu" "$d" "inventaire de session résolu"
+expect_no_log "session impossible : PNJ non résolus" "$d" "PNJ de session résolus"
 expect_log "session impossible : mod actif" "$d" "mod actif"
 
 d=$(setup absente)

@@ -2,11 +2,13 @@
 
 #include "common/log.h"
 #include "core/session.h"
+#include "game/combat.h"
 #include "game/entity.h"
 #include "net/transport.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
 #include "sync/local_capture.h"
+#include "sync/npc.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -131,6 +133,8 @@ cs::World read_world(cs::State state) {
             w.z = m.m[14];
             w.yaw = std::atan2(m.m[8], m.m[10]);  // AD-7
         }
+        // PV du héros (v9, story 3.3), dans chaque snapshot ; illisibles : 0.
+        if (!game::get_hit_points(player, w.hp)) w.hp = 0;
     }
     return w;
 }
@@ -198,6 +202,23 @@ void execute(cs::Output out) {
             }
             if (const auto* ea = std::get_if<cs::EquipAvatar>(&cmd)) {
                 avatar::equip(ea->net_id, ea->names);
+                continue;
+            }
+            // Répliques des PNJ (story 3.3), côté invité : sync/npc seul écrit leur état.
+            if (const auto* sp = std::get_if<cs::SpawnNpc>(&cmd)) {
+                npc::spawn(sp->net_id, sp->guid, sp->pose);
+                continue;
+            }
+            if (const auto* mn = std::get_if<cs::MoveNpc>(&cmd)) {
+                npc::move(mn->net_id, mn->pose);
+                continue;
+            }
+            if (const auto* hp = std::get_if<cs::SetNpcHp>(&cmd)) {
+                npc::set_hp(hp->net_id, hp->hp);
+                continue;
+            }
+            if (const auto* rn = std::get_if<cs::ReleaseNpc>(&cmd)) {
+                npc::release(rn->net_id);
                 continue;
             }
             if (g_transport == nullptr) continue;
@@ -299,7 +320,10 @@ void local_captures(const cs::World& world) {
 
 void frame() {
     const cs::State state = g_session->state();
-    const cs::World world = read_world(state);
+    cs::World world = read_world(state);
+    const std::uint64_t now = now_ms();
+    // Hôte : PNJ lus seulement au tick qui enverra un snapshot (story 3.3).
+    if (g_session->wants_npcs(now)) npc::read_host(world);
     g_inputs.clear();
     if (g_transport != nullptr) {
         net::Event ev;
@@ -314,7 +338,14 @@ void frame() {
         }
     }
     local_captures(world);
-    execute(g_session->tick(now_ms(), world, g_inputs));
+    // Story 3.3 : répliques revérifiées une fois par frame, avant leurs commandes ; appels de
+    // routine bloqués (IA figée), pour le bilan debug.
+    if (npc::count() != 0) npc::validate();
+    world.routine_blocked = sync::anim_filter().take_routine_blocked();
+    execute(g_session->tick(now, world, g_inputs));
+    // Filet de sécurité : hors session, aucune réplique ne reste au registre (ReleaseNpc déjà
+    // exécutés à Ended).
+    if (g_session->state() != cs::State::InSession) npc::release_all();
 }
 
 }  // namespace

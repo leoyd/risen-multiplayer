@@ -525,3 +525,49 @@ func TestGuestPoseNear(t *testing.T) {
 		}
 	}
 }
+
+// Story 3.3 : PNJ annoncés par l'hôte, suivis dans les snapshots, bilan par NetId (§8 v9).
+func TestNpcReplicas(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.SendNpcs = true
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1500 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	if r.res.SpawnsRx != 1 {
+		t.Errorf("Spawn de héros reçus : %d, attendu 1 (les Spawn{1} sont comptés à part)", r.res.SpawnsRx)
+	}
+	if r.res.NpcSpawnsRx != 3 {
+		t.Errorf("Spawn{1} acceptés : %d, attendu 3 (1000, 1001, puis 1001 réannoncé)", r.res.NpcSpawnsRx)
+	}
+	if r.res.NpcDespawnsRx != 1 {
+		t.Errorf("Despawn de PNJ acceptés : %d, attendu 1", r.res.NpcDespawnsRx)
+	}
+	if r.res.NpcIgnored != 3 {
+		t.Errorf("messages de PNJ ignorés : %d, attendu 3 (Spawn en double, NetId 999, Despawn répété)", r.res.NpcIgnored)
+	}
+	if r.res.NpcPosesRx < 20 || r.res.NpcUnknownRx < 10 {
+		t.Errorf("poses de PNJ %d, entités inconnues %d", r.res.NpcPosesRx, r.res.NpcUnknownRx)
+	}
+	if r.res.MaxEntities < 3 || r.res.MaxEntities > protocol.MaxSnapshotEntities {
+		t.Errorf("au plus %d entités par snapshot", r.res.MaxEntities)
+	}
+	a, b := r.res.Npcs[1000], r.res.Npcs[1001]
+	if a == nil || b == nil {
+		t.Fatalf("bilan : %v", r.res.Npcs)
+	}
+	if a.GUID != npcGuidA || b.GUID != npcGuidB || a.FirstHP != 150 || a.HPChanges == 0 || a.LastHP >= 150 {
+		t.Errorf("PNJ 1000 : %+v", *a)
+	}
+	if b.Spawns != 2 || b.Despawns != 1 || !b.Present || b.LastHP != 80 {
+		t.Errorf("PNJ 1001 : %+v", *b)
+	}
+	if _, ok := r.res.Npcs[999]; ok {
+		t.Error("NetId 999 accepté")
+	}
+	expectLog(t, r, "<- Spawn PNJ netid=1000 guid=c3624668", "ignoré (NetId déjà annoncé)", "ignoré (NetId < 1000)",
+		"<- Despawn PNJ netid=1001", "<- Despawn PNJ netid=1001 : ignoré (NetId non annoncé)", "PNJ netid=1000 PV 150 -> 149",
+		"Bilan PNJ : 2 vus", "  PNJ netid=1000 guid=c3624668")
+}

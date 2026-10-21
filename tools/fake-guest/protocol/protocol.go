@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 8, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 9, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 8
+	ProtocolVersion   = 9
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -59,6 +59,11 @@ const (
 	HostNetId     uint32 = 1
 	GuestNetId    uint32 = 2
 	SpawnTypeHero uint8  = 0
+	SpawnTypeNpc  uint8  = 1    // v9 : PNJ répliqué, avec GUID
+	FirstNpcNetId uint32 = 1000 // NetId des PNJ, attribués par l'hôte
+	GuidSize             = 16
+	SpawnHeroSize        = 22 // Spawn de type 0, MsgType compris
+	SpawnNpcSize         = 38 // Spawn de type 1
 )
 
 // Raisons de Reject.
@@ -94,7 +99,7 @@ var (
 	ErrUnsupportedVersion = errors.New("version du protocole non prise en charge")
 	ErrBadLength          = errors.New("longueur de texte hors bornes")
 	ErrTrailingBytes      = errors.New("octets en trop")
-	ErrBadValue           = errors.New("champ hors domaine") // snapshot de plus de 54 entités
+	ErrBadValue           = errors.New("champ hors domaine") // Motion, MotionParam, type de Spawn, snapshot de plus de 54 entités
 )
 
 // ErrOutOfBounds : refus de l'encodeur (texte hors bornes, version ≠ ProtocolVersion, > 1200 octets,
@@ -133,13 +138,18 @@ type Heartbeat struct{}
 
 type SessionEnd struct{ Reason uint8 }
 
-// Spawn : apparition d'une entité ; Kind (champ `type` du §4) est gardé brut (0 = héros).
+// Spawn : apparition d'une entité. Kind (champ `type` du §4) : 0 = héros, 1 = PNJ (v9), autre
+// refusé (ErrBadValue au décodage, ErrOutOfBounds à l'encodage). GUID n'est transmis que pour
+// le type 1 (16 premiers octets de eCDynamicEntity::GetID).
 type Spawn struct {
 	NetId   uint32
 	Kind    uint8
 	X, Y, Z float32
 	Yaw     float32
+	GUID    [GuidSize]byte
 }
+
+func validSpawn(m Spawn) bool { return m.Kind == SpawnTypeHero || m.Kind == SpawnTypeNpc }
 
 type Despawn struct{ NetId uint32 }
 
@@ -308,6 +318,9 @@ func (w *writer) message(m Message) {
 		w.f32(m.Y)
 		w.f32(m.Z)
 		w.f32(m.Yaw)
+		if m.Kind == SpawnTypeNpc {
+			w.b = append(w.b, m.GUID[:]...)
+		}
 	case Despawn:
 		w.u32(m.NetId)
 	case AniName:
@@ -388,7 +401,11 @@ func EncodeReliable(m Message) ([]byte, error) {
 		if !inBounds(m.Name, 0, MaxArmorName) {
 			return nil, ErrOutOfBounds
 		}
-	case Heartbeat, SessionEnd, Spawn, Despawn, Death:
+	case Spawn:
+		if !validSpawn(m) {
+			return nil, ErrOutOfBounds
+		}
+	case Heartbeat, SessionEnd, Despawn, Death:
 	default:
 		return nil, ErrOutOfBounds
 	}
@@ -551,6 +568,16 @@ func DecodeReliable(b []byte) (Message, error) {
 		return SessionEnd{Reason: v}, nil
 	case TypeSpawn:
 		m := Spawn{NetId: r.u32(), Kind: r.u8(), X: r.f32(), Y: r.f32(), Z: r.f32(), Yaw: r.f32()}
+		if r.err != nil {
+			return nil, r.err
+		}
+		// v9 : la taille dépend du type ; un type inconnu n'est pas lisible.
+		if !validSpawn(m) {
+			return nil, ErrBadValue
+		}
+		if m.Kind == SpawnTypeNpc {
+			copy(m.GUID[:], r.take(GuidSize))
+		}
 		if err := r.finish(); err != nil {
 			return nil, err
 		}

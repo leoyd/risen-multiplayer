@@ -262,3 +262,36 @@ TEST("anim_filter : classify_ragdoll — désactivation d'un avatar passe sans c
     CHECK(f.classify_ragdoll(&other, false, 1) == Verdict::Pass);
     CHECK_EQ(f.take_blocked(), 0u);
 }
+
+TEST("registre : blocks_routine — seul le PS de routine d'une réplique de PNJ est figé (story 3.3)") {
+    AnimFilter f;
+    int routine_b = 0;
+    CHECK(!f.blocks_routine(&g_routine_a));  // registre vide
+    CHECK(!f.blocks_routine(nullptr));
+    // Un avatar qui aurait un PS de routine n'est pas figé par ce hook.
+    TrackedEntity avatar;
+    avatar.entity = &g_entity_b;
+    avatar.routine_ps = &routine_b;
+    avatar.role = EntityRole::Avatar;
+    f.track(avatar);
+    CHECK(!f.blocks_routine(&routine_b));
+    TrackedEntity npc;
+    npc.entity = &g_entity_a;
+    npc.routine_ps = &g_routine_a;
+    npc.role = EntityRole::NpcReplica;
+    f.track(npc);
+    CHECK(f.blocks_routine(&g_routine_a));
+    CHECK(f.blocks_routine(&g_routine_a));
+    CHECK(!f.blocks_routine(&g_ps_other));
+    CHECK_EQ(f.take_routine_blocked(), 2u);
+    CHECK_EQ(f.take_routine_blocked(), 0u);
+    // Sans PS d'animation, la réplique ne bloque aucun PlayMotion (animations : story 3.4).
+    CHECK(f.classify(kOther, 1) == Verdict::Pass);
+    CHECK_EQ(f.take_blocked(), 0u);
+    // Libérée : IA rendue.
+    f.untrack(&g_entity_a);
+    CHECK(!f.blocks_routine(&g_routine_a));
+    f.track(npc);
+    f.clear();
+    CHECK(!f.blocks_routine(&g_routine_a));
+}

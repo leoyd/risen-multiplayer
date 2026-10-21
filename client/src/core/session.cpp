@@ -3,6 +3,7 @@
 #include "core/equipment.h"
 #include "core/protocol.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <utility>
@@ -47,6 +48,25 @@ std::string motion_text(const proto::Motion& m) {
 
 std::string net_id_text(std::uint32_t id) {
     return id == proto::kHostNetId ? "1 (hôte)" : id == proto::kGuestNetId ? "2 (invité)" : std::to_string(id);
+}
+
+std::string guid_text(const proto::Guid& g) {
+    char buf[2 * proto::kGuidSize + 1];
+    for (std::size_t i = 0; i < g.size(); ++i) std::snprintf(buf + 2 * i, 3, "%02x", static_cast<unsigned>(g[i]));
+    return buf;
+}
+
+bool finite_pose(float x, float y, float z, float yaw) {
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::isfinite(yaw);
+}
+
+float distance(const Pose& a, const Pose& b) {
+    const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+std::uint16_t clamp_hp(int hp) {
+    return static_cast<std::uint16_t>(hp < 0 ? 0 : hp > 0xFFFF ? 0xFFFF : hp);
 }
 
 }  // namespace
@@ -124,6 +144,7 @@ void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t loc
     }
     transition(State::Ended, reason + " ; retour au solo", out, level);
     remove_avatar("fin de session", out);  // AD-11 : la transition unique vers Ended retire l'avatar
+    release_npcs("fin de session", out);   // story 3.3 : toutes les répliques rendent leur IA
     pending_carried_.clear();              // stories 3.2 et 3.2c : rien ne survit à la session
     peer_equipment_.clear();               // story 3.2b
     reset_carried_sent();
@@ -135,6 +156,7 @@ void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t loc
 void Session::remove_avatar(const std::string& why, Output& out) {
     if (!avatar_present_) return;
     avatar_present_ = false;
+    avatar_pose_ok_ = false;
     clear_peer_avatar_state();
     out.commands.push_back(DespawnAvatar{peer_net_id()});
     out.logs.push_back({Level::Info, "[sync] avatar " + net_id_text(peer_net_id()) + " retiré : " + why});
@@ -189,6 +211,7 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         equipment_warning_.clear();
     }
     const bool revived = world_.dead && !world.dead;  // world_ = monde du tick précédent
+    npc_.routine_blocked += world.routine_blocked;     // story 3.3 : bilan debug
     world_ = world;
     // Arme et armure du héros local : retenues dans tous les états (envoyées à l'entrée en session).
     for (const Input& in : inputs) {
@@ -248,6 +271,7 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         send_death(world, out);
         send_snapshot(now, world, out);
         place_avatar(now, out);
+        place_npcs(now, out);
         snapshot_stats(now, out);
     }
     return out;
@@ -554,6 +578,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         return;
     }
     if (const auto* sp = std::get_if<proto::Spawn>(&decoded.message)) {
+        if (sp->type == proto::kSpawnTypeNpc) {  // story 3.3
+            on_npc_spawn(*sp, out);
+            return;
+        }
         const std::string what = "Spawn reçu (NetId " + net_id_text(sp->net_id) + ", type " +
                                  std::to_string(sp->type) + ", " + pose_text(sp->x, sp->y, sp->z, sp->yaw) + ")";
         if (sp->net_id != peer_net_id() || sp->type != proto::kSpawnTypeHero) {
@@ -582,6 +610,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         return;
     }
     if (const auto* dp = std::get_if<proto::Despawn>(&decoded.message)) {
+        if (dp->net_id >= proto::kFirstNpcNetId) {  // story 3.3
+            on_npc_despawn(dp->net_id, out);
+            return;
+        }
         if (dp->net_id != peer_net_id() || !avatar_present_) {
             out.logs.push_back({Level::Warn, "[sync] Despawn reçu (NetId " + net_id_text(dp->net_id) +
                                                  ") : ignoré (" +
@@ -625,6 +657,13 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     clear_peer_avatar_state();
     anim_ = MotionCounters{};
     reset_carried_sent();
+    npc_ids_.clear();  // story 3.3 : NetId de PNJ propres à la session
+    npc_guids_.clear();
+    npc_active_.clear();
+    next_npc_id_ = proto::kFirstNpcNetId;
+    replicas_.clear();  // vide en pratique : libérées à Ended
+    npc_ = NpcCounters{};
+    avatar_pose_ok_ = false;
     proto::Spawn spawn;
     spawn.net_id = own_net_id();
     spawn.x = own.x;
@@ -654,13 +693,209 @@ void Session::on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& /*out
     ++snap_.received;
     clock_.observe(now, decoded.message.tick);
     for (const proto::SnapshotEntity& e : decoded.message.entities) {
-        if (e.net_id != peer_net_id() || !std::isfinite(e.x) || !std::isfinite(e.y) || !std::isfinite(e.z) ||
-            !std::isfinite(e.yaw)) {
+        if (!finite_pose(e.x, e.y, e.z, e.yaw)) {
             ++snap_.ignored;
             continue;
         }
-        interp_.push(decoded.message.tick, Pose{e.x, e.y, e.z, e.yaw});
+        if (e.net_id == peer_net_id()) {
+            interp_.push(decoded.message.tick, Pose{e.x, e.y, e.z, e.yaw});
+            continue;
+        }
+        if (!on_npc_entity(decoded.message.tick, e)) ++snap_.ignored;
     }
+}
+
+bool Session::wants_npcs(std::uint64_t now) const {
+    if (settings_.role != Role::Host || state_ != State::InSession || now < t0_) return false;
+    return static_cast<std::int64_t>((now - t0_) / proto::kSnapshotTickMs) != last_tick_sent_;
+}
+
+void Session::select_npcs(const World& world, std::vector<proto::SnapshotEntity>& entities, Output& out) {
+    if (!world.npcs_ok) {  // liste illisible : rien ne change, le snapshot ne porte que le héros
+        ++npc_.unreadable;
+        return;
+    }
+    const Pose hero{world.x, world.y, world.z, world.yaw};
+    struct Candidate {
+        const NpcState* npc;
+        float d;
+    };
+    std::vector<Candidate> candidates;
+    // Pourquoi un PNJ annoncé sort (journal) : par GUID, l'état lu à ce tick.
+    std::map<proto::Guid, const char*> outside;
+    for (const NpcState& n : world.npcs) {
+        if (!n.alive) {
+            outside.emplace(n.guid, "mort");
+            continue;
+        }
+        if (!finite_pose(n.pose.x, n.pose.y, n.pose.z, n.pose.yaw)) continue;
+        float d = distance(n.pose, hero);
+        if (avatar_present_ && avatar_pose_ok_) d = std::min(d, distance(n.pose, avatar_pose_));
+        if (!(d <= kNpcRadius)) {
+            outside.emplace(n.guid, "hors du rayon");
+            continue;
+        }
+        candidates.push_back({&n, d});
+    }
+    std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+        return a.d < b.d || (a.d == b.d && a.npc->guid < b.npc->guid);
+    });
+    // Un GUID en double (copie d'un PNJ ?) : seul le plus proche compte.
+    std::set<proto::Guid> seen;
+    std::vector<Candidate> kept;
+    for (const Candidate& c : candidates) {
+        if (!seen.insert(c.npc->guid).second) continue;
+        if (kept.size() >= kMaxSnapshotNpcs) {
+            outside.emplace(c.npc->guid, "évincé par plus proche (54 entités au plus)");
+            ++npc_.capped;
+            continue;
+        }
+        kept.push_back(c);
+    }
+    std::set<std::uint32_t> retained;
+    std::vector<std::uint32_t> ids;
+    ids.reserve(kept.size());
+    for (const Candidate& c : kept) {
+        auto it = npc_ids_.find(c.npc->guid);
+        std::uint32_t id = 0;
+        if (it != npc_ids_.end()) {
+            id = it->second;
+        } else {
+            id = next_npc_id_++;  // jamais réutilisé pendant la session
+            npc_ids_.emplace(c.npc->guid, id);
+            npc_guids_.emplace(id, c.npc->guid);
+        }
+        retained.insert(id);
+        ids.push_back(id);
+    }
+    // Sorties d'abord, puis entrées : tout part avant le snapshot.
+    for (auto it = npc_active_.begin(); it != npc_active_.end();) {
+        if (retained.count(*it) != 0) {
+            ++it;
+            continue;
+        }
+        const std::uint32_t id = *it;
+        it = npc_active_.erase(it);
+        Bytes bytes;
+        if (proto::encode_reliable(proto::Despawn{id}, bytes)) out.commands.push_back(SendReliable{std::move(bytes)});
+        ++npc_.despawned;
+        const auto why = outside.find(npc_guids_[id]);
+        out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(id) + " retiré (Despawn) : " +
+                                             (why != outside.end() ? why->second : "absent de la liste")});
+    }
+    for (std::size_t i = 0; i < kept.size(); ++i) {
+        const NpcState& n = *kept[i].npc;
+        const std::uint32_t id = ids[i];
+        if (npc_active_.insert(id).second) {
+            proto::Spawn sp;
+            sp.net_id = id;
+            sp.type = proto::kSpawnTypeNpc;
+            sp.x = n.pose.x;
+            sp.y = n.pose.y;
+            sp.z = n.pose.z;
+            sp.yaw = n.pose.yaw;
+            sp.guid = n.guid;
+            Bytes bytes;
+            if (proto::encode_reliable(sp, bytes)) out.commands.push_back(SendReliable{std::move(bytes)});
+            ++npc_.spawned;
+            char dist[32];
+            std::snprintf(dist, sizeof dist, "%.1f m", static_cast<double>(kept[i].d) / 100.0);
+            out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(id) + " annoncé (Spawn) : GUID " +
+                                                 guid_text(n.guid) + ", " + dist + ", PV " +
+                                                 std::to_string(clamp_hp(n.hp)) + ", " +
+                                                 pose_text(n.pose.x, n.pose.y, n.pose.z, n.pose.yaw)});
+            // Porté à partir du snapshot suivant : le Spawn passe par KCP (jusqu'à 10 ms) et le
+            // snapshot part aussitôt ; l'invité ignorerait l'entité, faute d'annonce.
+            continue;
+        }
+        proto::SnapshotEntity e;
+        e.net_id = id;
+        e.x = n.pose.x;
+        e.y = n.pose.y;
+        e.z = n.pose.z;
+        e.yaw = n.pose.yaw;
+        e.hp = clamp_hp(n.hp);
+        entities.push_back(e);
+    }
+}
+
+void Session::on_npc_spawn(const proto::Spawn& sp, Output& out) {
+    const std::string what = "[sync] PNJ " + std::to_string(sp.net_id) + " : Spawn reçu (GUID " + guid_text(sp.guid) +
+                             ", " + pose_text(sp.x, sp.y, sp.z, sp.yaw) + ")";
+    const char* refusal = settings_.role == Role::Host       ? "l'hôte fait autorité sur les PNJ"
+                          : sp.net_id < proto::kFirstNpcNetId ? "NetId < 1000"
+                          : !finite_pose(sp.x, sp.y, sp.z, sp.yaw) ? "pose non finie"
+                          : replicas_.count(sp.net_id) != 0     ? "NetId déjà annoncé"
+                                                                : nullptr;
+    if (refusal != nullptr) {
+        out.logs.push_back({Level::Warn, what + " : ignoré (" + refusal + ")"});
+        return;
+    }
+    replicas_.emplace(sp.net_id, Replica{});  // interpolation neuve (AD-7)
+    out.commands.push_back(SpawnNpc{sp.net_id, sp.guid, Pose{sp.x, sp.y, sp.z, sp.yaw}});
+    out.logs.push_back({Level::Info, what + " : réplique"});
+}
+
+void Session::on_npc_despawn(std::uint32_t net_id, Output& out) {
+    auto it = settings_.role == Role::Guest ? replicas_.find(net_id) : replicas_.end();
+    if (it == replicas_.end()) {
+        out.logs.push_back({Level::Warn, "[sync] PNJ " + std::to_string(net_id) + " : Despawn reçu : ignoré (" +
+                                             (settings_.role == Role::Host ? "l'hôte fait autorité sur les PNJ"
+                                                                           : "NetId non annoncé") +
+                                             ")"});
+        return;
+    }
+    replicas_.erase(it);
+    out.commands.push_back(ReleaseNpc{net_id});
+    out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(net_id) + " : Despawn reçu : réplique libérée"});
+}
+
+bool Session::on_npc_entity(std::uint32_t tick, const proto::SnapshotEntity& e) {
+    auto it = settings_.role == Role::Guest ? replicas_.find(e.net_id) : replicas_.end();
+    if (it == replicas_.end()) {
+        ++npc_.unknown;
+        return false;
+    }
+    Replica& r = it->second;
+    r.interp.push(tick, Pose{e.x, e.y, e.z, e.yaw});
+    if (!r.hp_received || e.hp != r.last_hp) {
+        r.hp_received = true;
+        r.last_hp = e.hp;
+        if (r.hp_changes.size() >= kMaxNpcHpChanges) r.hp_changes.pop_front();
+        r.hp_changes.emplace_back(static_cast<double>(tick) * core::kTickMs, e.hp);
+    }
+    return true;
+}
+
+void Session::place_npcs(std::uint64_t now, Output& out) {
+    if (replicas_.empty() || !clock_.ready()) return;
+    const double shown = clock_.remote_ms(now) - core::kInterpolationDelayMs;
+    for (auto& [id, r] : replicas_) {
+        int hp = -1;
+        while (!r.hp_changes.empty() && r.hp_changes.front().first <= shown) {
+            hp = r.hp_changes.front().second;
+            r.hp_changes.pop_front();
+        }
+        if (hp >= 0 && hp != r.applied_hp) {
+            r.applied_hp = hp;
+            out.commands.push_back(SetNpcHp{id, hp});
+        }
+        if (r.interp.empty()) continue;  // pas encore de snapshot : reste à la pose du Spawn
+        out.commands.push_back(MoveNpc{id, r.interp.sample(shown).pose});
+    }
+}
+
+void Session::release_npcs(const std::string& why, Output& out) {
+    if (!replicas_.empty()) {
+        for (const auto& entry : replicas_) out.commands.push_back(ReleaseNpc{entry.first});
+        out.logs.push_back({Level::Info, "[sync] PNJ : " + std::to_string(replicas_.size()) +
+                                             " réplique(s) libérée(s) : " + why});
+        replicas_.clear();
+    }
+    npc_ids_.clear();
+    npc_guids_.clear();
+    npc_active_.clear();
+    next_npc_id_ = proto::kFirstNpcNetId;
 }
 
 void Session::send_snapshot(std::uint64_t now, const World& world, Output& out) {
@@ -676,8 +911,9 @@ void Session::send_snapshot(std::uint64_t now, const World& world, Output& out) 
     e.y = world.y;
     e.z = world.z;
     e.yaw = world.yaw;
-    e.hp = 0;  // PV non lus avant J2
+    e.hp = clamp_hp(world.hp);  // v9
     snapshot.entities.push_back(e);
+    if (settings_.role == Role::Host) select_npcs(world, snapshot.entities, out);  // story 3.3
     Bytes bytes;
     if (!proto::encode_snapshot(snapshot, bytes)) return;
     out.commands.push_back(SendSnapshot{std::move(bytes)});
@@ -974,25 +1210,32 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
         case core::SampleMode::Extrapolated: ++snap_.extrapolated; break;
         default: ++snap_.held; break;
     }
+    avatar_pose_ = s.pose;  // hôte : rayon des PNJ autour de l'avatar (story 3.3)
+    avatar_pose_ok_ = true;
     out.commands.push_back(MoveAvatar{peer_net_id(), s.pose});
 }
 
 void Session::snapshot_stats(std::uint64_t now, Output& out) {
     if (now < next_stats_) return;
     next_stats_ = now + kSnapshotStatsMs;
-    char buf[640];
+    char buf[900];
     std::snprintf(buf, sizeof buf,
                   "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
                   "frames de l'avatar : interpolées %u, extrapolées %u, figées %u ; décalage horloge %.1f ms ; "
                   "Motion : envoyés %u, rejoués %u, écrasés %u, ignorés %u, file pleine %u ; "
-                  "MotionParam : envoyés %u, rejoués %u, ignorés %u",
+                  "MotionParam : envoyés %u, rejoués %u, ignorés %u ; "
+                  "PNJ : suivis %zu, annoncés %u, retirés %u, plafond %u, liste illisible %u, entités inconnues %u, "
+                  "OnProcess de routine bloqués %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
-                  anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored);
+                  anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
+                  npc_count(), npc_.spawned, npc_.despawned, npc_.capped, npc_.unreadable, npc_.unknown,
+                  npc_.routine_blocked);
     out.logs.push_back({Level::Debug, buf});
     const SnapshotCounters zero{};
     snap_ = zero;
     anim_ = MotionCounters{};
+    npc_ = NpcCounters{};
 }
 
 void Session::send_hello(Output& out) {

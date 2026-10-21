@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 8
+# Protocole Risen Multiplayer — version 9
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -6,8 +6,9 @@ et le codec Go le suivent, et les vecteurs de `protocol/vectors/` en sont tirés
 
 La v1 couvrait **uniquement la session** (poignée de main, présence, fin de session). La v2
 (story 2.1) ajoute `Motion`, la v3 (story 2.2) `Spawn` et `Despawn`, la v4 (story 2.3) le
-snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) `MotionParam`, la v7 (story 3.2) `Weapon`, la v8 (story 3.2c) `Armor`. Les combats arrivent avec les
-stories suivantes et incrémenteront la version.
+snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) `MotionParam`, la v7 (story 3.2) `Weapon`, la v8 (story 3.2c) `Armor`, la v9 (story 3.3) les répliques de PNJ
+(`Spawn` de type 1 avec GUID, PV dans le snapshot). Les combats arrivent avec les stories
+suivantes et incrémenteront la version.
 
 ## 1. Règles générales
 
@@ -45,13 +46,13 @@ stories suivantes et incrémenteront la version.
 | 17 | `SessionEnd` | fiable | les deux sens |
 | 18 | `AniName` | fiable | les deux sens : nom d'animation interné, avant son premier `Motion` (v5) |
 | 19 | `Motion` | fiable | les deux sens : une animation lancée sur une entité dont l'émetteur a l'autorité (v2) |
-| 20 | `Spawn` | fiable | les deux sens : apparition d'une entité dont l'émetteur a l'autorité (v3) |
+| 20 | `Spawn` | fiable | les deux sens : apparition d'une entité dont l'émetteur a l'autorité (v3) ; type 1 = PNJ, hôte → invité (v9) |
 | 21 | `Despawn` | fiable | les deux sens : retrait d'une entité annoncée par `Spawn` (v3) |
 | 24 | `Death` | fiable | les deux sens : mort d'une entité dont l'émetteur a l'autorité ; le récepteur met la réplique en ragdoll (v5) |
 | 26 | `MotionParam` | fiable | les deux sens : réglage de locomotion (poids cible, vitesse de lecture) d'une entité animée (v6) |
 | 27 | `Weapon` | fiable | les deux sens : arme en main d'une entité dont l'émetteur a l'autorité, vide si rangée (v7) |
 | 28 | `Armor` | fiable | les deux sens : armure portée par une entité dont l'émetteur a l'autorité, vide si aucune (v8) |
-| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v8** |
+| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v9** |
 
 Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -63,7 +64,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `8` en v8 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `9` en v9 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -165,19 +166,23 @@ Bit 1 de `flags` à 0 : les 7 scalaires valent 0 (sinon `BadValue`) et le récep
 
 Taille : 5 à 259 octets.
 
-### `Spawn` (20) — fiable — v3
+### `Spawn` (20) — fiable — v3, taille variable depuis la v9
 
-Apparition d'une entité dont l'émetteur a l'autorité. En v3, chaque joueur n'annonce que son
-propre héros (`type` 0), sous son propre `NetId` (AD-6) : `1` pour l'hôte, `2` pour l'invité.
+Apparition d'une entité dont l'émetteur a l'autorité. Chaque joueur annonce son propre héros
+(`type` 0), sous son propre `NetId` (AD-6) : `1` pour l'hôte, `2` pour l'invité. Depuis la v9,
+l'hôte annonce aussi les PNJ répliqués (`type` 1), sous un `NetId` ≥ 1000, avec leur GUID.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `net_id` | `u32` | identifiant de l'entité (AD-6) |
-| `type` | `u8` | `0` = héros d'un joueur ; gardé brut au décodage (l'appelant ignore un type inconnu) |
+| `net_id` | `u32` | identifiant de l'entité (AD-6) ; ≥ 1000 pour un PNJ |
+| `type` | `u8` | `0` = héros d'un joueur ; `1` = PNJ (v9) ; **autre → `BadValue`** (la taille du message en dépend) |
 | position x, y, z | 3 × `f32` | unités du monde |
 | `lacet` | `f32` | radians, `atan2(m[8], m[10])` (AD-7) |
+| `guid` | 16 × `u8` | **type 1 seulement** : 16 premiers octets du `bCPropertyID` de `eCDynamicEntity::GetID` (absent pour le type 0) |
 
-Taille : 22 octets.
+Taille : 22 octets pour le type 0, 38 octets pour le type 1. Le décodeur lit d'abord les 22
+octets communs (`Truncated` s'ils manquent), puis branche sur `type` : type inconnu → `BadValue`,
+type 1 → 16 octets de GUID (`Truncated` s'ils manquent). L'encodeur refuse un type inconnu.
 
 ### `Despawn` (21) — fiable — v3
 
@@ -241,8 +246,9 @@ brute est conservée et l'appelant la journalise telle quelle (« raison inconnu
 
 ## 4 bis. Snapshot (canal 1) — non fiable — v4
 
-État **complet** des entités dont l'émetteur a l'autorité (AD-7), sans delta. En v4, chaque pair
-n'y met que son héros, sous son propre `NetId`.
+État **complet** des entités dont l'émetteur a l'autorité (AD-7), sans delta. Chaque pair y met
+son héros, sous son propre `NetId` ; depuis la v9, l'hôte y ajoute les PNJ répliqués (`NetId` ≥
+1000), les plus proches d'abord (§8, « Répliques des PNJ »).
 
 | Champ | Type | Contrainte |
 |---|---|---|
@@ -253,12 +259,13 @@ n'y met que son héros, sous son propre `NetId`.
 | `net_id` | `u32` | AD-6 |
 | position x, y, z | 3 × `f32` | unités du monde |
 | `lacet` | `f32` | radians, `atan2(m[8], m[10])` |
-| `pv` | `u16` | points de vie (`0` en v4 : non lus avant J2) |
+| `pv` | `u16` | points de vie (`PSSkills::GetHitPoints`), bornés à [0, 65535] (v9 ; `0` avant la v9) |
 
 Taille : 6 + 22 × `nombre` octets, soit 1194 au plus. Le décodeur refuse un tampon trop court pour
 `nombre` entités (`Truncated`), des octets en trop (`TrailingBytes`), un autre canal
 (`UnknownChannel`) et un `nombre` > 54 (`BadValue`) ; l'encodeur refuse plus de 54 entités.
-Tout datagramme de canal 1 venu du pair compte comme activité (§8), même illisible.
+Tout datagramme de canal 1 venu du pair compte comme activité (§8), même illisible. Le format
+n'a pas changé en v9 : seul le sens de `pv` (lu à chaque snapshot, PNJ compris).
 
 ## 5. Décodage : refus
 
@@ -269,13 +276,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide), ou que les `nombre` entités d'un snapshot |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle, ≠ 1 pour un snapshot |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 8 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 9 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) ; l'encodeur refuse aussi un nom de `Weapon` ou d'`Armor` de plus de 255 octets |
 | `TrailingBytes` | octets restants après la fin du message |
-| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
+| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; `Spawn` : `type` autre que 0 ou 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 8, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 9, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -307,13 +314,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=8`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=9`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0800 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0900 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -323,7 +330,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `08 00` | `version_protocole` = 8 |
+| 0x02 | `09 00` | `version_protocole` = 9 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -439,6 +446,30 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 | 0x0a | `00 00 4a c2` | y = -50.5 |
 | 0x0e | `00 00 fa 44` | z = 2000.0 |
 | 0x12 | `00 00 c0 3f` | lacet = 1.5 |
+
+#### `spawn_npc.bin` — `Spawn` d'un PNJ (fiable, sans octet de canal), 38 octets
+
+`net_id=1000`, `type=1`, position `(100.0, -50.5, 2000.0)`, `lacet=1.5`,
+`guid=c3624668 11223344 55667788 99aabbcc` (début du GUID d'un Vulture relevé par la sonde du
+spike J2, complété).
+
+<!-- vector: spawn_npc.bin -->
+```text
+00000000: 14e8 0300 0001 0000 c842 0000 4ac2 0000  .........B..J...
+00000010: fa44 0000 c03f c362 4668 1122 3344 5566  .D...?.bFh."3DUf
+00000020: 7788 99aa bbcc                           w.....
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `14` | `MsgType` Spawn (20) |
+| 0x01 | `e8 03 00 00` | `net_id` = 1000 |
+| 0x05 | `01` | `type` = 1 (PNJ) |
+| 0x06 | `00 00 c8 42` | x = 100.0 |
+| 0x0a | `00 00 4a c2` | y = -50.5 |
+| 0x0e | `00 00 fa 44` | z = 2000.0 |
+| 0x12 | `00 00 c0 3f` | lacet = 1.5 |
+| 0x16 | `c3 62 … bb cc` | `guid` (16 octets) |
 
 #### `despawn.bin` — `Despawn` (fiable, sans octet de canal), 5 octets
 
@@ -574,6 +605,30 @@ sonde).
 | 0x16 | `00 00 c0 3f` | lacet = 1.5 |
 | 0x1a | `4b 00` | `pv` = 75 |
 
+#### `snapshot_multi.bin` — snapshot à trois entités (canal 1), 72 octets
+
+`tick=1234` ; héros de l'hôte `net_id=1`, `(100.0, -50.5, 2000.0)`, `lacet=1.5`, `pv=75` ; PNJ
+`net_id=1000`, `(150.0, -50.5, 2500.0)`, `lacet=-0.5`, `pv=150` ; PNJ `net_id=1001`,
+`(-300.0, 10.0, 1800.0)`, `lacet=3.0`, `pv=65535` (borne haute).
+
+<!-- vector: snapshot_multi.bin -->
+```text
+00000000: 01d2 0400 0003 0100 0000 0000 c842 0000  .............B..
+00000010: 4ac2 0000 fa44 0000 c03f 4b00 e803 0000  J....D...?K.....
+00000020: 0000 1643 0000 4ac2 0040 1c45 0000 00bf  ...C..J..@.E....
+00000030: 9600 e903 0000 0000 96c3 0000 2041 0000  ............ A..
+00000040: e144 0000 4040 ffff                      .D..@@..
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `01` | canal snapshot |
+| 0x01 | `d2 04 00 00` | `tick` = 1234 |
+| 0x05 | `03` | `nombre` = 3 |
+| 0x06 | `01 00 00 00` … `4b 00` | entité 1 : héros de l'hôte, `pv` = 75 |
+| 0x1c | `e8 03 00 00` … `96 00` | entité 2 : PNJ 1000, `pv` = 150 |
+| 0x32 | `e9 03 00 00` … `ff ff` | entité 3 : PNJ 1001, `pv` = 65535 |
+
 ### Invalides
 
 #### `hello_future.bin` — `Hello` d'une version future, 8 octets
@@ -596,11 +651,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 8.
+`Truncated` ; `peek_hello_version` → 9.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0800 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0900 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -610,7 +665,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0800 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0900 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -657,6 +712,17 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 00000010: 0080 3e                                  ..>
 ```
 
+#### `spawn_bad_type.bin` — `Spawn` de type 2, 22 octets
+
+`spawn.bin` avec `type` = 2 (offset 0x05) → `BadValue` (v9 : la taille d'un `Spawn` dépend de son
+type ; un type inconnu n'est pas lisible).
+
+<!-- vector: spawn_bad_type.bin -->
+```text
+00000000: 1402 0000 0002 0000 c842 0000 4ac2 0000  .........B..J...
+00000010: fa44 0000 c03f                           .D...?
+```
+
 #### `snapshot_truncated.bin` — snapshot annonçant 2 entités, 28 octets
 
 `snapshot.bin` avec `nombre` = 2 (offset 0x05) : une seule entité suit → `Truncated`.
@@ -669,7 +735,7 @@ Canal contrôle, `MsgType` 99 → `UnknownType`.
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`). Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -802,7 +868,8 @@ d'appels.
     (200 unités) devant l'hôte, le long de l'axe avant (`sin lacet, 0, cos lacet`), tourné vers
     lui (`lacet + π`, ramené dans ]−π, π]). C'est cette pose que porte son `Spawn` ;
   - chaque pair n'accepte que le `Spawn` du `NetId` de l'autre, de `type` 0 et de pose finie,
-    et que le `Despawn` de ce même `NetId` ; tout autre est ignoré (journalisé). Un `Spawn` reçu alors que l'avatar existe est ignoré :
+    et que le `Despawn` de ce même `NetId` ; tout autre est ignoré (journalisé), sauf les
+    `Spawn` de `type` 1 et les `Despawn` de PNJ reçus par l'invité (v9, « Répliques des PNJ »). Un `Spawn` reçu alors que l'avatar existe est ignoré :
     jamais deux avatars ;
   - un `Despawn` reçu retire l'avatar ; la session continue ;
   - fin volontaire en session : `Despawn{son NetId}` est envoyé juste avant `SessionEnd` ;
@@ -812,12 +879,45 @@ d'appels.
     (20 Hz à l'horloge, jamais au nombre de frames), avec la pose de son héros lue à cette frame ;
     sans pose lisible, il n'envoie rien ;
   - un snapshot n'est accepté que du pair de session, une fois le KCP ouvert ; illisible, il est
-    ignoré et compté ; une entité d'un autre `NetId` que celui de l'avatar, ou à champ non fini,
-    est ignorée ;
+    ignoré et compté ; une entité d'un autre `NetId` que celui de l'avatar (ou, chez l'invité,
+    d'un PNJ annoncé : v9), ou à champ non fini, est ignorée et comptée ;
   - le récepteur affiche l'avatar avec **150 ms** de retard sur l'horloge distante, par
     interpolation (Hermite pour la position, chemin le plus court pour le lacet), extrapole au
     plus 250 ms après le dernier snapshot, puis fige la pose ; il n'attend jamais une
     retransmission. Un `Spawn` remet l'interpolation à zéro.
+- **Répliques des PNJ** (v9, story 3.3) : l'hôte fait autorité sur les PNJ ; chez l'invité, ses
+  propres PNJ (même sauvegarde) deviennent des répliques sans IA locale.
+  - **Sélection** (hôte, à chaque snapshot) : les PNJ de `Entity::ms_arrNPCs`, sauf son héros et
+    l'avatar de l'invité, vivants (`Entity::IsDead` = 0), de pose finie, à **50 m** (5000 unités)
+    au plus de son héros ou de la pose affichée de l'avatar de l'invité (s'il existe), triés du
+    plus proche au plus loin (distance au plus proche des deux joueurs). Le snapshot porte au plus
+    54 entités, héros de l'hôte compris : les **53** PNJ les plus proches sont retenus, les autres
+    attendent. Une lecture de la liste en échec laisse les PNJ annoncés tels quels et le snapshot
+    ne porte que le héros.
+  - **NetId** : attribué par l'hôte à la première sélection d'un GUID, à partir de **1000**, puis
+    lié à ce GUID pour toute la session et jamais réutilisé pendant celle-ci (un PNJ qui revient
+    dans le rayon reprend le même). Le compteur et la table repartent à chaque session.
+  - **Annonce** : un PNJ qui entre dans la sélection est annoncé par `Spawn{NetId, 1, pose, guid}`
+    et n'est porté par les snapshots qu'à partir du suivant (le `Spawn` passe par KCP, le snapshot
+    part aussitôt : l'invité ignorerait l'entité, faute d'annonce) ; un PNJ annoncé qui en sort
+    (hors du rayon, mort, absent de la liste, ou évincé par plus proche) reçoit `Despawn{NetId}`,
+    envoyé avant le snapshot du même tick, qui ne le porte plus. Il n'y a rien à envoyer à la fin de session : l'invité libère tout à `Ended`.
+  - **PV** : chaque entrée du snapshot porte `PSSkills::GetHitPoints`, borné à [0, 65535] (héros
+    compris).
+  - **Invité, `Spawn{1}`** : accepté seulement de l'hôte, `NetId` ≥ 1000, pose finie (sinon
+    ignoré, journalisé) ; un `NetId` déjà annoncé est ignoré (journalisé). Le PNJ natif est
+    retrouvé par `gCRuntimeInfo::GetEntity(guid + 4 octets nuls)`, inscrit comme réplique (IA
+    figée : son `gCScriptRoutine_PS::OnProcess` n'est plus appelé) et placé à la pose du `Spawn`.
+    **GUID introuvable** : ignoré, journalisé une fois par `NetId` ; ses snapshots sont ignorés et
+    le PNJ éventuel de l'invité garde son IA.
+  - **Invité, snapshots** : les entités d'un `NetId` annoncé suivent la même horloge distante et le
+    même retard de **150 ms** que l'avatar (interpolation propre à chaque PNJ, remise à zéro par
+    son `Spawn`) ; la réplique est placée par `Entity::MoveTo` à chaque frame, et ses PV sont
+    écrits (`SetHitPoints(pv, fixer)`) quand la valeur affichée change. Une entité d'un `NetId`
+    non annoncé est ignorée et comptée.
+  - **Libération** : sur `Despawn{NetId}` (un `NetId` non annoncé est ignoré, journalisé), et pour
+    toutes les répliques à `Ended` (fin de session ou de monde), la réplique sort du registre (IA
+    rendue) et est oubliée ; elle n'est jamais tuée ni détruite.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -832,4 +932,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v8).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v9).

@@ -11,9 +11,10 @@ namespace mp::win::hooks {
 // reste inactive et le jeu intact. À appeler depuis ScriptInit (hors loader lock).
 bool install_probe();
 
-// Session : résout l'ABI des entités puis installe les trois hooks ; OnProcess appelle
-// sync::session::on_frame(), les deux autres bloquent le moteur sur les avatars. Même
-// contrat d'échec que install_probe.
+// Session : résout l'ABI des entités, de l'inventaire et des PNJ (story 3.3), puis installe les
+// hooks ; OnProcess appelle sync::session::on_frame(), PlayMotion, SetRagDollEnabled et les
+// réglages de locomotion bloquent le moteur sur les avatars, gCScriptRoutine_PS::OnProcess fige
+// l'IA des répliques de PNJ (registre). Même contrat d'échec que install_probe.
 bool install_session();
 
 // Retire les hooks posés (sans effet s'il n'y en a aucun).

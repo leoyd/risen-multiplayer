@@ -131,6 +131,25 @@ bool AnimFilter::is_local(const void* animation_ps) const {
     return animation_ps != nullptr && animation_ps == local_;
 }
 
+bool AnimFilter::blocks_routine(const void* routine_ps) {
+    if (routine_ps == nullptr) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const TrackedEntity& e : entities_) {
+        if (e.role == EntityRole::NpcReplica && e.routine_ps == routine_ps) {
+            ++routine_blocked_;
+            return true;
+        }
+    }
+    return false;
+}
+
+unsigned AnimFilter::take_routine_blocked() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const unsigned n = routine_blocked_;
+    routine_blocked_ = 0;
+    return n;
+}
+
 AnimFilter::Verdict AnimFilter::classify_ragdoll(void* animation_ps, bool on, std::uint32_t thread_id) {
     if (!on && !is_local(animation_ps)) return Verdict::Pass;
     return classify(animation_ps, thread_id);

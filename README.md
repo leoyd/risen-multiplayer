@@ -61,7 +61,8 @@ This is a **hobby project**, released as open source so that others can pick it 
 | 🗡️ | The avatar holds the same weapon as its player, drawn or sheathed (any one-handed weapon, axe, fists) | J2 | ✅ Validated on one machine |
 | 🎽 | Guest equipment from `guest_equipment`: the guest's hero is equipped on joining (items created only if missing), and its avatar on the host wears it | J2 | ✅ Validated on one machine (avatar side) |
 | 🛡️ | The avatar wears the same armour as its player, both ways, changed or removed during the session | J2 | ✅ Validated on one machine |
-| ⚔️ | Melee co-op combat against the same monsters (shared HP, host-authoritative) | J2 | 🚧 In progress (stories 3.3 to 3.7) |
+| 👹 | NPC replicas: on the guest, the NPCs within 50 m of either player follow the host's positions and HP, with their local AI frozen (released at session end) | J2 | 🧪 Implemented (story 3.3), in-game test pending |
+| ⚔️ | Melee co-op combat against the same monsters (shared HP, host-authoritative) | J2 | 🚧 In progress (stories 3.4 to 3.7) |
 | 💬 | NPC dialogues played on both sides | J3 | 💭 Later |
 | 💾 | Persistent guest profile (gear, XP, loot), shared side quests | J4 | 💭 Later |
 | 🩹 | Reviving a downed ally | J5 | 💭 Later |
@@ -70,7 +71,9 @@ This is a **hobby project**, released as open source so that others can pick it 
 - the avatar has no collisions in your world: you walk through it. This is a choice (story 3.1): the "solid" setup found in the J2 spike detaches its animated model. NPCs still target and hit it;
 - the walk → stop transition is not very smooth, and the walk animation can occasionally stall for a moment;
 - only the right hand and the armour are replicated (no shield, torch, rings or amulets);
-- a guest who sells or drops an item listed in `guest_equipment` gets it back on the next session (items are created when missing).
+- a guest who sells or drops an item listed in `guest_equipment` gets it back on the next session (items are created when missing);
+- NPC replicas (story 3.3) are still animated by the guest's engine, and their deaths are not replicated yet (story 3.4); an NPC that only exists in the host's game (spawned during play) is ignored on the guest;
+- in story 3.3 the guest's hero can still hit or even kill a replica locally: damage is not synchronised yet (stories 3.5 and 3.6), so the replica's HP is simply overwritten by the host's on the next change.
 
 ## 📦 Installation (players)
 
@@ -208,11 +211,11 @@ graph TD
 ```
 
 - **The host is authoritative.** Each player's game simulates their own hero; the other side shows a **replica** (avatar) driven by the network.
-- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v8**):
+- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v9**):
   - one UDP socket, a channel byte at the start of every datagram;
   - channel 2: handshake (`Hello`, `Welcome`, `Reject`);
-  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`, `Weapon` (name of the weapon in hand, empty when sheathed), `Armor` (name of the armour worn, empty when none);
-  - channel 1: unreliable full-state snapshots at 20 Hz;
+  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`, `Weapon` (name of the weapon in hand, empty when sheathed), `Armor` (name of the armour worn, empty when none); since v9, `Spawn` type 1 announces an NPC replica (NetId ≥ 1000, matched on the guest by its 16-byte GUID);
+  - channel 1: unreliable full-state snapshots at 20 Hz (hero, plus up to 53 NPCs from the host, closest first, with their HP);
   - display delayed by 150 ms, Hermite interpolation, extrapolation ≤ 250 ms;
   - every message has binary test vectors checked by both the C++ and Go codecs.
 - **Main thread only:** every game call happens from a [MinHook](https://github.com/TsudaKageyu/minhook) hook on `eCApplication::OnProcess`, called once per frame.

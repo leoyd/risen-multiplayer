@@ -1233,9 +1233,11 @@ TEST("avatars : Spawn d'un mauvais NetId ou d'un autre type → ignoré, avec lo
     Output out = s.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kHostNetId))));
     CHECK(commands_of<SpawnAvatar>(out).empty());
     CHECK(has_log(out, "ignoré (attendu NetId 2 (invité), type 0)"));
-    out = s.tick(1200, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId, 7))));
+    // v9 : un type inconnu n'est plus décodable ; un Spawn{1} (PNJ) venu de l'invité est ignoré.
+    out = s.tick(1200, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId, proto::kSpawnTypeNpc))));
     CHECK(commands_of<SpawnAvatar>(out).empty());
-    CHECK(has_log(out, "type 7"));
+    CHECK(commands_of<SpawnNpc>(out).empty());
+    CHECK(has_log(out, "l'hôte fait autorité sur les PNJ"));
     CHECK(!s.avatar_present());
     // Côté invité : seul NetId 1 est accepté.
     Session g(guest_settings());
@@ -2400,4 +2402,386 @@ TEST("armure : file pleine de Weapon → l'Armor en attente n'est pas évincé")
     const auto aw = commands_of<AvatarWeapon>(out);
     CHECK_EQ(aw.size(), kMaxPendingCarried - 1);
     if (!aw.empty()) CHECK_EQ(aw.back()->name, "W" + std::to_string(kMaxPendingCarried + 3));  // les plus récents gardés
+}
+
+// --- Répliques des PNJ (story 3.3) --------------------------------------------------------
+
+namespace {
+
+proto::Guid guid_of(std::uint8_t n) {
+    proto::Guid g{};
+    for (std::size_t i = 0; i < g.size(); ++i) g[i] = static_cast<std::uint8_t>(n + i);
+    return g;
+}
+
+// PNJ à `dz` cm devant le héros de loaded_world() (100, -50.5, 2000).
+NpcState npc_at(std::uint8_t n, float dz, int hp = 100, bool alive = true) {
+    NpcState s;
+    s.guid = guid_of(n);
+    s.pose = Pose{100.0f, -50.5f, 2000.0f + dz, 0.25f};
+    s.hp = hp;
+    s.alive = alive;
+    return s;
+}
+
+World host_world(std::vector<NpcState> npcs, bool ok = true) {
+    World w = loaded_world();
+    w.hp = 250;
+    w.npcs_ok = ok;
+    w.npcs = std::move(npcs);
+    return w;
+}
+
+std::vector<proto::Spawn> npc_spawns_sent(const Output& out) {
+    std::vector<proto::Spawn> v;
+    for (const auto& sp : sent_of<proto::Spawn>(out)) {
+        if (sp.type == proto::kSpawnTypeNpc) v.push_back(sp);
+    }
+    return v;
+}
+
+// Hôte en session avec A (t0 = 1000) ; le tick 1 tombe à 1050.
+Session host_in_session() {
+    std::uint32_t conv = 0;
+    return hosting_with_a(conv);
+}
+
+// Invité en session (Welcome à t = 100 : t0 = 100).
+Session guest_in_session() {
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), {});
+    g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    CHECK(g.state() == State::InSession);
+    return g;
+}
+
+proto::Spawn npc_spawn(std::uint32_t net_id, std::uint8_t g = 7, float x = 10.0f) {
+    proto::Spawn sp;
+    sp.net_id = net_id;
+    sp.type = proto::kSpawnTypeNpc;
+    sp.x = x;
+    sp.y = 20.0f;
+    sp.z = 30.0f;
+    sp.yaw = 0.5f;
+    sp.guid = guid_of(g);
+    return sp;
+}
+
+Bytes npc_snapshot(std::uint32_t tick, std::vector<proto::SnapshotEntity> entities) {
+    proto::Snapshot s;
+    s.tick = tick;
+    s.entities = std::move(entities);
+    Bytes b;
+    CHECK(proto::encode_snapshot(s, b));
+    return b;
+}
+
+proto::SnapshotEntity npc_entity(std::uint32_t net_id, float x, std::uint16_t hp) {
+    proto::SnapshotEntity e;
+    e.net_id = net_id;
+    e.x = x;
+    e.hp = hp;
+    return e;
+}
+
+}  // namespace
+
+TEST("PNJ hôte : wants_npcs seulement en session, au tick qui enverra un snapshot") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {});
+    CHECK(!s.wants_npcs(10));  // Hosting
+    s.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    CHECK(!s.wants_npcs(1020));  // tick 0 : déjà compté à l'entrée en session
+    CHECK(s.wants_npcs(1050));
+    s.tick(1050, host_world({}), {});
+    CHECK(!s.wants_npcs(1070));
+    CHECK(s.wants_npcs(1100));
+    Session g = guest_in_session();
+    CHECK(!g.wants_npcs(200));  // l'invité ne lit pas de PNJ
+}
+
+TEST("PNJ hôte : entrée dans le rayon → NetId 1000, Spawn{1, pose, GUID} avant le snapshot, PV") {
+    Session s = host_in_session();
+    const Output out = s.tick(1050, host_world({npc_at(1, 4000.0f, 150)}), {});
+    // Ordre : le Spawn part avant le snapshot.
+    std::size_t spawn_at = out.commands.size(), snap_at = out.commands.size();
+    for (std::size_t i = 0; i < out.commands.size(); ++i) {
+        if (std::holds_alternative<SendReliable>(out.commands[i]) && spawn_at == out.commands.size()) spawn_at = i;
+        if (std::holds_alternative<SendSnapshot>(out.commands[i])) snap_at = i;
+    }
+    CHECK(spawn_at < snap_at && snap_at < out.commands.size());
+    const auto spawns = npc_spawns_sent(out);
+    CHECK_EQ(spawns.size(), 1u);
+    if (!spawns.empty()) {
+        CHECK_EQ(spawns[0].net_id, proto::kFirstNpcNetId);
+        CHECK(spawns[0].guid == guid_of(1));
+        CHECK(spawns[0].z == 6000.0f && spawns[0].yaw == 0.25f);
+    }
+    CHECK(has_log(out, "PNJ 1000 annoncé (Spawn) : GUID 0102030405060708090a0b0c0d0e0f10, 40.0 m, PV 150"));
+    // Le snapshot du tick de l'annonce ne porte que le héros (le Spawn passe par KCP).
+    const auto snaps = snapshots_sent(out);
+    CHECK(snaps.size() == 1 && snaps[0].entities.size() == 1);
+    if (!snaps.empty() && !snaps[0].entities.empty()) {
+        CHECK_EQ(snaps[0].entities[0].net_id, proto::kHostNetId);
+        CHECK_EQ(snaps[0].entities[0].hp, 250);  // PV du héros (v9)
+    }
+    CHECK_EQ(s.npc_count(), 1u);
+    // Tick suivant : plus de Spawn, l'entité est dans le snapshot, avec ses PV.
+    const Output next = s.tick(1100, host_world({npc_at(1, 3900.0f, 140)}), {});
+    CHECK(npc_spawns_sent(next).empty());
+    const auto sn = snapshots_sent(next);
+    CHECK(sn.size() == 1 && sn[0].entities.size() == 2);
+    if (sn.size() == 1 && sn[0].entities.size() == 2) {
+        CHECK_EQ(sn[0].entities[1].net_id, 1000u);
+        CHECK_EQ(sn[0].entities[1].hp, 140);
+        CHECK(sn[0].entities[1].z == 5900.0f);
+    }
+    // Entre deux snapshots, les PNJ ne sont pas relus : rien ne change.
+    const Output idle = s.tick(1110, host_world({}, false), {});
+    CHECK(reliables_sent(idle).empty());
+    CHECK_EQ(s.npc_count(), 1u);
+}
+
+TEST("PNJ hôte : sortie du rayon ou mort → Despawn ; retour → même NetId, nouveau Spawn") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 1000.0f), npc_at(2, 2000.0f)}), {});
+    CHECK_EQ(s.npc_count(), 2u);
+    // PNJ 1 à 50,01 m, PNJ 2 mort.
+    Output out = s.tick(1100, host_world({npc_at(1, 5001.0f), npc_at(2, 2000.0f, 0, false)}), {});
+    const auto despawns = sent_of<proto::Despawn>(out);
+    CHECK_EQ(despawns.size(), 2u);
+    CHECK(has_log(out, "PNJ 1000 retiré (Despawn) : hors du rayon"));
+    CHECK(has_log(out, "PNJ 1001 retiré (Despawn) : mort"));
+    const auto sn = snapshots_sent(out);
+    CHECK(sn.size() == 1 && sn[0].entities.size() == 1);  // héros seul
+    CHECK_EQ(s.npc_count(), 0u);
+    // Exactement 50 m : dans le rayon. Même GUID → même NetId.
+    out = s.tick(1150, host_world({npc_at(1, 5000.0f)}), {});
+    auto spawns = npc_spawns_sent(out);
+    CHECK(spawns.size() == 1 && spawns[0].net_id == 1000u);
+    // Absent de la liste → Despawn ; un nouveau GUID reçoit 1002 (jamais de réutilisation).
+    out = s.tick(1200, host_world({npc_at(3, 100.0f)}), {});
+    CHECK(has_log(out, "PNJ 1000 retiré (Despawn) : absent de la liste"));
+    spawns = npc_spawns_sent(out);
+    CHECK(spawns.size() == 1 && spawns[0].net_id == 1002u);
+}
+
+TEST("PNJ hôte : plus de 53 PNJ → les 53 plus proches, 54 entités ; les autres attendent") {
+    Session s = host_in_session();
+    std::vector<NpcState> npcs;
+    for (int i = 0; i < 60; ++i) npcs.push_back(npc_at(static_cast<std::uint8_t>(100 + i), 4000.0f - 10.0f * i));
+    Output out = s.tick(1050, host_world(npcs), {});
+    CHECK_EQ(npc_spawns_sent(out).size(), kMaxSnapshotNpcs);
+    bool far_spawned = false;
+    for (const auto& sp : npc_spawns_sent(out)) far_spawned |= sp.guid == guid_of(100);  // le plus loin
+    CHECK(!far_spawned);
+    out = s.tick(1100, host_world(npcs), {});
+    const auto sn = snapshots_sent(out);
+    CHECK(sn.size() == 1 && sn[0].entities.size() == proto::kMaxSnapshotEntities);
+    // Les plus proches d'abord : le premier PNJ du snapshot est le n° 159 (à 34,1 m).
+    if (!sn.empty() && sn[0].entities.size() > 1) CHECK(sn[0].entities[1].z == 2000.0f + 4000.0f - 590.0f);
+    CHECK(npc_spawns_sent(out).empty());
+    // Un des retenus meurt : le suivant (n° 106) entre.
+    npcs[59].alive = false;
+    out = s.tick(1150, host_world(npcs), {});
+    CHECK_EQ(sent_of<proto::Despawn>(out).size(), 1u);
+    const auto spawns = npc_spawns_sent(out);
+    CHECK(spawns.size() == 1 && spawns[0].guid == guid_of(106));
+    // Un PNJ plus proche que tous évince le plus lointain des retenus.
+    npcs.push_back(npc_at(250, 10.0f));
+    out = s.tick(1200, host_world(npcs), {});
+    CHECK(has_log(out, "évincé par plus proche"));
+    CHECK_EQ(sent_of<proto::Despawn>(out).size(), 1u);
+    CHECK_EQ(s.npc_count(), kMaxSnapshotNpcs);
+}
+
+TEST("PNJ hôte : rayon autour de l'avatar de l'invité aussi") {
+    Session s = host_with_avatar();  // t0 = 1000, avatar créé à 1100
+    // L'avatar est affiché à x = 100, z = 20000 (180 m du héros).
+    proto::SnapshotEntity e;
+    e.net_id = proto::kGuestNetId;
+    e.x = 100.0f;
+    e.y = -50.5f;
+    e.z = 20000.0f;
+    proto::Snapshot sn;
+    sn.tick = 2;
+    sn.entities = {e};
+    Bytes b;
+    CHECK(proto::encode_snapshot(sn, b));
+    s.tick(1120, loaded_world(), snapshot_in(b));
+    s.tick(1130, loaded_world(), {});  // MoveAvatar : pose de l'avatar connue
+    NpcState near_avatar = npc_at(1, 18000.0f);  // z = 20000 : sur l'avatar, à 180 m du héros
+    NpcState far_both = npc_at(2, 9000.0f);                          // à 90 m du héros, 90 m de l'avatar
+    const Output out = s.tick(1150, host_world({near_avatar, far_both}), {});
+    const auto spawns = npc_spawns_sent(out);
+    CHECK(spawns.size() == 1 && spawns[0].guid == guid_of(1));
+    // L'avatar est retiré : son ancienne pose ne compte plus, le PNJ (à 180 m du héros) sort.
+    s.tick(1160, loaded_world(), reliable(encode_r(proto::Despawn{proto::kGuestNetId})));
+    CHECK(!s.avatar_present());
+    const Output gone = s.tick(1200, host_world({near_avatar, far_both}), {});
+    const auto despawns = sent_of<proto::Despawn>(gone);
+    CHECK(despawns.size() == 1 && despawns[0].net_id == 1000u);
+    CHECK(has_log(gone, "PNJ 1000 retiré (Despawn) : hors du rayon"));
+    CHECK(npc_spawns_sent(gone).empty());
+    CHECK_EQ(s.npc_count(), 0u);
+}
+
+TEST("PNJ hôte : liste illisible → rien ne change, snapshot avec le héros seul") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 100.0f)}), {});
+    const Output out = s.tick(1100, host_world({}, false), {});
+    CHECK(reliables_sent(out).empty());  // ni Despawn ni Spawn
+    const auto sn = snapshots_sent(out);
+    CHECK(sn.size() == 1 && sn[0].entities.size() == 1);
+    CHECK_EQ(s.npc_count(), 1u);
+}
+
+TEST("PNJ hôte : PV bornés à [0, 65535], pose non finie ignorée, GUID en double compté une fois") {
+    Session s = host_in_session();
+    NpcState nan_pose = npc_at(3, 100.0f);
+    nan_pose.pose.x = std::nanf("");
+    const World w = host_world({npc_at(1, 100.0f, -5), npc_at(2, 200.0f, 70000), nan_pose, npc_at(1, 300.0f)});
+    CHECK_EQ(npc_spawns_sent(s.tick(1050, w, {})).size(), 2u);
+    const auto sn = snapshots_sent(s.tick(1100, w, {}));
+    CHECK(sn.size() == 1 && sn[0].entities.size() == 3);
+    if (sn.size() == 1 && sn[0].entities.size() == 3) {
+        CHECK_EQ(sn[0].entities[1].hp, 0);
+        CHECK_EQ(sn[0].entities[2].hp, 65535);
+    }
+}
+
+TEST("PNJ hôte : NetId repartent de 1000 à chaque session ; Ended n'envoie rien aux PNJ") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 100.0f), npc_at(2, 200.0f)}), {});
+    // L'invité part : fin de session, réarmement immédiat de l'hôte.
+    Output out = s.tick(1100, host_world({}), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK(sent_of<proto::Despawn>(out).empty());
+    CHECK(commands_of<ReleaseNpc>(out).empty());  // l'hôte n'a pas de répliques
+    CHECK_EQ(s.npc_count(), 0u);
+    s.tick(2200, loaded_world(), {});  // fin du maintien → Hosting
+    CHECK(s.state() == State::Hosting);
+    s.tick(3000, loaded_world(), control_from(kGuestB, encode(make_hello())));
+    CHECK(s.state() == State::InSession);
+    out = s.tick(3050, host_world({npc_at(2, 200.0f)}), {});
+    const auto spawns = npc_spawns_sent(out);
+    CHECK(spawns.size() == 1 && spawns[0].net_id == 1000u);
+}
+
+TEST("PNJ invité : Spawn{1} → SpawnNpc (NetId, GUID, pose) ; en double, NetId < 1000 → ignorés") {
+    Session g = guest_in_session();
+    Output out = g.tick(200, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    const auto sp = commands_of<SpawnNpc>(out);
+    CHECK_EQ(sp.size(), 1u);
+    if (!sp.empty()) {
+        CHECK_EQ(sp[0]->net_id, 1000u);
+        CHECK(sp[0]->guid == guid_of(7));
+        CHECK(sp[0]->pose.x == 10.0f && sp[0]->pose.yaw == 0.5f);
+    }
+    CHECK(has_log(out, "PNJ 1000 : Spawn reçu (GUID 0708090a0b0c0d0e0f10111213141516"));
+    CHECK_EQ(g.npc_count(), 1u);
+    out = g.tick(210, loaded_world(), reliable(encode_r(npc_spawn(1000, 9))));
+    CHECK(commands_of<SpawnNpc>(out).empty());
+    CHECK(has_log(out, "ignoré (NetId déjà annoncé)"));
+    out = g.tick(220, loaded_world(), reliable(encode_r(npc_spawn(999))));
+    CHECK(commands_of<SpawnNpc>(out).empty());
+    CHECK(has_log(out, "ignoré (NetId < 1000)"));
+    out = g.tick(230, loaded_world(), reliable(encode_r(npc_spawn(1001, 7, std::nanf("")))));
+    CHECK(commands_of<SpawnNpc>(out).empty());
+    CHECK(has_log(out, "ignoré (pose non finie)"));
+    // Tronqué → illisible.
+    Bytes cut = encode_r(npc_spawn(1002));
+    cut.pop_back();
+    out = g.tick(240, loaded_world(), reliable(cut));
+    CHECK(commands_of<SpawnNpc>(out).empty());
+    CHECK(has_log(out, "message fiable illisible : message tronqué"));
+    CHECK_EQ(g.npc_count(), 1u);
+    CHECK(!g.avatar_present());  // un Spawn{1} ne crée jamais d'avatar
+}
+
+TEST("PNJ invité : snapshots → MoveNpc interpolé (150 ms, horloge commune), SetNpcHp au changement") {
+    Session g = guest_in_session();  // t0 = 100
+    g.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    // Avant tout snapshot : pas de MoveNpc (la réplique reste à la pose du Spawn).
+    CHECK(commands_of<MoveNpc>(g.tick(160, loaded_world(), {})).empty());
+    Output out;
+    std::size_t hp_count = 0;
+    std::vector<int> hps;
+    for (std::uint32_t tick = 0; tick <= 10; ++tick) {
+        const std::uint16_t hp = tick < 5 ? 150 : 140;
+        out = g.tick(200 + tick * 50, loaded_world(),
+                     snapshot_in(npc_snapshot(tick, {npc_entity(1000, tick * 15.0f, hp)})));
+        for (const auto* c : commands_of<SetNpcHp>(out)) {
+            ++hp_count;
+            hps.push_back(c->hp);
+        }
+    }
+    // Horloge : décalage = 200 ; à 700, distant = 500, affiché = 350 → x = 105.
+    const auto moves = commands_of<MoveNpc>(out);
+    CHECK_EQ(moves.size(), 1u);
+    if (!moves.empty()) {
+        CHECK_EQ(moves[0]->net_id, 1000u);
+        CHECK(std::fabs(moves[0]->pose.x - 105.0f) < 0.05f);
+    }
+    // 150 écrit une fois ; 140 (tick 5 = 250 ms distants) affiché à 600 → écrit une fois.
+    CHECK_EQ(hp_count, 2u);
+    CHECK(hps.size() == 2 && hps[0] == 150 && hps[1] == 140);
+}
+
+TEST("PNJ invité : entité d'un NetId non annoncé → ignorée, comptée ; Despawn → ReleaseNpc") {
+    Session g = guest_in_session();
+    g.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    Output out = g.tick(200, loaded_world(), snapshot_in(npc_snapshot(2, {npc_entity(1005, 1.0f, 10)})));
+    CHECK(commands_of<MoveNpc>(out).empty());
+    World blocked = loaded_world();
+    blocked.routine_blocked = 7;  // OnProcess de routine bloqués (IA figée), cumulés au bilan
+    g.tick(250, blocked, {});
+    g.tick(260, blocked, {});
+    for (std::uint64_t t = 300; t < 5100; t += 500) g.tick(t, loaded_world(), {});
+    out = g.tick(5100, loaded_world(), {});
+    CHECK(has_log(out, "entités ignorées 1"));
+    CHECK(has_log(out, "entités inconnues 1"));
+    CHECK(has_log(out, "OnProcess de routine bloqués 14"));
+    out = g.tick(5200, loaded_world(), reliable(encode_r(proto::Despawn{1000})));
+    const auto rel = commands_of<ReleaseNpc>(out);
+    CHECK(rel.size() == 1 && rel[0]->net_id == 1000u);
+    CHECK(has_log(out, "PNJ 1000 : Despawn reçu : réplique libérée"));
+    CHECK_EQ(g.npc_count(), 0u);
+    CHECK(g.state() == State::InSession);
+    out = g.tick(5300, loaded_world(), reliable(encode_r(proto::Despawn{1000})));
+    CHECK(commands_of<ReleaseNpc>(out).empty());
+    CHECK(has_log(out, "ignoré (NetId non annoncé)"));
+    // Retour dans le rayon : même NetId, nouveau Spawn accepté.
+    out = g.tick(5400, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    CHECK_EQ(commands_of<SpawnNpc>(out).size(), 1u);
+}
+
+TEST("PNJ invité : fin de session ou fin de monde → toutes les répliques libérées") {
+    {
+        Session g = guest_in_session();
+        g.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+        g.tick(160, loaded_world(), reliable(encode_r(npc_spawn(1001, 8))));
+        const Output out = g.tick(200, loaded_world(), reliable(encode_r(proto::SessionEnd{2})));
+        const auto rel = commands_of<ReleaseNpc>(out);
+        CHECK(rel.size() == 2 && rel[0]->net_id == 1000u && rel[1]->net_id == 1001u);
+        CHECK(has_log(out, "2 réplique(s) libérée(s)"));
+        CHECK_EQ(g.npc_count(), 0u);
+    }
+    {
+        Session g = guest_in_session();
+        g.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+        const Output out = g.tick(200, World{}, {});  // fin de monde
+        CHECK(g.state() == State::Ended);
+        CHECK_EQ(commands_of<ReleaseNpc>(out).size(), 1u);
+        CHECK(commands_of<MoveNpc>(g.tick(300, World{}, {})).empty());
+    }
+}
+
+TEST("PNJ hôte : Spawn{1} ou Despawn de PNJ venus de l'invité → ignorés") {
+    Session s = host_in_session();
+    Output out = s.tick(1100, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    CHECK(commands_of<SpawnNpc>(out).empty());
+    CHECK(has_log(out, "l'hôte fait autorité sur les PNJ"));
+    out = s.tick(1110, loaded_world(), reliable(encode_r(proto::Despawn{1000})));
+    CHECK(commands_of<ReleaseNpc>(out).empty());
+    CHECK(has_log(out, "PNJ 1000 : Despawn reçu : ignoré (l'hôte fait autorité sur les PNJ)"));
 }

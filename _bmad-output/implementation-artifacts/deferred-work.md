@@ -159,3 +159,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2c-armure-hote.md`
   summary: Colle sync/game de l'armure (`avatar::set_armor`, `avatar::local_armor`, armure différée dans `apply_pending_inventory`, branche `AvatarArmor` d'`execute()`) jamais exécutée par un test automatique ; le retour de la tunique après `UnEquipStack` n'est vérifié qu'en jeu.
   evidence: Revue de la story 3.2c (verification-gap) : même couture `game::` que 3.1, 3.2 et 3.2b ; procédure manuelle « Armure portée en jeu » de `client/README.md`.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-3-repliques-pnj.md`
+  summary: Détour de routine de session (`detour_routine_on_process_session`) et adaptateur `sync/npc` (inscription `NpcReplica` avec PS de routine, libération, revalidation par GUID) jamais exécutés par un test automatique.
+  evidence: Revue de la story 3.3 (verification-gap) : le banc Wine n'appelle pas OnProcess ; inverser le test du détour figerait tous les PNJ sauf les répliques sans faire échouer aucun test. Couverture par le test en jeu (gel visible, compteur d'OnProcess bloqués en debug).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-3-repliques-pnj.md`
+  summary: PNJ vivant à 0 PV chez l'hôte (humain à terre, pas `IsDead`) : l'invité appelle `SetHitPoints(0, 2)` sur la réplique, ce qui peut déclencher son propre « à terre » ou sa mort locale.
+  evidence: maybe-false, medium si vrai ; à trancher avec la story 3.4 (mort des répliques) : observer en jeu un humain mis à terre chez l'hôte près de l'invité.

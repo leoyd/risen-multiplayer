@@ -71,6 +71,7 @@ if(WIN32)
         src/sync/local_capture.cpp
         src/sync/probe.cpp
         src/sync/probe_j2.cpp
+        src/sync/npc.cpp
         src/sync/session.cpp
         src/win/watchdog.cpp
         ${MINHOOK_SOURCES})

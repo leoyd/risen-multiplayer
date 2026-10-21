@@ -43,11 +43,22 @@
 // héros à chaque entrée en session, après la Teleport (EquipHero). L'hôte garde les noms du Hello
 // accepté jusqu'à Ended et équipe l'avatar de l'invité juste après chaque SpawnAvatar
 // (EquipAvatar) ; un Hello.equipment invalide donne un Warn et un avatar non équipé (pas de Reject).
+//
+// Répliques des PNJ (story 3.3, PROTOCOL.md §8) : l'hôte fait autorité. À chaque snapshot, il
+// retient les PNJ vivants de World::npcs à kNpcRadius au plus de son héros ou de l'avatar de
+// l'invité, du plus proche au plus loin, au plus kMaxSnapshotNpcs ; il leur attribue un NetId
+// ≥ 1000 lié au GUID pour la session, annonce chaque entrée par Spawn{1, guid} et chaque sortie
+// par Despawn, puis met leur pose et leurs PV dans le snapshot. L'invité tient une table NetId →
+// {interpolation, PV} : Spawn{1} donne SpawnNpc, chaque tick MoveNpc (même horloge distante et
+// même retard que l'avatar) et SetNpcHp quand les PV affichés changent, Despawn et Ended donnent
+// ReleaseNpc. L'appariement par GUID et le gel de l'IA sont l'affaire de sync/npc.
 #pragma once
 
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -88,6 +99,17 @@ struct Settings {
     std::uint64_t seed = 0;                       // graine du tirage de `conv`
 };
 
+using core::Pose;
+
+// Un PNJ lu par l'appelant côté hôte (story 3.3, sync/npc) : GUID (16 premiers octets de
+// eCDynamicEntity::GetID), pose, PV (PSSkills::GetHitPoints), vivant (Entity::IsDead = 0).
+struct NpcState {
+    protocol::Guid guid{};
+    Pose pose;
+    int hp = 0;
+    bool alive = true;
+};
+
 // État du monde lu par l'appelant à chaque tick.
 struct World {
     std::uintptr_t player = 0;  // Entity::GetPlayer(), entier opaque (jamais déréférencé ici)
@@ -95,9 +117,23 @@ struct World {
     bool dead = false;          // Entity::IsDead du joueur
     bool pose_ok = false;       // pose du héros lue (Welcome, Spawn, snapshots)
     float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f;
+    int hp = 0;                 // PV du héros (PSSkills::GetHitPoints), dans le snapshot (v9)
+    // Hôte (story 3.3) : PNJ du monde, hors héros et avatar, lus seulement quand
+    // Session::wants_npcs() le demande. `npcs_ok` faux : lecture impossible (les PNJ annoncés
+    // restent tels quels).
+    bool npcs_ok = false;
+    std::vector<NpcState> npcs;
+    // Invité (story 3.3) : gCScriptRoutine_PS::OnProcess bloqués depuis le tick précédent
+    // (répliques à l'IA figée), cumulés dans le bilan debug.
+    unsigned routine_blocked = 0;
 
     bool loaded() const { return player != 0 && running; }  // monde chargé
 };
+
+inline constexpr float kNpcRadius = 5000.0f;  // 50 m (unités du monde = cm) autour d'un joueur
+// Le snapshot porte au plus 54 entités, héros de l'hôte compris (AD-7).
+inline constexpr std::size_t kMaxSnapshotNpcs = protocol::kMaxSnapshotEntities - 1;
+inline constexpr std::size_t kMaxNpcHpChanges = 16;  // PV d'une réplique en attente d'affichage
 
 // Entrées : ce que le transport a rendu depuis le tick précédent.
 struct ControlIn {
@@ -135,8 +171,6 @@ struct LocalArmor {
     std::string name;
 };
 using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor>;
-
-using core::Pose;
 
 // Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
 // (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
@@ -203,9 +237,27 @@ struct AvatarArmor {  // équiper (nom non vide) ou retirer (nom vide) l'armure 
     std::uint32_t net_id = 0;
     std::string name;
 };
+// Répliques des PNJ, côté invité (story 3.3) : exécutées par sync/npc.
+struct SpawnNpc {  // apparier le PNJ natif de ce GUID, l'inscrire comme réplique (IA figée), le placer
+    std::uint32_t net_id = 0;
+    protocol::Guid guid{};
+    Pose pose;
+};
+struct MoveNpc {  // placer la réplique (Entity::MoveTo), à chaque tick
+    std::uint32_t net_id = 0;
+    Pose pose;
+};
+struct SetNpcHp {  // écrire ses PV (SetHitPoints(pv, fixer)), quand la valeur affichée change
+    std::uint32_t net_id = 0;
+    int hp = 0;
+};
+struct ReleaseNpc {  // la sortir du registre (IA rendue) et l'oublier ; jamais détruite
+    std::uint32_t net_id = 0;
+};
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
-                             AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor>;
+                             AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
+                             ReleaseNpc>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -242,6 +294,11 @@ public:
     Output fail(std::uint64_t now_ms, const std::string& cause);
 
     State state() const { return state_; }
+    // Hôte en session dont le prochain tick à `now_ms` enverra un snapshot : l'appelant lit
+    // alors les PNJ (World::npcs), et seulement alors (story 3.3).
+    bool wants_npcs(std::uint64_t now_ms) const;
+    // Hôte : PNJ annoncés à l'invité. Invité : répliques suivies.
+    std::size_t npc_count() const { return settings_.role == Role::Host ? npc_active_.size() : replicas_.size(); }
     bool avatar_present() const { return avatar_present_; }
     bool avatar_dead() const { return avatar_dead_; }
     std::uint32_t conv() const { return conv_; }
@@ -270,6 +327,14 @@ private:
     void play_due_motions(std::uint64_t now, Output& out);
     void clear_peer_avatar_state();
     void send_snapshot(std::uint64_t now, const World& world, Output& out);
+    // Story 3.3. Hôte : sélection, NetId, Spawn{1}/Despawn, entrées du snapshot.
+    void select_npcs(const World& world, std::vector<protocol::SnapshotEntity>& entities, Output& out);
+    // Invité : Spawn{1}, Despawn d'un PNJ, entité de snapshot, placement et PV à chaque tick.
+    void on_npc_spawn(const protocol::Spawn& sp, Output& out);
+    void on_npc_despawn(std::uint32_t net_id, Output& out);
+    bool on_npc_entity(std::uint32_t tick, const protocol::SnapshotEntity& e);
+    void place_npcs(std::uint64_t now, Output& out);
+    void release_npcs(const std::string& why, Output& out);  // invité : toutes ; hôte : oubli des NetId
     void place_avatar(std::uint64_t now, Output& out);
     void snapshot_stats(std::uint64_t now, Output& out);
     void host_on_hello(std::uint64_t now, const ControlIn& in, Output& out);
@@ -380,6 +445,27 @@ private:
     std::vector<std::string> own_equipment_;
     std::string equipment_warning_;
     std::vector<std::string> peer_equipment_;
+
+    // Répliques des PNJ (story 3.3), remises à zéro à chaque entrée en session et à Ended.
+    // Hôte : table GUID → NetId de la session (jamais réutilisé), NetId → GUID, NetId annoncés.
+    std::map<protocol::Guid, std::uint32_t> npc_ids_;
+    std::unordered_map<std::uint32_t, protocol::Guid> npc_guids_;
+    std::set<std::uint32_t> npc_active_;
+    std::uint32_t next_npc_id_ = protocol::kFirstNpcNetId;
+    bool avatar_pose_ok_ = false;  // hôte : dernière pose affichée de l'avatar (rayon)
+    Pose avatar_pose_;
+    // Invité : NetId → réplique (ordre stable des commandes).
+    struct Replica {
+        core::Interpolator interp;
+        std::deque<std::pair<double, std::uint16_t>> hp_changes;  // (temps distant, PV), au changement
+        bool hp_received = false;
+        std::uint16_t last_hp = 0;  // derniers PV reçus
+        int applied_hp = -1;        // derniers PV écrits (SetNpcHp)
+    };
+    std::map<std::uint32_t, Replica> replicas_;
+    struct NpcCounters {
+        unsigned spawned = 0, despawned = 0, unreadable = 0, unknown = 0, capped = 0, routine_blocked = 0;
+    } npc_;
 
     std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)
     std::uint64_t linger_until_ = 0;   // Ended : fin du maintien du KCP
