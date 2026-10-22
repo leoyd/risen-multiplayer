@@ -580,6 +580,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         return;
     }
     if (const auto* de = std::get_if<proto::Death>(&decoded.message)) {
+        if (de->net_id >= proto::kFirstNpcNetId) {  // story 3.4b : mort d'une réplique de PNJ
+            on_npc_death(de->net_id, out);
+            return;
+        }
         if (de->net_id != peer_net_id() || !avatar_present_ || avatar_dead_ || death_pending_) {
             out.logs.push_back({Level::Warn, "[sync] Death reçu (NetId " + net_id_text(de->net_id) + ") : ignoré (" +
                                                  (de->net_id != peer_net_id() ? "pas l'avatar du pair"
@@ -680,6 +684,7 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     npc_guids_.clear();
     npc_active_.clear();
     npc_absent_ticks_.clear();
+    npc_dead_.clear();  // story 3.4b
     next_npc_id_ = proto::kFirstNpcNetId;
     replicas_.clear();  // vide en pratique : libérées à Ended
     early_npcs_.clear();  // story 3.4a
@@ -748,9 +753,10 @@ void Session::select_npcs(const World& world, std::vector<proto::SnapshotEntity>
     std::vector<Candidate> candidates;
     // Pourquoi un PNJ annoncé sort (journal) : par GUID, l'état lu à ce tick.
     std::map<proto::Guid, const char*> outside;
+    static const char* const kDead = "mort";  // story 3.4b : Death au lieu de Despawn
     for (const NpcState& n : world.npcs) {
         if (!n.alive) {
-            outside.emplace(n.guid, "mort");
+            outside.emplace(n.guid, kDead);
             continue;
         }
         if (!finite_pose(n.pose.x, n.pose.y, n.pose.z, n.pose.yaw)) continue;
@@ -770,6 +776,9 @@ void Session::select_npcs(const World& world, std::vector<proto::SnapshotEntity>
     std::vector<Candidate> kept;
     for (const Candidate& c : candidates) {
         if (!seen.insert(c.npc->guid).second) continue;
+        // Story 3.4b : un NetId mort n'est plus jamais annoncé de la session, même revenu à la vie.
+        const auto known = npc_ids_.find(c.npc->guid);
+        if (known != npc_ids_.end() && npc_dead_.count(known->second) != 0) continue;
         if (kept.size() >= kMaxSnapshotNpcs) {
             outside.emplace(c.npc->guid, "évincé par plus proche (54 entités au plus)");
             ++npc_.capped;
@@ -810,6 +819,13 @@ void Session::select_npcs(const World& world, std::vector<proto::SnapshotEntity>
         npc_absent_ticks_.erase(id);
         it = npc_active_.erase(it);
         Bytes bytes;
+        if (why != outside.end() && why->second == kDead) {  // story 3.4b : une fois par NetId
+            npc_dead_.insert(id);
+            if (proto::encode_reliable(proto::Death{id}, bytes)) out.commands.push_back(SendReliable{std::move(bytes)});
+            ++npc_.deaths_sent;
+            out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(id) + " mort (Death)"});
+            continue;
+        }
         if (proto::encode_reliable(proto::Despawn{id}, bytes)) out.commands.push_back(SendReliable{std::move(bytes)});
         ++npc_.despawned;
         out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(id) + " retiré (Despawn) : " +
@@ -915,9 +931,34 @@ void Session::on_npc_despawn(std::uint32_t net_id, Output& out) {
                                              ")"});
         return;
     }
+    apply_pending_death(net_id, it->second, out);  // story 3.4b : jamais libérée vivante après un Death
     replicas_.erase(it);
     out.commands.push_back(ReleaseNpc{net_id});
     out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(net_id) + " : Despawn reçu : réplique libérée"});
+}
+
+void Session::on_npc_death(std::uint32_t net_id, Output& out) {
+    const std::string what = "[sync] PNJ " + std::to_string(net_id) + " : Death reçu";
+    auto it = settings_.role == Role::Guest ? replicas_.find(net_id) : replicas_.end();
+    if (it == replicas_.end()) {
+        ++npc_.deaths_ignored;
+        out.logs.push_back({Level::Warn, what + " : ignoré (" +
+                                             (settings_.role == Role::Host ? "l'hôte fait autorité sur les PNJ"
+                                                                           : "NetId non annoncé") +
+                                             ")"});
+        return;
+    }
+    Replica& r = it->second;
+    if (r.dead || r.death_pending) {
+        ++npc_.deaths_ignored;
+        out.logs.push_back({Level::Debug, what + " : ignoré (réplique déjà morte)"});
+        return;
+    }
+    // Comme l'avatar : la mort tombe après la pose, les PV et les gestes déjà reçus (dernier
+    // snapshot de cette réplique), le coup fatal compris.
+    r.death_pending = true;
+    r.death_at = r.interp.empty() ? 0.0 : r.interp.last_time();
+    out.logs.push_back({Level::Info, what + " : mort à l'instant d'affichage"});
 }
 
 bool Session::on_npc_entity(std::uint64_t now, std::uint32_t tick, const proto::SnapshotEntity& e) {
@@ -927,6 +968,7 @@ bool Session::on_npc_entity(std::uint64_t now, std::uint32_t tick, const proto::
     }
     auto it = replicas_.find(e.net_id);
     if (it != replicas_.end()) {
+        if (it->second.dead) return true;  // story 3.4b : ni pose ni PV, sans être « inconnue »
         push_npc_entity(it->second, tick, e);
         return true;
     }
@@ -952,6 +994,8 @@ bool Session::on_npc_entity(std::uint64_t now, std::uint32_t tick, const proto::
 
 void Session::push_npc_entity(Replica& r, std::uint32_t tick, const proto::SnapshotEntity& e) {
     r.interp.push(tick, Pose{e.x, e.y, e.z, e.yaw});
+    // Story 3.4b : un snapshot plus récent arrivé après le Death recule l'instant de la mort.
+    if (r.death_pending) r.death_at = std::max(r.death_at, r.interp.last_time());
     if (!r.hp_received || e.hp != r.last_hp) {
         r.hp_received = true;
         r.last_hp = e.hp;
@@ -978,26 +1022,47 @@ void Session::place_npcs(std::uint64_t now, Output& out) {
     // Animations (story 3.4) : comme l'avatar, avant tout snapshot elles partent aussitôt.
     const double shown = ready ? clock_.remote_ms(now) - core::kInterpolationDelayMs : 1e300;
     for (auto& [id, r] : replicas_) {
+        if (r.dead) continue;  // story 3.4b : plus de pose, de PV ni de geste
         if (ready) {
             int hp = -1;
             while (!r.hp_changes.empty() && r.hp_changes.front().first <= shown) {
                 hp = r.hp_changes.front().second;
                 r.hp_changes.pop_front();
             }
+            // Story 3.4b : vivante, jamais moins de 1 PV (humain à terre chez l'hôte) ; seule la
+            // mort (NpcDeath) met 0 PV.
+            if (hp == 0) hp = 1;
             if (hp >= 0 && hp != r.applied_hp) {
                 r.applied_hp = hp;
                 out.commands.push_back(SetNpcHp{id, hp});
             }
         }
         play_due(r.pending, shown, id, out);
-        if (!ready || r.interp.empty()) continue;  // pas encore de snapshot : reste à la pose du Spawn
-        out.commands.push_back(MoveNpc{id, r.interp.sample(shown).pose});
+        // Pas encore de snapshot : reste à la pose du Spawn.
+        if (ready && !r.interp.empty()) out.commands.push_back(MoveNpc{id, r.interp.sample(shown).pose});
+        // Story 3.4b : mort à l'instant d'affichage du dernier snapshot reçu avec le Death (aussitôt
+        // si l'horloge n'est pas prête), après les PV, les gestes et la pose dus.
+        if (r.death_pending && (!ready || shown >= r.death_at)) apply_pending_death(id, r, out);
     }
+}
+
+void Session::apply_pending_death(std::uint32_t id, Replica& r, Output& out) {
+    if (!r.death_pending || r.dead) return;
+    for (const PendingMotion& p : r.pending) ++(p.is_param ? npc_anim_.params_ignored : npc_anim_.ignored);
+    r.pending.clear();
+    r.hp_changes.clear();
+    r.death_pending = false;
+    r.dead = true;
+    ++npc_.deaths_applied;
+    out.commands.push_back(NpcDeath{id});
 }
 
 void Session::release_npcs(const std::string& why, Output& out) {
     if (!replicas_.empty()) {
-        for (const auto& entry : replicas_) out.commands.push_back(ReleaseNpc{entry.first});
+        for (auto& entry : replicas_) {
+            apply_pending_death(entry.first, entry.second, out);  // story 3.4b
+            out.commands.push_back(ReleaseNpc{entry.first});
+        }
         out.logs.push_back({Level::Info, "[sync] PNJ : " + std::to_string(replicas_.size()) +
                                              " réplique(s) libérée(s) : " + why});
         replicas_.clear();
@@ -1009,6 +1074,7 @@ void Session::release_npcs(const std::string& why, Output& out) {
     npc_guids_.clear();
     npc_active_.clear();
     npc_absent_ticks_.clear();
+    npc_dead_.clear();  // story 3.4b
     next_npc_id_ = proto::kFirstNpcNetId;
 }
 
@@ -1339,7 +1405,8 @@ void Session::on_peer_motion(const proto::Motion& m, Output& out) {
 
 void Session::on_npc_motion(const proto::Motion& m, Output& out) {
     auto r = replicas_.find(m.net_id);
-    if (r == replicas_.end()) {  // NetId jamais annoncé ou déjà retiré
+    // NetId jamais annoncé ou déjà retiré ; story 3.4b : réplique morte ou mort en attente.
+    if (r == replicas_.end() || r->second.dead || r->second.death_pending) {
         ++npc_anim_.ignored;
         return;
     }
@@ -1367,7 +1434,7 @@ void Session::on_npc_motion(const proto::Motion& m, Output& out) {
 
 void Session::on_npc_param(const proto::MotionParam& p) {
     auto r = replicas_.find(p.net_id);
-    if (r == replicas_.end()) {
+    if (r == replicas_.end() || r->second.dead || r->second.death_pending) {  // story 3.4b : morte
         ++npc_anim_.params_ignored;
         return;
     }
@@ -1480,7 +1547,7 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   "OnProcess de routine bloqués %u ; "
                   "animations des PNJ : animés %zu, Motion envoyés %u, rejoués %u, écrasés %u, ignorés %u, "
                   "file pleine %u, MotionParam envoyés %u, regroupés %u, rejoués %u, ignorés %u, %llu o/s ; "
-                  "PNJ reçus avant leur Spawn %u",
+                  "PNJ reçus avant leur Spawn %u ; morts de PNJ : envoyées %u, appliquées %u, ignorées %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
                   anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
@@ -1488,7 +1555,7 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   npc_.routine_blocked, npc_animated_.size(), npc_anim_.sent, npc_anim_.played,
                   npc_anim_.superseded, npc_anim_.ignored, npc_anim_.dropped, npc_anim_.params_sent,
                   npc_anim_.params_grouped, npc_anim_.params_played, npc_anim_.params_ignored, npc_rate,
-                  npc_.early);
+                  npc_.early, npc_.deaths_sent, npc_.deaths_applied, npc_.deaths_ignored);
     out.logs.push_back({Level::Debug, buf});
     // Story 3.4 (Q12) : budget des animations des PNJ, une ligne par bilan au plus.
     if (npc_rate > kNpcAnimBudgetBytesPerSec) {

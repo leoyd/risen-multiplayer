@@ -22,7 +22,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v10, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v11, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte (--strict-timeout : sans message).
 

@@ -36,6 +36,9 @@ struct Replica {
     void* animation_ps = nullptr;  // story 3.4 : au registre (moteur bloqué), cible du rejeu
     void* wrapper = nullptr;
     bool param_error_logged = false;
+    // Story 3.4b : morte (NpcDeath) : plus de pose, de PV ni de rejeu ; reste au registre (IA,
+    // animations et ragdoll natifs bloqués) jusqu'à sa libération.
+    bool dead = false;
 };
 std::map<std::uint32_t, Replica> g_replicas;
 // Story 3.4, invité : ressource de chaque nom d'animation (nul : introuvable) et noms déjà signalés
@@ -105,7 +108,16 @@ bool find_entity(const protocol::Guid& guid, void*& out) {
 std::map<std::uint32_t, Replica>::iterator drop(std::map<std::uint32_t, Replica>::iterator it, const std::string& why) {
     anim_filter().untrack(it->second.entity.ptr);
     const std::uint32_t net_id = it->first;
-    if (g_missing.insert(net_id).second) log::warn(who(net_id) + " : " + why + " : oubliée, snapshots ignorés");
+    if (g_missing.insert(net_id).second) {
+        // Story 3.4b : une réplique morte n'a pas d'IA à rendre, elle reste morte.
+        std::string text = why;
+        const std::string ia = "IA rendue";
+        if (it->second.dead) {
+            const auto at = text.find(ia);
+            text = at == std::string::npos ? text + ", reste morte" : text.replace(at, ia.size(), "reste morte");
+        }
+        log::warn(who(net_id) + " : " + text + " : oubliée, snapshots ignorés");
+    }
     return g_replicas.erase(it);
 }
 
@@ -263,7 +275,7 @@ void spawn(std::uint32_t net_id, const protocol::Guid& guid, const Pose& pose) {
 
 void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.animation_ps == nullptr) return;
+    if (it == g_replicas.end() || it->second.dead || it->second.animation_ps == nullptr) return;
     Replica& r = it->second;
     auto failed = [&](const char* why) {
         if (g_failed_names.insert(name).second) {
@@ -298,7 +310,7 @@ void play(std::uint32_t net_id, const std::string& name, const protocol::Motion&
 
 void play_param(std::uint32_t net_id, const protocol::MotionParam& param) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.wrapper == nullptr) return;
+    if (it == g_replicas.end() || it->second.dead || it->second.wrapper == nullptr) return;
     Replica& r = it->second;
     bool ok = false;
     {
@@ -341,7 +353,7 @@ void uncapture(std::uint32_t net_id) {
 
 void move(std::uint32_t net_id, const Pose& pose) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end()) return;  // inconnu, introuvable ou perdu : ignoré
+    if (it == g_replicas.end() || it->second.dead) return;  // inconnu, introuvable, perdu ou mort : ignoré
     game::Matrix m{};
     matrix_of(pose, m);
     if (!game::move_to(it->second.entity, m)) drop(it, "Entity::MoveTo a levé une exception (SEH), IA rendue");
@@ -349,12 +361,50 @@ void move(std::uint32_t net_id, const Pose& pose) {
 
 void set_hp(std::uint32_t net_id, int hp) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end()) return;
+    if (it == g_replicas.end() || it->second.dead) return;
     if (!game::set_hit_points(it->second.entity, hp, game::kSkillModifierSet)) {
         log::warn(who(net_id) + " : SetHitPoints a levé une exception (SEH)");
         return;
     }
     log::debug(who(net_id) + " : PV = " + std::to_string(hp));
+}
+
+void die(std::uint32_t net_id) {
+    auto it = g_replicas.find(net_id);
+    if (it == g_replicas.end()) {
+        log::warn(who(net_id) + " : Death sans réplique chez l'invité (introuvable ou perdue) : rien à tuer");
+        return;
+    }
+    if (it->second.dead) return;  // déjà morte
+    Replica& r = it->second;
+    // Morte quoi qu'il arrive (D6) : figée debout plutôt que reprendre vie. Pas de Kill natif (ni
+    // XP, ni script, ni quête) : PV 0, AIMode 12 (Entity::IsDead), puis ragdoll.
+    r.dead = true;
+    std::string failed;
+    if (!game::set_hit_points(r.entity, 0, game::kSkillModifierSet)) {
+        log::warn(who(net_id) + " mort : SetHitPoints(0) a levé une exception (SEH)");
+        failed += ", PV";
+    }
+    if (!game::set_ai_mode(r.entity, game::kAIModeDead)) {
+        log::warn(who(net_id) + " mort : PropertyAIMode = 12 impossible (SEH ou symbole absent)");
+        failed += ", AIMode";
+    }
+    bool ragdoll = false;
+    if (r.animation_ps == nullptr) {
+        log::warn(who(net_id) + " mort : pas d'eCAnimation_PS : pas de ragdoll");
+        failed += ", ragdoll";
+    } else {
+        {
+            AnimFilter::ReplayGuard guard;  // le hook laisse passer ce ragdoll sur la réplique
+            ragdoll = game::set_ragdoll(r.animation_ps, true, false, nullptr);
+        }
+        if (!ragdoll) {
+            log::error(who(net_id) + " mort : SetRagDollEnabled a levé une exception (SEH)");
+            failed += ", ragdoll";
+        }
+    }
+    log::info(who(net_id) + " mort : PV 0, AIMode 12, ragdoll" +
+              (failed.empty() ? std::string() : " (en échec : " + failed.substr(2) + ")"));
 }
 
 void validate() {
@@ -401,9 +451,14 @@ void release(std::uint32_t net_id) {
     auto it = g_replicas.find(net_id);
     if (it == g_replicas.end()) return;
     // AD-12 : le registre d'abord (IA rendue), puis la table. Aucun appel au jeu.
+    const bool dead = it->second.dead;
     anim_filter().untrack(it->second.entity.ptr);
     g_replicas.erase(it);
-    log::debug(who(net_id) + " libéré : IA rendue");
+    if (dead) {
+        log::info(who(net_id) + " libéré : reste morte");  // story 3.4b : AIMode 12 et 0 PV gardés
+    } else {
+        log::debug(who(net_id) + " libéré : IA rendue");
+    }
 }
 
 void release_all(const std::string& cause) {
@@ -412,10 +467,16 @@ void release_all(const std::string& cause) {
         g_resources.empty() && g_failed_names.empty()) {
         return;
     }
-    for (const auto& entry : g_replicas) anim_filter().untrack(entry.second.entity.ptr);
+    std::size_t dead = 0;  // story 3.4b : répliques mortes, laissées mortes (aucun appel au jeu)
+    for (const auto& entry : g_replicas) {
+        anim_filter().untrack(entry.second.entity.ptr);
+        dead += entry.second.dead ? 1 : 0;
+    }
     for (const auto& entry : g_captured) anim_filter().untrack(entry.second.entity.ptr);
     if (!g_replicas.empty()) {
-        log::info("[sync] PNJ : " + std::to_string(g_replicas.size()) + " réplique(s) oubliée(s) : " + cause);
+        log::info("[sync] PNJ : " + std::to_string(g_replicas.size()) + " réplique(s) oubliée(s)" +
+                  (dead > 0 ? ", dont " + std::to_string(dead) + " morte(s), laissée(s) mortes" : std::string()) +
+                  " : " + cause);
     }
     if (!g_captured.empty()) {
         log::info("[sync] PNJ : " + std::to_string(g_captured.size()) + " PNJ animé(s) retiré(s) : " + cause);

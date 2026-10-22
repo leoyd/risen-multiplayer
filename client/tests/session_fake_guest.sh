@@ -399,7 +399,8 @@ if start_host_armor armure $p 30000 Host_Sword It_Armor_Inquisitor; then
 fi
 
 # --- Story 3.3 : 80 PNJ simulés — Spawn{1}, Despawn, PV, au plus 54 entités par snapshot ----
-# (53 PNJ annoncés, les autres attendent ; les impairs sortent du rayon puis reviennent ; le 0 meurt.)
+# (53 PNJ annoncés, les autres attendent ; les impairs sortent du rayon puis reviennent ; le 0 meurt
+# à 2 s, Death et non Despawn, puis « revit » à 6 s sans être réannoncé : story 3.4b.)
 p=$((base_port + 17))
 start_host_npcs() {  # comme start_host, avec --npcs
     "$host_bin" --port "$2" --max-ms "$3" --npcs "$4" > "$work/$1.host.log" 2>&1 &
@@ -414,13 +415,22 @@ start_host_npcs() {  # comme start_host, avec --npcs
 }
 if start_host_npcs pnj $p 30000 80; then
     h=$work/pnj.host.log
-    "$guest" --host 127.0.0.1 --port $p --duration 4s --quit > "$work/pnj.guest.log" 2>&1; rc=$?
+    "$guest" --host 127.0.0.1 --port $p --duration 8s --quit > "$work/pnj.guest.log" 2>&1; rc=$?
     wait $host_pid
     g=$work/pnj.guest.log
     expect_code "PNJ : invité" 0 $rc "$g"
     expect_log "PNJ : premier NetId 1000 annoncé par l'hôte" "$h" "PNJ 1000 annoncé (Spawn) : GUID "
     expect_log "PNJ : sortie du rayon" "$h" "retiré (Despawn) : hors du rayon"
-    expect_log "PNJ : mort → Despawn" "$h" "retiré (Despawn) : mort"
+    # Story 3.4b : mort → Death (jamais Despawn), une fois, et jamais réannoncé (même « revenu à la vie »).
+    expect_log "PNJ : mort → Death" "$h" "PNJ 1000 mort (Death)"
+    expect_count "PNJ : un seul Death" "$h" "mort (Death)" 1
+    expect_count "PNJ : plus de Despawn de mort" "$h" "retiré (Despawn) : mort" 0
+    expect_log "PNJ : Death reçu par l'invité" "$g" "<- Death PNJ netid=1000 (poses reçues="
+    expect_count "PNJ : aucun Despawn de 1000" "$g" "<- Despawn PNJ netid=1000 " 0
+    l_death=$(grep -n "PNJ 1000 mort (Death)" "$h" | head -1 | cut -d: -f1)
+    n_after=$(awk -v f="${l_death:-999999999}" 'NR > f && /PNJ 1000 annoncé \(Spawn\)/' "$h" | wc -l)
+    if [[ -n $l_death && $n_after -eq 0 ]]; then ok "PNJ : 1000 jamais réannoncé après sa mort"; else ko "PNJ : 1000 réannoncé après sa mort ($n_after)"; fi
+    expect_log "PNJ : bilan des morts de l'invité" "$g" "Bilan PNJ : .* Death=1 "
     first=$(grep -m1 -n "annoncé (Spawn)" "$h" | cut -d: -f1)
     n53=$(awk -v f="$first" 'NR >= f && /annoncé \(Spawn\)/ { n++ } NR >= f && !/annoncé \(Spawn\)/ && n > 0 { print n; exit }' "$h")
     if [[ $n53 -eq 53 ]]; then ok "PNJ : 53 PNJ au plus au premier snapshot"; else ko "PNJ : ${n53:-?} annonces au premier snapshot (53 attendu)"; fi

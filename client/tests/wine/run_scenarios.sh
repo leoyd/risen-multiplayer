@@ -120,14 +120,17 @@ for sym in '?GetRightHoldStack@PSInventory@@QEBAHXZ' '?GetRightHoldItem@PSInvent
     fi
 done
 
-# Story 3.3 : symboles de resolve_npc présents dans les DLL du jeu (Script, Engine, Game).
+# Story 3.3 : symboles de resolve_npc présents dans les DLL du jeu (Script, Engine, Game) ;
+# story 3.4b : PSRoutine::PropertyAIMode (lecture et operator=).
 for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Script.dll|?UpdateEntityLists@Entity@@KAXXZ' \
     'Script.dll|?IsPlayer@Entity@@QEBA_NXZ' 'Script.dll|?GetHitPoints@PSSkills@@QEBAHXZ' \
     'Script.dll|?SetHitPoints@PSSkills@@QEAAXHW4gESkillModifier@@@Z' 'Script.dll|?IsDead@Entity@@QEBA_NXZ' \
     'Script.dll|?GetPose@Entity@@QEBA?AVbCMatrix@@XZ' 'Script.dll|?MoveTo@Entity@@QEAAXAEBVbCMatrix@@@Z' \
     'Engine.dll|?GetID@eCDynamicEntity@@UEBAAEBVbCPropertyID@@XZ' \
     'Game.dll|?GetEntity@gCRuntimeInfo@@QEAAPEAVeCEntity@@AEBVbCPropertyID@@@Z' \
-    'Game.dll|?OnProcess@gCScriptRoutine_PS@@UEAAXXZ'; do
+    'Game.dll|?OnProcess@gCScriptRoutine_PS@@UEAAXXZ' \
+    'Script.dll|??BPropertyAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ' \
+    'Script.dll|??4PropertyAIMode@PSRoutine@@QEAAAEAV01@AEBW4gEAIMode@@@Z'; do
     dll=${entry%%|*}
     sym=${entry#*|}
     if grep -qaF -- "$sym" "$risen_bin/$dll"; then

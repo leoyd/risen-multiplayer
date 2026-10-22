@@ -163,10 +163,10 @@
   summary: Détour de routine de session (`detour_routine_on_process_session`) et adaptateur `sync/npc` (inscription `NpcReplica` avec PS de routine, libération, revalidation par GUID) jamais exécutés par un test automatique.
   evidence: Revue de la story 3.3 (verification-gap) : le banc Wine n'appelle pas OnProcess ; inverser le test du détour figerait tous les PNJ sauf les répliques sans faire échouer aucun test. Couverture par le test en jeu (gel visible, compteur d'OnProcess bloqués en debug).
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-3-repliques-pnj.md`
-  summary: PNJ vivant à 0 PV chez l'hôte (humain à terre, pas `IsDead`) : l'invité appelle `SetHitPoints(0, 2)` sur la réplique, ce qui peut déclencher son propre « à terre » ou sa mort locale.
+  summary: Résolu le 2026-10-23 (story 3.4b, à valider en jeu) — une réplique vivante reçoit au plus bas 1 PV (`SetNpcHp{id, 1}`), seule `NpcDeath` met 0 PV. Entrée d'origine : PNJ vivant à 0 PV chez l'hôte (humain à terre, pas `IsDead`) : l'invité appelle `SetHitPoints(0, 2)` sur la réplique, ce qui peut déclencher son propre « à terre » ou sa mort locale.
   evidence: maybe-false, medium si vrai ; à trancher avec la story 3.4 (mort des répliques) : observer en jeu un humain mis à terre chez l'hôte près de l'invité.
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-4-animations-pnj.md`
-  summary: Story 3.4b, mort des répliques de PNJ — l'hôte émet `Death{NetId}` (à la place du `Despawn` de raison « mort »), l'invité tue sa réplique une fois et la garde morte jusqu'à la fin de session. Décision Q11 de l'utilisateur (2026-10-22) : option A, mort « visuelle » sans `Kill` natif (`AIMode = 12` puis ragdoll), donc ni XP, ni quête, ni succès chez l'invité ; le cadavre garde son inventaire natif, pillable par l'invité (butin propre à chacun).
+  summary: Résolu le 2026-10-23 (story 3.4b, protocole v11, à valider en jeu, `spec-3-4b-mort-repliques-pnj.md`) — Story 3.4b, mort des répliques de PNJ — l'hôte émet `Death{NetId}` (à la place du `Despawn` de raison « mort »), l'invité tue sa réplique une fois et la garde morte jusqu'à la fin de session. Décision Q11 de l'utilisateur (2026-10-22) : option A, mort « visuelle » sans `Kill` natif (`AIMode = 12` puis ragdoll), donc ni XP, ni quête, ni succès chez l'invité ; le cadavre garde son inventaire natif, pillable par l'invité (butin propre à chacun).
   evidence: Story 3.4 découpée par l'utilisateur (spec au-dessus de la cible de taille) ; la mort est indépendante des animations. Repères : `PROTOCOL.md:195-201, 811-818`, `core/session.cpp:563-577, 728-729`, `sync/npc.cpp:224`, `game/combat.h:41-42` (`set_ai_mode` seulement dans `resolve_combat`), `sync/avatar.cpp:474-494` (`die`). Y trancher aussi le PNJ vivant à 0 PV (entrée ci-dessus).
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-4-animations-pnj.md`
   summary: Un PNJ qui entre dans les 8 animés (ou une réplique qui apparaît) n'a pas d'état d'animation initial : il reste figé jusqu'au `PlayMotion` suivant de l'hôte, ce qui peut tarder en locomotion continue.
@@ -195,3 +195,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-4a-robustesse-session.md`
   summary: La fin de monde côté DLL (`npc::release_all("fin de monde")` avant `validate`, dans `sync/session.cpp::frame`) n'a pas de test automatique.
   evidence: Code `sync/` sans banc (même couture `game::` que 3.1 à 3.4) ; couvert seulement par la procédure en jeu du README.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4b-mort-repliques-pnj.md`
+  summary: Chemin DLL de la mort côté invité (routage `NpcDeath`, `npc::die`, gardes des répliques mortes, `PropertyAIMode`) sans test automatique.
+  evidence: Même couture `game::` que 3.3/3.4 ; couvert par les étapes 3 à 6 du « Test en jeu à faire » de la spec 3.4b.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4b-mort-repliques-pnj.md`
+  summary: Un PNJ dont le cadavre quitte `Entity::ms_arrNPCs` (ou dont `IsDead` échoue) reçoit `Despawn` après 2 s au lieu de `Death` : sa copie chez l'invité garde son IA.
+  evidence: maybe-false, medium si vrai ; l'étape 1 du test en jeu tranchera (« PNJ N mort (Death) » contre « absent de la liste depuis 2 s »). Piste : revérifier par `GetEntity(GUID)` + `IsDead` les PNJ annoncés absents.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4b-mort-repliques-pnj.md`
+  summary: Le PNJ natif de l'invité reste mort (AIMode 12, 0 PV) sans ses scripts de mort, sauvegarde comprise : une quête de l'invité liée à ce PNJ pourrait rester bloquée.
+  evidence: maybe-false, medium si vrai ; conséquence de Q11 (pas de `Kill` natif) ; à revoir avec la persistance du profil invité (J4).

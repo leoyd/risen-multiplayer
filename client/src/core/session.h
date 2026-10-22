@@ -48,7 +48,7 @@
 // retient les PNJ vivants de World::npcs à kNpcRadius au plus de son héros ou de l'avatar de
 // l'invité, du plus proche au plus loin, au plus kMaxSnapshotNpcs ; il leur attribue un NetId
 // ≥ 1000 lié au GUID pour la session, annonce chaque entrée par Spawn{1, guid} et chaque sortie
-// par Despawn, puis met leur pose et leurs PV dans le snapshot. L'invité tient une table NetId →
+// par Despawn (Death s'il est mort, story 3.4b), puis met leur pose et leurs PV dans le snapshot. L'invité tient une table NetId →
 // {interpolation, PV} : Spawn{1} donne SpawnNpc, chaque tick MoveNpc (même horloge distante et
 // même retard que l'avatar) et SetNpcHp quand les PV affichés changent, Despawn et Ended donnent
 // ReleaseNpc. L'appariement par GUID et le gel de l'IA sont l'affaire de sync/npc.
@@ -60,6 +60,12 @@
 // MotionParam sont regroupés, un par frame et par (PNJ, type, nature), et filtrés par PNJ. Chez
 // l'invité, chaque réplique a sa file d'animations, rejouée avec les règles de l'avatar
 // (PlayNpcMotion, PlayNpcParam), vidée à sa libération.
+//
+// Mort des répliques (story 3.4b, protocole v11) : un PNJ annoncé qui sort de la sélection parce
+// qu'il est mort reçoit Death{NetId} au lieu de Despawn ; ce NetId n'est plus jamais annoncé de la
+// session. Chez l'invité, la mort s'applique une fois (NpcDeath), au même instant d'affichage que le
+// dernier snapshot reçu de la réplique ; elle n'est ensuite plus déplacée, animée ni ses PV écrits,
+// et reste dans la table jusqu'à Ended. Une réplique vivante n'a jamais moins de 1 PV écrit.
 //
 // Robustesse (story 3.4a) : Start porte le Heartbeat encodé et ses délais, que le transport envoie
 // depuis son thread quand la frame ne le lit plus (pause du jeu). Chez l'invité, l'entrée de
@@ -290,6 +296,11 @@ struct SetNpcHp {  // écrire ses PV (SetHitPoints(pv, fixer)), quand la valeur 
 struct ReleaseNpc {  // la sortir du registre (IA rendue) et l'oublier ; jamais détruite
     std::uint32_t net_id = 0;
 };
+// Story 3.4b : mort « visuelle » de la réplique, sans Kill natif : PV 0, AIMode 12, ragdoll. Elle
+// reste au registre (IA et animations natives bloquées) jusqu'à son ReleaseNpc.
+struct NpcDeath {
+    std::uint32_t net_id = 0;
+};
 // Animations des PNJ (story 3.4). Hôte : inscrire au registre le PS d'animation et l'enveloppe du
 // PNJ de ce GUID, en capture sous ce NetId (CaptureNpc), ou l'en retirer (UncaptureNpc).
 struct CaptureNpc {
@@ -312,7 +323,7 @@ struct PlayNpcParam {
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
-                             ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam>;
+                             ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -407,12 +418,16 @@ private:
     // Invité : Spawn{1}, Despawn d'un PNJ, entité de snapshot, placement et PV à chaque tick.
     void on_npc_spawn(const protocol::Spawn& sp, Output& out);
     void on_npc_despawn(std::uint32_t net_id, Output& out);
+    // Story 3.4b : Death{NetId ≥ 1000} reçu (hôte : ignoré).
+    void on_npc_death(std::uint32_t net_id, Output& out);
     bool on_npc_entity(std::uint64_t now, std::uint32_t tick, const protocol::SnapshotEntity& e);
     struct Replica;
     void push_npc_entity(Replica& r, std::uint32_t tick, const protocol::SnapshotEntity& e);
     // Story 3.4a : entrées gardées depuis plus de kEarlyNpcHoldMs sans Spawn, comptées inconnues.
     void expire_early_npcs(std::uint64_t now);
     void place_npcs(std::uint64_t now, Output& out);
+    // Story 3.4b : mort en attente appliquée (NpcDeath, file vidée) ; sans effet sinon.
+    void apply_pending_death(std::uint32_t id, Replica& r, Output& out);
     void release_npcs(const std::string& why, Output& out);  // invité : toutes ; hôte : oubli des NetId
     void place_avatar(std::uint64_t now, Output& out);
     void snapshot_stats(std::uint64_t now, Output& out);
@@ -534,6 +549,7 @@ private:
     std::unordered_map<std::uint32_t, protocol::Guid> npc_guids_;
     std::set<std::uint32_t> npc_active_;
     std::unordered_map<std::uint32_t, std::uint32_t> npc_absent_ticks_;  // NetId annoncé absent de la liste
+    std::set<std::uint32_t> npc_dead_;  // story 3.4b : NetId morts (Death envoyé), jamais réannoncés
     std::uint32_t next_npc_id_ = protocol::kFirstNpcNetId;
     bool avatar_pose_ok_ = false;  // hôte : dernière pose affichée de l'avatar (rayon)
     Pose avatar_pose_;
@@ -545,11 +561,18 @@ private:
         bool hp_received = false;
         std::uint16_t last_hp = 0;  // derniers PV reçus
         int applied_hp = -1;        // derniers PV écrits (SetNpcHp)
+        // Story 3.4b : Death reçu, appliqué quand le temps affiché atteint death_at (dernier
+        // snapshot reçu à la réception) ; puis morte : plus de pose, de PV ni d'animation.
+        bool death_pending = false;
+        double death_at = 0.0;
+        bool dead = false;
     };
     std::map<std::uint32_t, Replica> replicas_;
     struct NpcCounters {
         unsigned spawned = 0, despawned = 0, unreadable = 0, unknown = 0, capped = 0, routine_blocked = 0;
         unsigned early = 0;  // story 3.4a : entrées reçues avant leur Spawn, appliquées à son arrivée
+        // Story 3.4b : Death de PNJ envoyés (hôte), appliqués (NpcDeath) et ignorés (invité).
+        unsigned deaths_sent = 0, deaths_applied = 0, deaths_ignored = 0;
     } npc_;
     // Story 3.4a, invité : NetId ≥ 1000 non annoncé → dernière entrée de snapshot (plus grand tick),
     // reçue à `received_at` (première réception pour ce NetId). Vidé à l'entrée en session et à Ended.

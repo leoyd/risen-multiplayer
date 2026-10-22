@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v10 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v11 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, `ErrBadValue`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -106,7 +106,7 @@ PNJ annoncé (`<- Despawn PNJ netid=1000 (poses reçues=…, PV=…)`, sinon `: 
 annoncé)`), premier snapshot de chaque PNJ et chaque changement de PV (`PNJ netid=1000 PV a -> b`).
 Une entité de snapshot inattendue (ni le héros de l'hôte ni un PNJ annoncé) est ignorée et
 comptée. La ligne par seconde ajoute `PNJ suivis=… poses=… inattendues=…` ; à la fin, `Bilan PNJ :
-N vus, Spawn=… Despawn=… poses=… entités inattendues=…, au plus K entités par snapshot`, puis une ligne par `NetId` (GUID,
+N vus, Spawn=… Despawn=… Death=… poses=… entités inattendues=…, au plus K entités par snapshot`, puis une ligne par `NetId` (GUID,
 annonces, retraits, poses, PV du premier au dernier, nombre de changements, et depuis la v10 nombre de
 `Motion` et de `MotionParam` reçus).
 
@@ -119,6 +119,16 @@ une fois par `NetId` (`<- Motion PNJ netid=… : ignoré (NetId non annoncé ou 
 seconde ajoute `animés=N` (PNJ distincts animés dans la seconde) ; à la fin, `Bilan animations
 PNJ : Motion=… MotionParam=… ignorés=…, au plus K PNJ animés en 1 s`. L'écho ne renvoie jamais
 les animations des PNJ.
+
+### Mort des répliques (v11, story 3.4b)
+
+Un `Death` d'un `NetId` ≥ 1000 n'est accepté que d'un PNJ annoncé, pas retiré ni déjà mort
+(`<- Death PNJ netid=1000 (poses reçues=…, PV=…)`, sinon `<- Death PNJ netid=… : ignoré (NetId non
+annoncé, retiré ou déjà mort)`). Le PNJ n'est plus suivi : ses entrées de snapshot sont ignorées
+sans être comptées inattendues, ses animations ignorées, et un `Spawn{1}` de ce `NetId` est refusé
+(`: ignoré (NetId mort)`). Comme chez la DLL, un `Despawn` le libère (`<- Despawn PNJ netid=… (mort,
+libéré)`). Le
+bilan final compte les morts (`Death=…`) et marque la ligne du `NetId` `mort`.
 
 ### Écho (`--echo`, story 2.4)
 

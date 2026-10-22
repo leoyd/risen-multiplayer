@@ -15,8 +15,8 @@ Les deux joueurs combattent les mêmes monstres en mêlée (jalon J2, ligne d’
 - Story 3.2c : Armure portée, transmise à l’avatar *(fait)*
 - Story 3.3 : Répliques des PNJ : apparition, position et PV *(fait)*
 - Story 3.4 : Répliques des PNJ : animations *(fait ; la mort part en 3.4b)*
-- Story 3.4a : Robustesse de session (heartbeat de secours, PNJ en avance, fin de monde) *(en cours)*
-- Story 3.4b : Mort des répliques de PNJ
+- Story 3.4a : Robustesse de session (heartbeat de secours, PNJ en avance, fin de monde) *(fait)*
+- Story 3.4b : Mort des répliques de PNJ *(fait ; protocole v11, à valider en jeu)*
 - Story 3.5 : Dégâts de l’invité sur les monstres
 - Story 3.6 : Dégâts subis par l’invité
 - Story 3.7 : À terre et réapparition de l’invité
@@ -38,7 +38,7 @@ Les deux joueurs combattent les mêmes monstres en mêlée (jalon J2, ligne d’
 - **Liste fermée des hooks**, tous posés par `win/hooks` : `OnProcess`, `PlayMotion`, `SetRagDollEnabled`, les quatre réglages de locomotion, `gCScriptRoutine_PS::OnProcess`, les trois `DownOrDeadBy*`, et le point d’accroche des dégâts (à trancher en 3.5 : `gCDamage_PS::DoDamage` ou le virtuel `OnDamage` de la cible ; il doit voir agresseur et cible et pouvoir bloquer). Un détour par fonction, qui choisit selon le rôle. Tout ajout met la liste à jour dans la spine.
 - **PNJ de l’invité = ses PNJ natifs** (même sauvegarde), appariés par le GUID de 16 octets de `GetID` (+ 4 octets nuls) via `gCRuntimeInfo::GetEntity`. `NetId` ≥ 1000 attribué par l’hôte, lié au GUID toute la session. IA figée PNJ par PNJ par le hook de routine ; `EnableClassProcessing` interdit. À `Ended`, une réplique est libérée (IA rendue), jamais détruite. Chez l’invité, seul `sync/npc` écrit l’état des répliques (PV compris). GUID introuvable : PNJ ignoré, journalisé une fois.
 - **Animation des PNJ** : rejeu par nom (`AniName`/`Motion`/`MotionParam`) émis par l’hôte ; le moteur de l’invité n’anime jamais une réplique. Budget : seules les 8 répliques les plus proches d’un joueur sont animées, ≤ 32 Ko/s, mesuré au bilan debug.
-- **Mort d’une réplique (3.4b)** : l’hôte émet `Death{NetId}` au lieu du `Despawn` de mort ; l’invité la tue une fois, mort « visuelle » sans `Kill` natif (`AIMode = 12` puis ragdoll) : ni XP, ni quête chez l’invité, cadavre pillable avec son inventaire natif. Trancher aussi le PNJ vivant à 0 PV (humain à terre).
+- **Mort d’une réplique (3.4b)** : l’hôte émet `Death{NetId}` au lieu du `Despawn` de mort ; l’invité la tue une fois, mort « visuelle » sans `Kill` natif (`AIMode = 12` puis ragdoll) : ni XP, ni quête chez l’invité, cadavre pillable avec son inventaire natif. Un NetId mort n’est jamais réannoncé de la session ; la réplique morte reste au registre jusqu’à `Ended`. PNJ vivant à 0 PV (humain à terre) : la réplique vivante garde au moins 1 PV.
 - **Coups** : un coup natif impliquant une entité non locale est bloqué au point d’accroche puis converti. Invité frappant une réplique → `HitRequest{NetId cible}` ; PNJ frappant l’avatar invité chez l’hôte → `HitOnGuest{NetId source, dégâts bruts}` (avatar invulnérable, ses PV ne servent qu’à l’affichage). L’hôte applique `HitRequest` par `PSDamage::DoDamage(arme en main de l’avatar, cible, agresseur = avatar)` et n’écrit jamais directement les PV d’un PNJ.
 - **PV du héros invité** : un seul chemin d’écriture, dans `sync/` : `HitOnGuest`, ou les détours `DownOrDeadBy*` (victime = héros invité et PV ≤ 0 → 1 PV, à terre, retour 0 sans l’original). À terre = 1 PV et `Death{2}` émis une seule fois, puis l’hôte répond `Respawn{2, pose}` (PV pleins, interpolation réinitialisée). Écartés : `Kill → Defeat`, `ZS_Unconscious` forcé.
 - **Protocole** : snapshots complets à 20 Hz, 22 o par entité (PV inclus), les plus proches d’abord si un datagramme ne suffit pas. `Spawn` typé (0 avatar, 1 PNJ avec GUID). Tout message ajouté ou struct modifiée → `protocol/PROTOCOL.md`, vecteurs `protocol/vectors/`, version du protocole incrémentée, tests C++ et Go.
@@ -46,7 +46,7 @@ Les deux joueurs combattent les mêmes monstres en mêlée (jalon J2, ligne d’
 
 ## Cross-Story Dependencies
 
-- 3.1 à 3.4 sont faites : registre, arme et équipement de l’avatar, `NetId` des PNJ, gel d’IA et animations des répliques sont disponibles.
+- 3.1 à 3.4b sont faites : registre, arme et équipement de l’avatar, `NetId` des PNJ, gel d’IA et animations des répliques sont disponibles.
 - **3.4b** s’appuie sur 3.3/3.4 (répliques, ragdoll) ; 3.5 en dépend pour qu’un monstre tué par l’invité meure chez les deux.
 - **3.5** a besoin de l’arme en main de l’avatar (3.2) pour `DoDamage`, tranche le point d’accroche des dégâts (Q8) et l’ajoute à la liste des hooks ; **3.6** réutilise ce même point d’accroche.
 - **3.7** dépend de 3.6 (l’invité peut tomber à 0 PV) et de l’unique transition vers `Ended`. Elle règle les morts hors `DownOrDeadBy*` (Q9 : chute, noyade, message d’XP) et les snapshots périmés après `Respawn` (Q13). Le retour à la vie de l’avatar (arme et armure perdues pendant sa mort) relève aussi de `Respawn`.

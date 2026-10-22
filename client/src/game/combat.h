@@ -38,7 +38,7 @@ constexpr int kBodyFlagsKinematic = 0x80 | 0x1;  // eERigidbody_Flag, ajoutés p
 constexpr int kSkillModifierAdd = 0;         // gESkillModifier
 constexpr int kSkillModifierMax = 1;
 constexpr int kSkillModifierSet = 2;
-constexpr int kAIModeDead = 12;              // Kill : AIMode = 12 (Entity::IsDead)
+constexpr int kAIModeDead = 12;              // Kill : AIMode = 12 (Entity::IsDead) ; story 3.4b : réplique morte
 constexpr int kAIModeDefeated = 11;          // Defeat : AIMode = 11
 constexpr int kAIModeRoutine = 2;            // héros vivant (1ᵉʳ test en jeu, 2026-10-20)
 
@@ -62,11 +62,12 @@ bool resolve_combat(const char*& missing);
 // premier échec. Après resolve_entities (destroy_template).
 bool resolve_inventory(const char*& missing);
 // Répliques des PNJ de la session (story 3.3, AD-3) : Script.dll (Entity::ms_arrNPCs,
-// UpdateEntityLists, IsPlayer, PSSkills::GetHitPoints/SetHitPoints), Engine.dll
+// UpdateEntityLists, IsPlayer, PSSkills::GetHitPoints/SetHitPoints, et depuis la story 3.4b
+// PSRoutine::PropertyAIMode, lecture et operator=), Engine.dll
 // (eCDynamicEntity::GetID), Game.dll (gCRuntimeInfo::GetEntity, gCScriptRoutine_PS::OnProcess),
 // en tout ou rien, indépendants de resolve_combat (sonde). IsDead, GetPose et MoveTo viennent de
 // resolve_entities (à appeler avant). Les enveloppes get_entity_id, runtime_entity_by_id,
-// get_hit_points et set_hit_points marchent après l'une ou l'autre. False et `missing` au premier
+// get_hit_points, set_hit_points, get_ai_mode et set_ai_mode marchent après l'une ou l'autre. False et `missing` au premier
 // échec.
 bool resolve_npc(const char*& missing);
 // Kill et Defeat (Script_Game.dll), facultatifs : module déjà chargé par le jeu, jamais par
@@ -150,6 +151,8 @@ bool set_damage_amount(const Entity& weapon, long amount);
 bool do_damage(const Entity& weapon, const Entity& target, const Entity& attacker, bool& out);
 
 // --- Q7 : mort et relève ---------------------------------------------------------------
+// get_ai_mode et set_ai_mode (PSRoutine::PropertyAIMode) : après resolve_npc ou resolve_combat
+// (story 3.4b) ; get_last_ai_mode : resolve_combat seulement.
 bool get_ai_mode(const Entity& e, int& out);
 bool get_last_ai_mode(const Entity& e, int& out);
 bool set_ai_mode(const Entity& e, int mode);

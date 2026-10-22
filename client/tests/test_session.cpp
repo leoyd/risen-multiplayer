@@ -2542,16 +2542,18 @@ TEST("PNJ hôte : entrée dans le rayon → NetId 1000, Spawn{1, pose, GUID} ava
     CHECK_EQ(s.npc_count(), 1u);
 }
 
-TEST("PNJ hôte : sortie du rayon ou mort → Despawn ; retour → même NetId, nouveau Spawn") {
+TEST("PNJ hôte : sortie du rayon → Despawn, mort → Death (3.4b) ; retour → même NetId, nouveau Spawn") {
     Session s = host_in_session();
     s.tick(1050, host_world({npc_at(1, 1000.0f), npc_at(2, 2000.0f)}), {});
     CHECK_EQ(s.npc_count(), 2u);
     // PNJ 1 à 50,01 m, PNJ 2 mort.
     Output out = s.tick(1100, host_world({npc_at(1, 5001.0f), npc_at(2, 2000.0f, 0, false)}), {});
     const auto despawns = sent_of<proto::Despawn>(out);
-    CHECK_EQ(despawns.size(), 2u);
+    CHECK(despawns.size() == 1 && despawns[0].net_id == 1000u);
     CHECK(has_log(out, "PNJ 1000 retiré (Despawn) : hors du rayon"));
-    CHECK(has_log(out, "PNJ 1001 retiré (Despawn) : mort"));
+    const auto deaths = sent_of<proto::Death>(out);
+    CHECK(deaths.size() == 1 && deaths[0].net_id == 1001u);
+    CHECK(has_log(out, "PNJ 1001 mort (Death)"));
     const auto sn = snapshots_sent(out);
     CHECK(sn.size() == 1 && sn[0].entities.size() == 1);  // héros seul
     CHECK_EQ(s.npc_count(), 0u);
@@ -2619,10 +2621,11 @@ TEST("PNJ hôte : plus de 53 PNJ → les 53 plus proches, 54 entités ; les autr
     // Les plus proches d'abord : le premier PNJ du snapshot est le n° 159 (à 34,1 m).
     if (!sn.empty() && sn[0].entities.size() > 1) CHECK(sn[0].entities[1].z == 2000.0f + 4000.0f - 590.0f);
     CHECK(npc_spawns_sent(out).empty());
-    // Un des retenus meurt : le suivant (n° 106) entre.
+    // Un des retenus meurt (Death, story 3.4b) : le suivant (n° 106) entre.
     npcs[59].alive = false;
     out = s.tick(1150, host_world(npcs), {});
-    CHECK_EQ(sent_of<proto::Despawn>(out).size(), 1u);
+    CHECK_EQ(sent_of<proto::Death>(out).size(), 1u);
+    CHECK(sent_of<proto::Despawn>(out).empty());
     const auto spawns = npc_spawns_sent(out);
     CHECK(spawns.size() == 1 && spawns[0].guid == guid_of(106));
     // Un PNJ plus proche que tous évince le plus lointain des retenus.
@@ -2922,12 +2925,12 @@ TEST("animations PNJ hôte : entrée et sortie du groupe des 8 suivent la sélec
     Output out = s.tick(1100, host_world(npcs), {});
     CHECK(captured_ids(out) == std::vector<std::uint32_t>{1008u});
     CHECK(uncaptured_ids(out) == std::vector<std::uint32_t>{1007u});
-    // Le PNJ 1 (1000) meurt : Despawn, il sort du groupe ; le PNJ 8 (1007) y revient.
+    // Le PNJ 1 (1000) meurt : Death (story 3.4b), il sort du groupe ; le PNJ 8 (1007) y revient.
     npcs[0].alive = false;
     out = s.tick(1150, host_world(npcs), {});
     CHECK(uncaptured_ids(out) == std::vector<std::uint32_t>{1000u});
     CHECK(captured_ids(out) == std::vector<std::uint32_t>{1007u});
-    CHECK_EQ(sent_of<proto::Despawn>(out).size(), 1u);
+    CHECK_EQ(sent_of<proto::Death>(out).size(), 1u);
     // Fin de session : tous retirés, sans rien envoyer aux PNJ.
     out = s.tick(1200, host_world(npcs), reliable(encode_r(proto::SessionEnd{1})));
     CHECK_EQ(commands_of<UncaptureNpc>(out).size(), 8u);
@@ -3191,9 +3194,8 @@ TEST("PNJ en avance 3.4a : entrée avant le Spawn → appliquée à son arrivée
     const std::string line = guest_stats_line(g, 410);
     CHECK(line.find("entités ignorées 0") != std::string::npos);
     CHECK(line.find("entités inconnues 0") != std::string::npos);
-    // Nouveau compteur en fin de ligne.
-    const std::string tail = "PNJ reçus avant leur Spawn 1";
-    CHECK(line.size() >= tail.size() && line.compare(line.size() - tail.size(), tail.size(), tail) == 0);
+    // Nouveau compteur à la suite des précédents (story 3.4b : les morts de PNJ viennent après).
+    CHECK(line.find(" o/s ; PNJ reçus avant leur Spawn 1 ; morts de PNJ : ") != std::string::npos);
 }
 
 TEST("PNJ en avance 3.4a : plusieurs entrées (ticks 10, 12, 11) → seule la plus récente est appliquée") {
@@ -3282,4 +3284,268 @@ TEST("fin de session hôte 3.4a : 3 PNJ animés, Ended → un UncaptureNpc et un
     CHECK_EQ(all, 3u);
     // Plus rien ensuite (maintien, retour à Inactive).
     CHECK(commands_of<UncaptureNpc>(s.tick(2200, host_world(npcs_in_line(3)), {})).empty());
+}
+
+// --- Mort des répliques de PNJ (story 3.4b, protocole v11) --------------------------------
+
+namespace {
+
+// Index de la première commande de type T dans `out` (taille si absente).
+template <typename T>
+std::size_t first_index(const Output& out) {
+    for (std::size_t i = 0; i < out.commands.size(); ++i) {
+        if (std::holds_alternative<T>(out.commands[i])) return i;
+    }
+    return out.commands.size();
+}
+
+// Index de la commande NpcDeath ou MoveNpc de `net_id` (taille si absente).
+template <typename T>
+std::size_t index_for(const Output& out, std::uint32_t net_id) {
+    for (std::size_t i = 0; i < out.commands.size(); ++i) {
+        if (const auto* c = std::get_if<T>(&out.commands[i]); c != nullptr && c->net_id == net_id) return i;
+    }
+    return out.commands.size();
+}
+
+template <typename T>
+std::size_t count_for(const Output& out, std::uint32_t net_id) {
+    std::size_t n = 0;
+    for (const auto* c : commands_of<T>(out)) n += c->net_id == net_id ? 1 : 0;
+    return n;
+}
+
+// Bilan de l'hôte (t0 = 1000) à 6000, heartbeats de l'invité entre-temps.
+std::string host_stats_line(Session& s, std::uint64_t from) {
+    for (std::uint64_t t = from; t < 6000; t += 500) s.tick(t, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
+    for (const auto& l : s.tick(6000, host_world({}, false), {}).logs) {
+        if (l.text.find("[sync] snapshots (5 s)") != std::string::npos) return l.text;
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST("mort PNJ 3.4b hôte : PNJ annoncé mort → Death (pas de Despawn) avant le snapshot, UncaptureNpc, compté") {
+    Session s = host_with_animated(2);  // 1000 et 1001 annoncés et animés
+    std::vector<NpcState> npcs = npcs_in_line(2);
+    npcs[0].alive = false;
+    const Output out = s.tick(1100, host_world(npcs), {});
+    const auto deaths = sent_of<proto::Death>(out);
+    CHECK(deaths.size() == 1 && deaths[0].net_id == 1000u);
+    CHECK(sent_of<proto::Despawn>(out).empty());
+    CHECK(has_log(out, "[sync] PNJ 1000 mort (Death)"));
+    CHECK(!has_log(out, "retiré (Despawn)"));
+    CHECK(first_index<SendReliable>(out) < first_index<SendSnapshot>(out));
+    CHECK(uncaptured_ids(out) == std::vector<std::uint32_t>{1000u});
+    const auto sn = snapshots_sent(out);
+    CHECK(sn.size() == 1 && sn[0].entities.size() == 2 && sn[0].entities[1].net_id == 1001u);
+    CHECK_EQ(s.npc_count(), 1u);
+    // Toujours mort au tick suivant : une seule fois.
+    const Output again = s.tick(1150, host_world(npcs), {});
+    CHECK(sent_of<proto::Death>(again).empty());
+    const std::string line = host_stats_line(s, 1200);
+    const std::string tail = "morts de PNJ : envoyées 1, appliquées 0, ignorées 0";
+    CHECK(line.size() >= tail.size() && line.compare(line.size() - tail.size(), tail.size(), tail) == 0);
+    CHECK(line.find("retirés 0") != std::string::npos);  // pas compté comme un Despawn
+}
+
+TEST("mort PNJ 3.4b hôte : NetId mort jamais réannoncé, même revenu à la vie ou dans le rayon") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 1000.0f)}), {});
+    s.tick(1100, host_world({npc_at(1, 1000.0f, 0, false)}), {});
+    std::uint64_t t = 1100;
+    // Revenu à la vie, dans le rayon ; puis hors du rayon et de retour.
+    for (float dz : {1000.0f, 1000.0f, 6000.0f, 500.0f}) {
+        t += 50;
+        const Output out = s.tick(t, host_world({npc_at(1, dz)}), {});
+        CHECK(npc_spawns_sent(out).empty());
+        CHECK(reliables_sent(out).empty());
+        CHECK(commands_of<CaptureNpc>(out).empty());
+        const auto sn = snapshots_sent(out);
+        CHECK(sn.size() == 1 && sn[0].entities.size() == 1);  // héros seul
+    }
+    CHECK_EQ(s.npc_count(), 0u);
+    // Un autre PNJ reçoit toujours un nouveau NetId.
+    const auto spawns = npc_spawns_sent(s.tick(t + 50, host_world({npc_at(1, 500.0f), npc_at(2, 600.0f)}), {}));
+    CHECK(spawns.size() == 1 && spawns[0].net_id == 1001u);
+}
+
+TEST("mort PNJ 3.4b hôte : nouvelle session → table des morts vidée") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 100.0f)}), {});
+    s.tick(1100, host_world({npc_at(1, 100.0f, 0, false)}), {});
+    s.tick(1150, host_world({}), reliable(encode_r(proto::SessionEnd{1})));
+    s.tick(2200, loaded_world(), {});
+    s.tick(3000, loaded_world(), control_from(kGuestB, encode(make_hello())));
+    CHECK(s.state() == State::InSession);
+    const auto spawns = npc_spawns_sent(s.tick(3050, host_world({npc_at(1, 100.0f)}), {}));
+    CHECK(spawns.size() == 1 && spawns[0].net_id == 1000u);
+}
+
+TEST("mort PNJ 3.4b hôte : Death{≥ 1000} reçu → ignoré (l'hôte fait autorité), avatar intact") {
+    Session s = host_with_avatar();
+    const Output out = s.tick(1300, loaded_world(), reliable(encode_r(proto::Death{1000})));
+    CHECK(has_log(out, "PNJ 1000 : Death reçu : ignoré (l'hôte fait autorité sur les PNJ)"));
+    CHECK(commands_of<NpcDeath>(out).empty());
+    CHECK(commands_of<AvatarDeath>(s.tick(2000, loaded_world(), {})).empty());
+    CHECK(!s.avatar_dead());
+}
+
+TEST("mort PNJ 3.4b invité : Death après le snapshot tick 3 → NpcDeath à l'instant d'affichage, après MoveNpc, une fois") {
+    Session g = guest_with_npcs();  // dernier snapshot : tick 3 (150 ms distants), affiché à now − 350
+    Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::Death{1000})));
+    CHECK(has_log(out, "[sync] PNJ 1000 : Death reçu : mort à l'instant d'affichage"));
+    CHECK(commands_of<NpcDeath>(out).empty());
+    CHECK_EQ(count_for<MoveNpc>(out, 1000), 1u);  // en attente : encore placée
+    out = g.tick(499, loaded_world(), {});
+    CHECK(commands_of<NpcDeath>(out).empty());
+    out = g.tick(500, loaded_world(), {});
+    const auto deaths = commands_of<NpcDeath>(out);
+    CHECK(deaths.size() == 1 && deaths[0]->net_id == 1000u);
+    CHECK(index_for<MoveNpc>(out, 1000) < index_for<NpcDeath>(out, 1000));
+    CHECK_EQ(g.npc_count(), 2u);  // reste dans la table jusqu'à Ended
+    for (std::uint64_t t = 510; t < 700; t += 50) {
+        out = g.tick(t, loaded_world(), {});
+        CHECK(commands_of<NpcDeath>(out).empty());
+        CHECK_EQ(count_for<MoveNpc>(out, 1000), 0u);
+        CHECK_EQ(count_for<SetNpcHp>(out, 1000), 0u);
+        CHECK_EQ(count_for<MoveNpc>(out, 1001), 1u);  // l'autre réplique continue
+    }
+    const std::string line = guest_stats_line(g, 800);
+    const std::string tail = "morts de PNJ : envoyées 0, appliquées 1, ignorées 0";
+    CHECK(line.size() >= tail.size() && line.compare(line.size() - tail.size(), tail.size(), tail) == 0);
+}
+
+TEST("mort PNJ 3.4b invité : Death sans snapshot (horloge pas prête) → NpcDeath aussitôt") {
+    Session g = guest_in_session();
+    g.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    const Output out = g.tick(160, loaded_world(), reliable(encode_r(proto::Death{1000})));
+    const auto deaths = commands_of<NpcDeath>(out);
+    CHECK(deaths.size() == 1 && deaths[0]->net_id == 1000u);
+}
+
+TEST("mort PNJ 3.4b invité : gestes en file jetés, gestes après le Death ignorés et comptés, aucun PlayNpc*") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), reliable(encode_r(host_npc_motion(1000, 3, 300))));  // dû après la mort
+    g.tick(410, loaded_world(), reliable(encode_r(proto::Death{1000})));
+    g.tick(420, loaded_world(), reliable2(host_npc_motion(1000, 3, 160), host_npc_param(1000, 160, 0, 1.0f)));
+    for (std::uint64_t t = 430; t < 900; t += 10) {
+        const Output out = g.tick(t, loaded_world(), {});
+        CHECK(commands_of<PlayNpcMotion>(out).empty());
+        CHECK(commands_of<PlayNpcParam>(out).empty());
+    }
+    g.tick(900, loaded_world(), reliable(encode_r(host_npc_motion(1000, 3, 500))));
+    const std::string line = guest_stats_line(g, 1000);
+    CHECK(line.find("Motion envoyés 0, rejoués 0, écrasés 0, ignorés 3, file pleine 0, MotionParam envoyés 0, "
+                    "regroupés 0, rejoués 0, ignorés 1") != std::string::npos);
+    CHECK(line.find("appliquées 1") != std::string::npos);
+}
+
+TEST("mort PNJ 3.4b invité : entrée de snapshot après la mort → ni MoveNpc ni SetNpcHp, pas « inconnue »") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), reliable(encode_r(proto::Death{1000})));
+    g.tick(500, loaded_world(), {});  // NpcDeath
+    for (std::uint32_t tick = 6; tick < 10; ++tick) {
+        const Output out = g.tick(200 + tick * 50, loaded_world(),
+                                  snapshot_in(npc_snapshot(tick, {npc_entity(1000, 99.0f, 7), npc_entity(1001, 0.0f, 100)})));
+        CHECK_EQ(count_for<MoveNpc>(out, 1000), 0u);
+        CHECK_EQ(count_for<SetNpcHp>(out, 1000), 0u);
+    }
+    const std::string line = guest_stats_line(g, 800);
+    CHECK(line.find("entités ignorées 0") != std::string::npos);
+    CHECK(line.find("entités inconnues 0") != std::string::npos);
+}
+
+TEST("mort PNJ 3.4b invité : Death en double → ignoré (Debug) ; NetId non annoncé → ignoré (Warn) ; comptés") {
+    Session g = guest_with_npcs();
+    Output out = g.tick(400, loaded_world(), reliable2(proto::Death{1000}, proto::Death{1000}));  // en attente
+    bool debug = false;
+    for (const auto& l : out.logs) {
+        debug |= l.level == Level::Debug && l.text == "[sync] PNJ 1000 : Death reçu : ignoré (réplique déjà morte)";
+    }
+    CHECK(debug);
+    g.tick(500, loaded_world(), {});
+    out = g.tick(510, loaded_world(), reliable(encode_r(proto::Death{1000})));  // déjà morte
+    CHECK(has_log(out, "ignoré (réplique déjà morte)"));
+    CHECK(commands_of<NpcDeath>(out).empty());
+    out = g.tick(520, loaded_world(), reliable(encode_r(proto::Death{1500})));
+    bool warn = false;
+    for (const auto& l : out.logs) {
+        warn |= l.level == Level::Warn && l.text == "[sync] PNJ 1500 : Death reçu : ignoré (NetId non annoncé)";
+    }
+    CHECK(warn);
+    CHECK(commands_of<NpcDeath>(out).empty());
+    CHECK(!g.avatar_dead());
+    const std::string line = guest_stats_line(g, 600);
+    CHECK(line.find("morts de PNJ : envoyées 0, appliquées 1, ignorées 3") != std::string::npos);
+}
+
+TEST("mort PNJ 3.4b invité : Spawn{1} d'une réplique morte refusé ; Despawn la libère ; Ended aussi") {
+    {
+        Session g = guest_with_npcs();
+        g.tick(400, loaded_world(), reliable(encode_r(proto::Death{1000})));
+        g.tick(500, loaded_world(), {});
+        Output out = g.tick(510, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+        CHECK(commands_of<SpawnNpc>(out).empty());
+        CHECK(has_log(out, "PNJ 1000 : Spawn reçu") && has_log(out, "ignoré (NetId déjà annoncé)"));
+        out = g.tick(520, loaded_world(), reliable(encode_r(proto::Despawn{1000})));
+        CHECK_EQ(count_for<ReleaseNpc>(out, 1000), 1u);
+        CHECK_EQ(g.npc_count(), 1u);
+    }
+    {
+        Session g = guest_with_npcs();
+        g.tick(400, loaded_world(), reliable(encode_r(proto::Death{1000})));
+        g.tick(500, loaded_world(), {});
+        const Output out = g.tick(510, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+        const auto rel = commands_of<ReleaseNpc>(out);
+        CHECK(rel.size() == 2 && rel[0]->net_id == 1000u && rel[1]->net_id == 1001u);
+        CHECK(commands_of<NpcDeath>(out).empty());
+    }
+}
+
+TEST("mort PNJ 3.4b invité : PNJ vivant à 0 PV (à terre chez l'hôte) → SetNpcHp 50 puis 1, jamais 0") {
+    Session g = guest_in_session();  // t0 = 100
+    g.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    std::vector<int> hps;
+    for (std::uint32_t tick = 0; tick <= 12; ++tick) {
+        const std::uint16_t hp = tick < 5 ? 50 : 0;
+        const Output out = g.tick(200 + tick * 50, loaded_world(),
+                                  snapshot_in(npc_snapshot(tick, {npc_entity(1000, 0.0f, hp)})));
+        for (const auto* c : commands_of<SetNpcHp>(out)) hps.push_back(c->hp);
+        CHECK(commands_of<NpcDeath>(out).empty());
+    }
+    CHECK(hps == (std::vector<int>{50, 1}));
+}
+
+TEST("mort PNJ 3.4b invité : Death en attente puis Ended ou Despawn → NpcDeath avant ReleaseNpc") {
+    {
+        Session g = guest_with_npcs();
+        g.tick(400, loaded_world(), reliable(encode_r(proto::Death{1000})));  // affichée à 500
+        const Output out = g.tick(410, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+        CHECK_EQ(count_for<NpcDeath>(out, 1000), 1u);
+        CHECK_EQ(count_for<NpcDeath>(out, 1001), 0u);
+        CHECK(index_for<NpcDeath>(out, 1000) < index_for<ReleaseNpc>(out, 1000));
+        CHECK(index_for<ReleaseNpc>(out, 1000) < out.commands.size());
+    }
+    {
+        Session g = guest_with_npcs();
+        g.tick(400, loaded_world(), reliable(encode_r(proto::Death{1000})));
+        const Output out = g.tick(410, loaded_world(), reliable(encode_r(proto::Despawn{1000})));
+        CHECK_EQ(count_for<NpcDeath>(out, 1000), 1u);
+        CHECK(index_for<NpcDeath>(out, 1000) < index_for<ReleaseNpc>(out, 1000));
+        CHECK(index_for<ReleaseNpc>(out, 1000) < out.commands.size());
+    }
+}
+
+TEST("mort PNJ 3.4b invité : snapshot plus récent reçu après le Death → mort reculée à sa pose") {
+    Session g = guest_with_npcs();  // dernier snapshot : tick 3 (150 ms distants)
+    g.tick(400, loaded_world(), reliable(encode_r(proto::Death{1000})));
+    // Snapshot du tick 5 (250 ms) en retard sur le canal non fiable : la mort attend son affichage.
+    g.tick(450, loaded_world(), snapshot_in(npc_snapshot(5, {npc_entity(1000, 50.0f, 100)})));  // horloge inchangée
+    CHECK(commands_of<NpcDeath>(g.tick(500, loaded_world(), {})).empty());
+    CHECK(commands_of<NpcDeath>(g.tick(599, loaded_world(), {})).empty());
+    const Output out = g.tick(600, loaded_world(), {});
+    CHECK_EQ(count_for<NpcDeath>(out, 1000), 1u);
+    CHECK(index_for<MoveNpc>(out, 1000) < index_for<NpcDeath>(out, 1000));
 }

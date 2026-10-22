@@ -432,9 +432,9 @@ puis met leur pose et leurs PV dans le snapshot. L'invité retrouve chaque PNJ n
 `gCRuntimeInfo::GetEntity(GUID)`, l'inscrit au registre comme réplique (son
 `gCScriptRoutine_PS::OnProcess` n'est plus appelé : IA figée), le place par `MoveTo` à la pose
 interpolée (150 ms de retard) et écrit ses PV (`SetHitPoints(pv, 2)`) quand ils changent. À la
-sortie du rayon, à la fin de session et à la fin de monde, la réplique retrouve son IA ; elle
-n'est jamais tuée ni détruite. Les animations des répliques : story 3.4 (ci-dessous) ; leur mort :
-story 3.4b.
+sortie du rayon, à la fin de session et à la fin de monde, la réplique retrouve son IA (une
+réplique morte reste morte, story 3.4b) ; elle n'est jamais détruite. Les animations des répliques : story 3.4 (ci-dessous) ; leur mort :
+story 3.4b (ci-dessous : depuis le protocole v11, un PNJ mort reçoit `Death` et non `Despawn`).
 
 Prérequis : `probe = 0`, overlay Steam désactivé, la même sauvegarde des deux côtés (les GUID des
 PNJ placés sont stables d'une machine et d'un chargement à l'autre, spike J2). Le log doit
@@ -444,7 +444,7 @@ gCScriptRoutine_PS::OnProcess)`.
 1. **Risen hôte + faux invité (une machine)** :
    `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s`, puis s'approcher d'un camp de
    monstres et s'en éloigner. Attendu côté hôte : `[sync] PNJ 1000 annoncé (Spawn) : GUID …, 40.0 m,
-   PV …` à l'entrée dans le rayon, `[sync] PNJ 1000 retiré (Despawn) : hors du rayon` (ou `mort`,
+   PV …` à l'entrée dans le rayon, `[sync] PNJ 1000 retiré (Despawn) : hors du rayon` (ou
    `évincé par plus proche`, `absent de la liste depuis 2 s` : la liste du moteur ne garde que les PNJ à 40 m environ) à la sortie, et le même NetId au retour. Côté
    faux invité : `<- Spawn PNJ netid=1000 guid=…`, `PNJ netid=1000 premier snapshot … PV=…`,
    `PNJ netid=1000 PV a -> b` quand on frappe le monstre, `<- Despawn PNJ netid=1000`, la ligne
@@ -503,7 +503,8 @@ Prérequis : ceux de la story 3.3, et **`log_level = debug`** pour le bilan.
 
 ### Robustesse de session (story 3.4a, à valider en jeu)
 
-**À valider en jeu** : testé au banc (Linux, faux invité) seulement. Protocole inchangé (v10).
+**À valider en jeu** : testé au banc (Linux, faux invité) seulement. Protocole inchangé (v10, puis
+v11 avec la story 3.4b).
 - **Pause du jeu** : quand la frame (`OnProcess`) ne lit plus le transport depuis 1,5 s
   (cinématique, chargement, menu bloquant), le thread réseau envoie lui-même un `Heartbeat` par
   seconde, 60 s au plus (au-delà, il se tait et le pair conclut au timeout 5 s plus tard). À la
@@ -511,8 +512,8 @@ Prérequis : ceux de la story 3.3, et **`log_level = debug`** pour le bilan.
   réseau`, et `[sync] jeu en pause plus de 60 s : …` si la borne a été atteinte.
 - **PNJ en avance** (invité) : une entrée de snapshot d'un PNJ dont le `Spawn` n'est pas encore
   arrivé est gardée 500 ms (la plus récente par NetId, 64 NetId au plus), puis appliquée à
-  l'arrivée du `Spawn`. Le bilan `[sync] snapshots (5 s)` se termine par `PNJ reçus avant leur
-  Spawn N` ; une entrée expirée compte dans « entités inconnues » et « entités ignorées ».
+  l'arrivée du `Spawn`. Le bilan `[sync] snapshots (5 s)` porte le compteur `PNJ reçus avant
+  leur Spawn N`, que la story 3.4b fait suivre des morts de PNJ ; une entrée expirée compte dans « entités inconnues » et « entités ignorées ».
 - **Fin de session** : une seule ligne `PNJ N : plus animé` par PNJ animé ; `sync/npc` écrit
   `PNJ N : retiré du registre des captures`.
 - **Fin de monde** : dès que la frame voit le monde changer (non chargé, ou autre héros), les
@@ -550,6 +551,54 @@ Limite connue : pendant un chargement, la frame n'est pas appelée ; le registre
 contenir les PS des répliques détruites jusqu'à la première frame du nouveau monde (une entité
 du nouveau monde placée à la même adresse aurait ses `PlayMotion` ou son `OnProcess` de routine
 bloqués jusque-là).
+
+### Mort des répliques de PNJ en jeu (story 3.4b, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité) seulement. Protocole **v11**.
+- **Hôte** : un PNJ annoncé qui meurt (`Entity::IsDead`) reçoit `Death{NetId}` au lieu de
+  `Despawn` (`[sync] PNJ N mort (Death)`), avant le snapshot du même tick, une fois ; il sort du
+  groupe des 8 animés au même tick. Ce NetId n'est plus jamais annoncé de la session, même si le
+  PNJ revit ou revient dans le rayon. Limite : un PNJ qui meurt hors du rayon, ou pendant son délai
+  de grâce « absent de la liste », a déjà reçu `Despawn` ; sa copie chez l'invité garde son IA.
+- **Invité** : `[sync] PNJ N : Death reçu : mort à l'instant d'affichage`, puis, quand le temps
+  affiché atteint le dernier snapshot reçu de la réplique, une mort « visuelle » **sans `Kill`
+  natif** (ni XP, ni script, ni quête) : `[sync] PNJ N mort : PV 0, AIMode 12, ragdoll` (une étape
+  en échec donne une ligne Warn ou Error, et la réplique est marquée morte quand même). Elle n'est
+  ensuite plus déplacée, animée ni ses PV écrits ; elle reste au registre (IA, animations et ragdoll
+  natifs bloqués) jusqu'à la fin de session, où elle est libérée et **reste morte**
+  (`[sync] PNJ N libéré : reste morte`, ou l'oubli « fin de monde »). Le butin reste propre à
+  chaque joueur : chacun pille son propre PNJ natif.
+- **PNJ vivant à 0 PV** (humain à terre chez l'hôte) : la réplique vivante reçoit au plus bas
+  1 PV (`[sync] PNJ N : PV = 1` en debug) ; seule la mort met 0 PV.
+- Bilan `[sync] snapshots (5 s)` : en fin de ligne, `morts de PNJ : envoyées …, appliquées …,
+  ignorées …`.
+
+Prérequis : recompiler, copier `client/build/Script_Multiplayer.dll` dans `bin/scripts/`,
+**`log_level = debug`**, overlay Steam désactivé ; reconstruire le faux invité
+(`cd tools/fake-guest && go build`). Log : `bin/scripts/Script_Multiplayer.log`.
+
+1. **Une machine, Risen hôte + faux invité**
+   (`tools/fake-guest/fake-guest --host 127.0.0.1 --duration 180s --echo`), près d'un camp de
+   monstres. Tuer un monstre avec le héros de l'hôte. Attendu chez l'hôte : `[sync] PNJ N mort
+   (Death)`, sans `retiré (Despawn) : mort` ; `PNJ N : plus animé` au même tick s'il était animé ;
+   au bilan `morts de PNJ : envoyées 1, …`. Chez le faux invité : `<- Death PNJ netid=N (poses
+   reçues=…, PV=…)`, puis plus aucune pose de N. S'éloigner à plus de 50 m, puis revenir : aucun
+   nouveau `annoncé (Spawn)` pour ce GUID.
+2. **Une machine, humain à terre** : mettre à terre un humain (mains nues ou arme contondante,
+   sans le tuer). Attendu : pas de `PNJ N mort (Death)` chez l'hôte, pas de `<- Death PNJ` chez le
+   faux invité pour ce NetId.
+3. **Deux machines, mort d'un monstre** : l'hôte tue un monstre proche de l'invité. Attendu chez
+   l'invité : `[sync] PNJ N : Death reçu`, puis `[sync] PNJ N mort : PV 0, AIMode 12, ragdoll`, une
+   seule fois ; la réplique tombe en ragdoll et reste au sol ; aucun message d'XP ni de quête ; au
+   bilan `morts de PNJ : … appliquées 1`.
+4. **Deux machines, butin** : l'invité fouille le cadavre de sa réplique : il trouve l'inventaire
+   natif de son propre PNJ ; l'hôte fouille le sien de son côté.
+5. **Deux machines, fin de session** (l'invité quitte, ou l'hôte recharge). Attendu chez
+   l'invité : `PNJ N libéré : reste morte` (ou l'oubli « fin de monde ») ; le cadavre ne se relève
+   pas, ne joue pas de son de mort et ne donne pas d'XP. Si la routine native relève le PNJ, le
+   noter pour la story 3.5 (hypothèse D4 de la spec invalidée).
+6. **Deux machines, humain à terre** : la réplique d'un humain à terre chez l'hôte garde au moins
+   1 PV chez l'invité (`[sync] PNJ N : PV = 1` en debug), sans mort locale.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

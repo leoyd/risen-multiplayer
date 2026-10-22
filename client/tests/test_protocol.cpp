@@ -139,7 +139,8 @@ const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
 const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin", "spawn.bin",
                                       "despawn.bin",   "aniname.bin",     "death.bin",
                                       "motion_param.bin", "weapon.bin", "weapon_sheathed.bin",
-                                      "armor.bin",     "armor_removed.bin", "spawn_npc.bin", "motion_npc.bin"};
+                                      "armor.bin",     "armor_removed.bin", "spawn_npc.bin", "motion_npc.bin",
+                                      "death_npc.bin"};
 
 }  // namespace
 
@@ -410,14 +411,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v10 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v11 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 10);
+    CHECK_EQ(version, 11);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 10);
+    CHECK_EQ(version, 11);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -428,12 +429,12 @@ TEST("protocole : peek_hello_version sur v10 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 10") {
+TEST("protocole : l'encodeur refuse une version autre que 11") {
     Hello h = sample_hello();
-    h.protocol_version = 9;
+    h.protocol_version = 10;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 11;
+    h.protocol_version = 12;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -559,7 +560,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 10);
+    CHECK_EQ(kProtocolVersion, 11);
     CHECK_EQ(static_cast<int>(kSpawnTypeHero), 0);
     CHECK_EQ(static_cast<int>(kSpawnTypeNpc), 1);
     CHECK_EQ(kFirstNpcNetId, 1000u);
@@ -705,6 +706,16 @@ TEST("protocole : vecteurs aniname.bin, death.bin, aniname_empty.bin") {
     CHECK(dd.ok() && gd != nullptr && gd->net_id == 2);
     CHECK(enc(Death{2}) == d);
     CHECK(dr(load_vector("aniname_empty.bin")).error == DecodeError::BadLength);
+}
+
+// v11 (story 3.4b) : même format, NetId d'un PNJ (mort d'une réplique).
+TEST("protocole : vecteur death_npc.bin (v11) : Death d'un PNJ") {
+    const Bytes b = load_vector("death_npc.bin");
+    CHECK_EQ(b.size(), 5u);
+    const auto d = dr(b);
+    const Death* got = std::get_if<Death>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->net_id == kFirstNpcNetId);
+    CHECK(enc(Death{kFirstNpcNetId}) == b);
 }
 
 TEST("protocole : AniName — 255 octets acceptés, vide ou 256 refusés à l'encodage") {

@@ -200,6 +200,8 @@ struct NpcAbi {
     GetIdFn get_id = nullptr;
     RuntimeGetEntityFn runtime_get_entity = nullptr;
     void* routine_on_process = nullptr;
+    IntGetterFn get_ai_mode = nullptr;      // story 3.4b : mort des répliques (AIMode = 12)
+    AssignAIModeFn set_ai_mode = nullptr;
 };
 NpcAbi g_npc;
 bool g_npc_resolved = false;
@@ -329,7 +331,9 @@ bool resolve_npc(const char*& missing) {
                     lookup(script, kSetHitPoints, a.set_hit_points, missing) &&
                     lookup(engine, kGetId, a.get_id, missing) &&
                     lookup(game, kRuntimeGetEntity, a.runtime_get_entity, missing) &&
-                    lookup(game, kRoutineOnProcess, a.routine_on_process, missing);
+                    lookup(game, kRoutineOnProcess, a.routine_on_process, missing) &&
+                    lookup(script, kGetAIMode, a.get_ai_mode, missing) &&
+                    lookup(script, kSetAIMode, a.set_ai_mode, missing);
     if (!ok) return false;
     g_npc = a;
     g_npc_resolved = true;
@@ -815,13 +819,14 @@ bool do_damage(const Entity& weapon, const Entity& target, const Entity& attacke
 
 // --- Q7 ------------------------------------------------------------------------------------
 
-bool get_ai_mode(const Entity& e, int& out) { return call_int(g_abi.get_ai_mode, e, out); }
+bool get_ai_mode(const Entity& e, int& out) { return call_int(pick_npc(g_npc.get_ai_mode, g_abi.get_ai_mode), e, out); }
 bool get_last_ai_mode(const Entity& e, int& out) { return call_int(g_abi.get_last_ai_mode, e, out); }
 
 bool set_ai_mode(const Entity& e, int mode) {
-    if (!g_resolved || e.ptr == nullptr) return false;
+    const AssignAIModeFn fn = pick_npc(g_npc.set_ai_mode, g_abi.set_ai_mode);
+    if (fn == nullptr || e.ptr == nullptr) return false;
     __try {
-        g_abi.set_ai_mode(&e, &mode);
+        fn(&e, &mode);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;

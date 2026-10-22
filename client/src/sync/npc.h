@@ -9,7 +9,7 @@
 //   l'inscrit au registre avec son PS de routine (le détour de gCScriptRoutine_PS::OnProcess fige
 //   alors son IA) et le place ; MoveNpc et SetNpcHp écrivent sa pose (Entity::MoveTo) et ses PV
 //   (SetHitPoints(pv, fixer)) ; ReleaseNpc le sort du registre (IA rendue) et l'oublie. Jamais
-//   de Kill ni de destruction. Une fois par frame (validate), GetEntity(GUID) doit redonner la
+//   de Kill ni de destruction ; NpcDeath (story 3.4b) la tue « visuellement » (die). Une fois par frame (validate), GetEntity(GUID) doit redonner la
 //   même entité, sinon la réplique est perdue ; un MoveTo en SEH la libère aussi (IA rendue).
 //   Sans gCScriptRoutine_PS, le PNJ est traité comme un GUID introuvable.
 // - Animations (story 3.4) :
@@ -42,6 +42,13 @@ void spawn(std::uint32_t net_id, const protocol::Guid& guid, const core::session
 void move(std::uint32_t net_id, const core::session::Pose& pose);
 void set_hp(std::uint32_t net_id, int hp);
 void release(std::uint32_t net_id);
+// Story 3.4b, invité : mort « visuelle » de la réplique, sans Kill natif : SetHitPoints(0, fixer),
+// AIMode = 12 (PSRoutine::PropertyAIMode), puis SetRagDollEnabled(1, 0, nul) sous ReplayGuard. Un
+// échec est journalisé sans arrêter les étapes suivantes ; la réplique est marquée morte quoi qu'il
+// arrive (move, set_hp, play et play_param sans effet ensuite). Elle reste au registre (rôle
+// NpcReplica : IA, animations et ragdoll natifs bloqués) jusqu'à release ou release_all, qui la
+// laissent morte (aucun appel au jeu).
+void die(std::uint32_t net_id);
 // Story 3.4, invité : rejoue un Motion (GetMotion(nom) → SetMotion → PlayMotion, descripteur
 // reconstruit) ou un réglage de locomotion de l'hôte sur la réplique, sous ReplayGuard. Un échec
 // est journalisé une fois par nom (Motion) ou par réplique (réglage).

@@ -119,6 +119,8 @@ type sessionResult struct {
 	NpcParamsRx     int // MotionParam d'un PNJ annoncé
 	NpcAnimIgnored  int // Motion ou MotionParam d'un NetId ≥ 1000 non annoncé ou retiré, ignorés
 	MaxAnimatedNpcs int // plus grand nombre de PNJ distincts animés en 1 s (8 au plus attendus)
+	// Mort des répliques (v11, story 3.4b).
+	NpcDeathsRx int // Death de PNJ annoncés et vivants
 	EndReason       string
 }
 
@@ -135,6 +137,8 @@ type npcStats struct {
 	HPChanges int
 	Motions   int // v10 : Motion reçus pour ce PNJ
 	Params    int // v10 : MotionParam reçus pour ce PNJ
+	Dead      bool // v11 : Death reçu ; jamais réannoncé de la session
+	Released  bool // v11 : PNJ mort puis libéré par Despawn
 }
 
 // logger : une ligne horodatée par événement.
@@ -742,6 +746,10 @@ func (g *guest) drain() (sessionResult, bool) {
 				g.sendParam(time.Now(), m)
 			}
 		case protocol.Death:
+			if m.NetId >= protocol.FirstNpcNetId {
+				g.npcDeath(m.NetId)
+				continue
+			}
 			g.res.DeathsRx++
 			g.log.printf("<- Death netid=%d", m.NetId)
 		case protocol.Weapon:
@@ -822,6 +830,8 @@ func (g *guest) npcSpawn(m protocol.Spawn) {
 		reason = "pose non finie"
 	case s != nil && s.Present:
 		reason = "NetId déjà annoncé"
+	case s != nil && s.Dead:
+		reason = "NetId mort"
 	case s != nil && s.GUID != m.GUID:
 		reason = "NetId déjà lié à un autre GUID"
 	}
@@ -842,6 +852,14 @@ func (g *guest) npcSpawn(m protocol.Spawn) {
 
 func (g *guest) npcDespawn(netID uint32) {
 	s := g.res.Npcs[netID]
+	if s != nil && s.Dead && !s.Released {
+		// v11 : un PNJ mort reste dans la table jusqu'à Ended ; un Despawn le libère (§8).
+		s.Released = true
+		s.Despawns++
+		g.res.NpcDespawnsRx++
+		g.log.printf("<- Despawn PNJ netid=%d (mort, libéré)", netID)
+		return
+	}
 	if s == nil || !s.Present {
 		g.res.NpcIgnored++
 		g.log.printf("<- Despawn PNJ netid=%d : ignoré (NetId non annoncé)", netID)
@@ -853,10 +871,28 @@ func (g *guest) npcDespawn(netID uint32) {
 	g.log.printf("<- Despawn PNJ netid=%d (poses reçues=%d, PV=%d)", netID, s.Poses, s.LastHP)
 }
 
+// npcDeath : Death d'un PNJ (v11). Accepté seulement d'un PNJ annoncé, pas retiré ni déjà mort ;
+// il n'est plus suivi (ses poses et animations suivantes sont inattendues) et jamais réannoncé.
+func (g *guest) npcDeath(netID uint32) {
+	s := g.res.Npcs[netID]
+	if s == nil || !s.Present || s.Dead {
+		g.res.NpcIgnored++
+		g.log.printf("<- Death PNJ netid=%d : ignoré (NetId non annoncé, retiré ou déjà mort)", netID)
+		return
+	}
+	s.Dead = true
+	s.Present = false
+	g.res.NpcDeathsRx++
+	g.log.printf("<- Death PNJ netid=%d (poses reçues=%d, PV=%d)", netID, s.Poses, s.LastHP)
+}
+
 // npcEntity : entité de snapshot d'un autre NetId que le héros de l'hôte. Tout ce qui n'est pas
 // un PNJ annoncé (NetId < 1000 compris) est compté dans NpcUnknownRx.
 func (g *guest) npcEntity(e protocol.SnapshotEntity) {
 	s := g.res.Npcs[e.NetId]
+	if s != nil && s.Dead && !s.Released {
+		return // v11 : entrée d'un PNJ mort ignorée sans être comptée (comme la DLL)
+	}
 	if e.NetId < protocol.FirstNpcNetId || s == nil || !s.Present {
 		g.res.NpcUnknownRx++
 		return
@@ -917,8 +953,9 @@ func (g *guest) npcSummary() {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	g.log.printf("Bilan PNJ : %d vus, Spawn=%d Despawn=%d poses=%d entités inattendues=%d, au plus %d entités par snapshot",
-		len(ids), g.res.NpcSpawnsRx, g.res.NpcDespawnsRx, g.res.NpcPosesRx, g.res.NpcUnknownRx, g.res.MaxEntities)
+	g.log.printf("Bilan PNJ : %d vus, Spawn=%d Despawn=%d Death=%d poses=%d entités inattendues=%d, au plus %d entités par snapshot",
+		len(ids), g.res.NpcSpawnsRx, g.res.NpcDespawnsRx, g.res.NpcDeathsRx, g.res.NpcPosesRx, g.res.NpcUnknownRx,
+		g.res.MaxEntities)
 	g.log.printf("Bilan animations PNJ : Motion=%d MotionParam=%d ignorés=%d, au plus %d PNJ animés en 1 s",
 		g.res.NpcMotionsRx, g.res.NpcParamsRx, g.res.NpcAnimIgnored, g.res.MaxAnimatedNpcs)
 	for _, id := range ids {
@@ -926,6 +963,9 @@ func (g *guest) npcSummary() {
 		present := ""
 		if s.Present {
 			present = " présent"
+		}
+		if s.Dead {
+			present = " mort"
 		}
 		g.log.printf("  PNJ netid=%d guid=%x Spawn=%d Despawn=%d poses=%d PV %d -> %d (%d changements) Motion=%d MotionParam=%d%s",
 			id, s.GUID[:], s.Spawns, s.Despawns, s.Poses, s.FirstHP, s.LastHP, s.HPChanges, s.Motions, s.Params, present)

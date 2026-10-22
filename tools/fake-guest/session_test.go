@@ -615,3 +615,43 @@ func TestNpcReplicas(t *testing.T) {
 		"<- MotionParam PNJ netid=1005 : ignoré (NetId non annoncé ou retiré)", "Bilan animations PNJ : Motion=",
 		"  PNJ netid=1000 guid=c3624668")
 }
+
+// Story 3.4b : Death d'un PNJ (v11) : une fois, plus suivi, jamais réannoncé ; doublon, NetId
+// inconnu et réannonce refusés.
+func TestNpcDeath(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.SendNpcs = true
+	hc.NpcDeath = true
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1500 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	if r.res.NpcDeathsRx != 1 {
+		t.Errorf("Death de PNJ acceptés : %d, attendu 1", r.res.NpcDeathsRx)
+	}
+	if r.res.DeathsRx != 0 {
+		t.Errorf("Death du héros comptés : %d, attendu 0", r.res.DeathsRx)
+	}
+	if r.res.NpcIgnored != 6 {
+		t.Errorf("messages de PNJ ignorés : %d, attendu 6 (3 de TestNpcReplicas, Death répété, Death{1006}, réannonce)",
+			r.res.NpcIgnored)
+	}
+	a := r.res.Npcs[1000]
+	if a == nil || !a.Dead || a.Present || a.Spawns != 1 || a.Despawns != 1 || !a.Released {
+		t.Fatalf("PNJ 1000 : %+v", a)
+	}
+	// Poses de 1000 après sa mort (ticks 21 à 23) ignorées sans être inattendues : seule celle de
+	// 1005 (jamais annoncé) l'est, une par snapshot (une de plus si un snapshot précède les Spawn).
+	// 1000 : ticks 0 à 19, plus le tick 20 si son snapshot précède le Death (canal non fiable).
+	if r.res.NpcUnknownRx > r.res.SnapshotsRx+1 || a.Poses > 21 {
+		t.Errorf("entités inattendues %d, poses de 1000 %d", r.res.NpcUnknownRx, a.Poses)
+	}
+	if r.res.NpcAnimIgnored != 2 {
+		t.Errorf("animations ignorées : %d, attendu 2 (aucune de 1000 après sa mort)", r.res.NpcAnimIgnored)
+	}
+	expectLog(t, r, "<- Death PNJ netid=1000 (poses reçues=", "<- Death PNJ netid=1000 : ignoré",
+		"<- Death PNJ netid=1006 : ignoré", "<- Spawn PNJ netid=1000 guid=c3624668", "ignoré (NetId mort)",
+		"<- Despawn PNJ netid=1000 (mort, libéré)", "Bilan PNJ : 2 vus, Spawn=3 Despawn=2 Death=1", " mort")
+}

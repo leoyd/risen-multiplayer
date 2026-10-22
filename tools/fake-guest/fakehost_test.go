@@ -36,6 +36,10 @@ type hostConfig struct {
 	// 1005 jamais annoncée ; 1001 retiré au tick 10 (Despawn répété au tick 12, à ignorer) puis
 	// réannoncé au tick 14.
 	SendNpcs bool
+	// Story 3.4b (avec SendNpcs) : 1000 meurt au tick 20 (Death, puis plus d'animation ; ses poses
+	// continuent jusqu'au tick 23, en retard), Death répété et Death{1006} jamais annoncé au tick 21,
+	// Spawn{1} de 1000 au tick 22 (refusés), Despawn{1000} au tick 24 (accepté : libère le mort).
+	NpcDeath bool
 	// Story 3.4a : jeu de l'hôte figé. Après l'entrée en session (Welcome, Spawn), plus aucun
 	// message (ni heartbeat ni snapshot), mais le KCP continue d'acquitter les segments reçus.
 	AcksOnly bool
@@ -463,8 +467,11 @@ func (h *simHost) tick() {
 		h.lastSnapTick = tick
 		entities := []protocol.SnapshotEntity{{NetId: protocol.HostNetId, X: 1 + float32(tick), Y: 2, Z: 3, Yaw: 0.5}}
 		if h.cfg.SendNpcs {
-			entities = append(entities, protocol.SnapshotEntity{NetId: 1000, X: 10 + float32(tick), Y: 2, Z: 3,
-				HP: uint16(150 - tick/4)})
+			alive1000 := !h.cfg.NpcDeath || tick < 20
+			if alive1000 || tick < 24 {
+				entities = append(entities, protocol.SnapshotEntity{NetId: 1000, X: 10 + float32(tick), Y: 2, Z: 3,
+					HP: uint16(150 - tick/4)})
+			}
 			if tick < 10 || tick >= 16 {
 				entities = append(entities, protocol.SnapshotEntity{NetId: 1001, X: 20, Y: 2, Z: 3, HP: 80})
 			}
@@ -474,7 +481,20 @@ func (h *simHost) tick() {
 			if tick == 2 {
 				h.sendReliable(protocol.AniName{AniId: 5, Name: "Wolf_Run"})
 			}
-			if tick >= 2 && tick%2 == 0 {
+			if h.cfg.NpcDeath {
+				switch tick {
+				case 20:
+					h.sendReliable(protocol.Death{NetId: 1000})
+				case 21:
+					h.sendReliable(protocol.Death{NetId: 1000})
+					h.sendReliable(protocol.Death{NetId: 1006})
+				case 22:
+					h.sendReliable(protocol.Spawn{NetId: 1000, Kind: protocol.SpawnTypeNpc, X: 10, Y: 2, Z: 3, GUID: npcGuidA})
+				case 24:
+					h.sendReliable(protocol.Despawn{NetId: 1000})
+				}
+			}
+			if alive1000 && tick >= 2 && tick%2 == 0 {
 				h.sendReliable(protocol.Motion{NetId: 1000, Ms: uint32(tick * 50), Kind: 0, AniId: 5, Flags: protocol.MotionFlagPlay})
 				h.sendReliable(protocol.MotionParam{NetId: 1000, Ms: uint32(tick * 50), Kind: 0,
 					Param: protocol.ParamPlaySpeed, Value: 1})

@@ -229,6 +229,10 @@ void execute(cs::Output out) {
                 npc::release(rn->net_id);
                 continue;
             }
+            if (const auto* nd = std::get_if<cs::NpcDeath>(&cmd)) {  // story 3.4b : mort sans Kill natif
+                npc::die(nd->net_id);
+                continue;
+            }
             // Animations des PNJ (story 3.4) : capture chez l'hôte, rejeu chez l'invité.
             if (const auto* cn = std::get_if<cs::CaptureNpc>(&cmd)) {
                 npc::capture(cn->net_id, cn->guid);

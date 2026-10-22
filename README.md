@@ -212,10 +212,10 @@ graph TD
 ```
 
 - **The host is authoritative.** Each player's game simulates their own hero; the other side shows a **replica** (avatar) driven by the network.
-- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v10**):
+- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v11**):
   - one UDP socket, a channel byte at the start of every datagram;
   - channel 2: handshake (`Hello`, `Welcome`, `Reject`);
-  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`, `Weapon` (name of the weapon in hand, empty when sheathed), `Armor` (name of the armour worn, empty when none); since v9, `Spawn` type 1 announces an NPC replica (NetId ≥ 1000, matched on the guest by its 16-byte GUID); since v10, the host also sends `Motion`/`MotionParam` for its 8 closest NPC replicas;
+  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`, `Weapon` (name of the weapon in hand, empty when sheathed), `Armor` (name of the armour worn, empty when none); since v9, `Spawn` type 1 announces an NPC replica (NetId ≥ 1000, matched on the guest by its 16-byte GUID); since v10, the host also sends `Motion`/`MotionParam` for its 8 closest NPC replicas; since v11, an NPC killed on the host gets `Death` (instead of `Despawn`) and its replica dies once on the guest, without a native `Kill` (no XP, no quest), and is never announced again during the session;
   - channel 1: unreliable full-state snapshots at 20 Hz (hero, plus up to 53 NPCs from the host, closest first, with their HP);
   - display delayed by 150 ms, Hermite interpolation, extrapolation ≤ 250 ms;
   - every message has binary test vectors checked by both the C++ and Go codecs.

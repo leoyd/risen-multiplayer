@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 10
+# Protocole Risen Multiplayer — version 11
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -8,7 +8,8 @@ La v1 couvrait **uniquement la session** (poignée de main, présence, fin de se
 (story 2.1) ajoute `Motion`, la v3 (story 2.2) `Spawn` et `Despawn`, la v4 (story 2.3) le
 snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) `MotionParam`, la v7 (story 3.2) `Weapon`, la v8 (story 3.2c) `Armor`, la v9 (story 3.3) les répliques de PNJ
 (`Spawn` de type 1 avec GUID, PV dans le snapshot), la v10 (story 3.4) leurs animations (`Motion` et
-`MotionParam` de PNJ, sans changement de format). Les combats arrivent avec les stories
+`MotionParam` de PNJ, sans changement de format), la v11 (story 3.4b) la mort des répliques de PNJ
+(`Death` d'un PNJ à la place du `Despawn` de mort, sans changement de format). Les combats arrivent avec les stories
 suivantes et incrémenteront la version.
 
 ## 1. Règles générales
@@ -48,12 +49,12 @@ suivantes et incrémenteront la version.
 | 18 | `AniName` | fiable | les deux sens : nom d'animation interné, avant son premier `Motion` (v5) |
 | 19 | `Motion` | fiable | les deux sens : une animation lancée sur une entité dont l'émetteur a l'autorité (v2) ; PNJ répliqué, hôte → invité (v10) |
 | 20 | `Spawn` | fiable | les deux sens : apparition d'une entité dont l'émetteur a l'autorité (v3) ; type 1 = PNJ, hôte → invité (v9) |
-| 21 | `Despawn` | fiable | les deux sens : retrait d'une entité annoncée par `Spawn` (v3) |
-| 24 | `Death` | fiable | les deux sens : mort d'une entité dont l'émetteur a l'autorité ; le récepteur met la réplique en ragdoll (v5) |
+| 21 | `Despawn` | fiable | les deux sens : retrait d'une entité annoncée par `Spawn` (v3) ; plus jamais pour la mort d'un PNJ (v11) |
+| 24 | `Death` | fiable | les deux sens : mort d'une entité dont l'émetteur a l'autorité ; le récepteur met la réplique en ragdoll (v5) ; PNJ répliqué, hôte → invité (v11) |
 | 26 | `MotionParam` | fiable | les deux sens : réglage de locomotion (poids cible, vitesse de lecture) d'une entité animée (v6) ; PNJ répliqué, hôte → invité (v10) |
 | 27 | `Weapon` | fiable | les deux sens : arme en main d'une entité dont l'émetteur a l'autorité, vide si rangée (v7) |
 | 28 | `Armor` | fiable | les deux sens : armure portée par une entité dont l'émetteur a l'autorité, vide si aucune (v8) |
-| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v10** |
+| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v11** |
 
 Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -65,7 +66,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `10` en v10 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `11` en v11 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -200,6 +201,8 @@ Taille : 5 octets.
 | `net_id` | `u32` | entité morte (AD-6) |
 
 Taille : 5 octets. Le récepteur met la réplique en ragdoll (`SetRagDollEnabled(1, 0, nul)`).
+v11 (story 3.4b) : même format ; un `net_id` ≥ 1000 est la mort d'une réplique de PNJ, émise par
+l'hôte seul (§8, « Mort des répliques »).
 
 ### `MotionParam` (26) — fiable — v6
 
@@ -277,13 +280,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide), ou que les `nombre` entités d'un snapshot |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle, ≠ 1 pour un snapshot |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 10 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 11 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) ; l'encodeur refuse aussi un nom de `Weapon` ou d'`Armor` de plus de 255 octets |
 | `TrailingBytes` | octets restants après la fin du message |
 | `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; `Spawn` : `type` autre que 0 ou 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 10, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 11, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -315,13 +318,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=10`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=11`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0a00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0b00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -331,7 +334,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `0a 00` | `version_protocole` = 10 |
+| 0x02 | `0b 00` | `version_protocole` = 11 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -536,6 +539,20 @@ sonde).
 00000000: 1802 0000 00                             .....
 ```
 
+#### `death_npc.bin` — `Death` d'un PNJ (fiable, sans octet de canal), 5 octets
+
+v11 (story 3.4b) : même format, `net_id` d'un PNJ annoncé par l'hôte. `net_id=1000`.
+
+<!-- vector: death_npc.bin -->
+```text
+00000000: 18e8 0300 00                             .....
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `18` | `MsgType` Death (24) |
+| 0x01 | `e8 03 00 00` | `net_id` = 1000 (PNJ) |
+
 #### `motion_param.bin` — `MotionParam` (fiable, sans octet de canal), 19 octets
 
 `net_id=2`, `ms=1234`, `type=0`, `nature=0` (poids cible), `valeur=1.0`, `durée=0.25`.
@@ -674,11 +691,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 10.
+`Truncated` ; `peek_hello_version` → 11.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0a00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0b00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -688,7 +705,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0a00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0b00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -758,7 +775,7 @@ type ; un type inconnu n'est pas lisible).
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -934,8 +951,9 @@ d'appels.
   - **Annonce** : un PNJ qui entre dans la sélection est annoncé par `Spawn{NetId, 1, pose, guid}`
     et n'est porté par les snapshots qu'à partir du suivant (le `Spawn` passe par KCP, le snapshot
     part aussitôt : l'invité ignorerait l'entité, faute d'annonce) ; un PNJ annoncé qui en sort
-    (hors du rayon, mort, absent de la liste des PNJ du moteur depuis 2 s — 40 ticks —, ou évincé par plus proche) reçoit `Despawn{NetId}`,
-    envoyé avant le snapshot du même tick, qui ne le porte plus. Pendant le délai de grâce, un PNJ absent n'est pas dans les snapshots ; revenu, il y reprend sa place sous le même NetId, sans nouveau `Spawn`. Il n'y a rien à envoyer à la fin de session : l'invité libère tout à `Ended`.
+    (hors du rayon, absent de la liste des PNJ du moteur depuis 2 s — 40 ticks —, ou évincé par plus proche) reçoit `Despawn{NetId}`,
+    envoyé avant le snapshot du même tick, qui ne le porte plus. Depuis la v11, un PNJ annoncé qui
+    sort parce qu'il est **mort** reçoit `Death{NetId}` et non `Despawn` (« Mort des répliques »). Pendant le délai de grâce, un PNJ absent n'est pas dans les snapshots ; revenu, il y reprend sa place sous le même NetId, sans nouveau `Spawn`. Il n'y a rien à envoyer à la fin de session : l'invité libère tout à `Ended`.
   - **PV** : chaque entrée du snapshot porte `PSSkills::GetHitPoints`, borné à [0, 65535] (héros
     compris).
   - **Invité, `Spawn{1}`** : accepté seulement de l'hôte, `NetId` ≥ 1000, pose finie (sinon
@@ -951,7 +969,8 @@ d'appels.
     non annoncé est ignorée et comptée.
   - **Libération** : sur `Despawn{NetId}` (un `NetId` non annoncé est ignoré, journalisé), et pour
     toutes les répliques à `Ended` (fin de session ou de monde), la réplique sort du registre (IA
-    rendue) et est oubliée ; elle n'est jamais tuée ni détruite.
+    rendue) et est oubliée ; elle n'est jamais détruite. Une réplique morte (v11) est libérée de la
+    même façon et reste morte ; aucune réplique n'est tuée par `Kill`.
 - **Animations des PNJ** (v10, story 3.4) : mêmes messages (`AniName`, `Motion`, `MotionParam`),
   avec le `NetId` du PNJ ; l'hôte seul les émet.
   - **Hôte, PNJ animés** : à chaque sélection (snapshot), les **8** premiers PNJ retenus (les plus
@@ -977,6 +996,28 @@ d'appels.
     l'invité n'anime jamais une réplique (ses `PlayMotion` et réglages de locomotion sont bloqués) :
     hors du groupe des 8, elle reste figée dans sa dernière animation. À sa libération, sa file
     d'animations est vidée et son moteur l'anime de nouveau.
+- **Mort des répliques** (v11, story 3.4b) : l'hôte fait autorité sur la mort des PNJ.
+  - **Hôte** : un PNJ annoncé qui sort de la sélection parce qu'il est mort (`Entity::IsDead` = 1)
+    reçoit `Death{NetId}` à la place de `Despawn`, envoyé avant le snapshot du même tick, une fois
+    par `NetId` ; il sort du groupe des 8 animés au même tick. Ce `NetId` est mort jusqu'à la fin
+    de la session : jamais réannoncé ni porté par un snapshot, même si le PNJ redevient vivant ou
+    revient dans le rayon. Un PNJ qui meurt hors de la sélection (hors du rayon, ou pendant son
+    délai de grâce « absent de la liste ») a déjà reçu `Despawn` : rien de plus n'est envoyé.
+  - **Invité, réception** : `Death{NetId ≥ 1000}` n'est accepté que d'une réplique annoncée, ni
+    morte ni déjà en attente de mort ; sinon il est ignoré et journalisé (`NetId` non annoncé,
+    réplique déjà morte). L'hôte ignore tout `Death` d'un `NetId` ≥ 1000.
+  - **Invité, application** : la mort s'applique au même instant d'affichage que le dernier
+    snapshot reçu de cette réplique (aussitôt si aucun), après les PV et gestes dus et la dernière
+    pose ; les gestes encore en attente sont jetés. La réplique meurt **une seule fois**, sans `Kill`
+    natif (ni XP, ni script, ni quête chez l'invité) : PV à 0 (`SetHitPoints(0, fixer)`),
+    `AIMode` = 12, puis ragdoll (`SetRagDollEnabled(1, 0, nul)`). Elle n'est plus ni déplacée, ni
+    animée, ni ses PV écrits ; ses `Motion`/`MotionParam` reçus ensuite sont ignorés et comptés, ses
+    entrées de snapshot ignorées. Elle reste dans la table jusqu'à `Ended` : un `Spawn{1}` de ce
+    `NetId` est refusé (« déjà annoncé ») ; un `Despawn` la libère normalement. À `Ended`, elle est
+    libérée comme les autres et reste morte. Le butin reste propre à chaque joueur : chacun pille
+    son propre PNJ natif.
+  - **PV d'une réplique vivante** : une valeur affichée de 0 (humain à terre chez l'hôte) est
+    écrite **1** ; seule la mort met 0 PV.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -991,4 +1032,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v10).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v11).

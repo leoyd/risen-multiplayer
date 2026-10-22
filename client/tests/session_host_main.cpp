@@ -164,7 +164,8 @@ int main(int argc, char** argv) {
             n.pose.z = world.z + static_cast<float>(radius * std::cos(angle));
             n.pose.yaw = static_cast<float>(angle);
             n.hp = 100 + static_cast<int>(i) - static_cast<int>(t * 4.0);
-            n.alive = !(i == 0 && t > 2.0);
+            // Le PNJ 0 meurt à 2 s (Death), puis « revit » à 6 s (story 3.4b : jamais réannoncé).
+            n.alive = !(i == 0 && t > 2.0 && t <= 6.0);
             world.npcs.push_back(n);
         }
     };
