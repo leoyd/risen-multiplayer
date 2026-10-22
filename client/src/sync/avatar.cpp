@@ -677,16 +677,20 @@ void teleport_player(const Pose& pose) {
 
 bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept {
     AnimFilter& filter = anim_filter();
-    switch (filter.classify(animation_ps, GetCurrentThreadId())) {
+    std::uint32_t net_id = 0;  // story 3.4 : ≠ 0 pour un PNJ animé de l'hôte
+    switch (filter.classify(animation_ps, GetCurrentThreadId(), net_id)) {
         case AnimFilter::Verdict::Pass: return true;
-        case AnimFilter::Verdict::Block: return false;  // le moteur n'anime jamais un avatar (AD-8)
+        case AnimFilter::Verdict::Block: return false;  // le moteur n'anime jamais un avatar ni une réplique (AD-8)
         case AnimFilter::Verdict::Capture: break;
     }
-    if (type >= 0 && type < 8) {  // nouvelle animation : ses réglages repartiront, même identiques
+    if (net_id != 0) {
+        filter.npc_motion_started(net_id, type);  // filtre des réglages propre au PNJ
+    } else if (type >= 0 && type < 8) {  // nouvelle animation : ses réglages repartiront, même identiques
         std::lock_guard<std::mutex> lock(g_stats_mutex);
         for (LastCapture& lc : g_last_capture[type]) lc.valid = false;
     }
     Capture c;
+    c.net_id = net_id;
     c.type = type;
     c.flag = flag;
     c.desc_present = desc != nullptr && game::copy_bytes(desc, c.desc, sizeof c.desc);
@@ -743,7 +747,31 @@ bool on_wrapper_call(void* wrapper, WrapperCall call, int type, float value, flo
         }
         return true;
     }
-    if (anim_filter().classify(wrapper, GetCurrentThreadId()) != AnimFilter::Verdict::Block) return true;
+    std::uint32_t net_id = 0;
+    const AnimFilter::Verdict verdict = anim_filter().classify(wrapper, GetCurrentThreadId(), net_id);
+    if (verdict == AnimFilter::Verdict::Capture && net_id != 0) {
+        // Story 3.4 : PNJ animé de l'hôte, capturé sous son NetId ; un réglage identique au dernier
+        // de ce PNJ (même type et nature) n'entre pas dans l'anneau.
+        if (type >= 0 && type < 8) {
+            const int kind = call == WrapperCall::TargetWeight ? 0
+                             : call == WrapperCall::PlaySpeed  ? 1
+                             : call == WrapperCall::FadeOut    ? 2
+                                                               : 3;
+            const float t = kind == 1 ? 0.0f : time;
+            if (anim_filter().npc_param_changed(net_id, type, kind, value, t)) {
+                Capture c;
+                c.kind = CaptureKind::Param;
+                c.net_id = net_id;
+                c.type = type;
+                c.param_kind = static_cast<std::uint8_t>(kind);
+                c.value = value;
+                c.time = t;
+                anim_filter().push(c);
+            }
+        }
+        return true;
+    }
+    if (verdict != AnimFilter::Verdict::Block) return true;
     std::lock_guard<std::mutex> lock(g_stats_mutex);
     ++g_stats.blocked[k];
     return false;  // le contrôleur de l'avatar ne règle plus nos animations rejouées

@@ -52,6 +52,14 @@
 // {interpolation, PV} : Spawn{1} donne SpawnNpc, chaque tick MoveNpc (même horloge distante et
 // même retard que l'avatar) et SetNpcHp quand les PV affichés changent, Despawn et Ended donnent
 // ReleaseNpc. L'appariement par GUID et le gel de l'IA sont l'affaire de sync/npc.
+//
+// Animations des PNJ (story 3.4, protocole v10) : à chaque sélection, l'hôte anime les
+// kMaxAnimatedNpcs premiers PNJ retenus (les plus proches) : CaptureNpc à l'entrée dans ce groupe,
+// UncaptureNpc à la sortie, au Despawn et à Ended. Leurs PlayMotion et réglages (LocalMotion et
+// LocalParam portant leur NetId) partent comme ceux du héros, dans le même espace d'AniId ; leurs
+// MotionParam sont regroupés, un par frame et par (PNJ, type, nature), et filtrés par PNJ. Chez
+// l'invité, chaque réplique a sa file d'animations, rejouée avec les règles de l'avatar
+// (PlayNpcMotion, PlayNpcParam), vidée à sa libération.
 #pragma once
 
 #include <array>
@@ -152,17 +160,21 @@ struct SnapshotIn {
     Bytes bytes;  // datagramme de canal 1 complet, venu du pair
 };
 // Un PlayMotion du héros local (capturé par le hook) : nom lisible et Motion sans net_id,
-// ani_id ni ms (renseignés par la session).
+// ani_id ni ms (renseignés par la session). Story 3.4 : `net_id` ≠ 0 = PNJ animé de l'hôte
+// (CaptureNpc), 0 = héros local.
 struct LocalMotion {
     std::string name;
     protocol::Motion motion;
+    std::uint32_t net_id = 0;
 };
-// Un réglage de locomotion du héros local (SetTargetWeight / SetPlaySpeed, story 2.4b).
+// Un réglage de locomotion du héros local (SetTargetWeight / SetPlaySpeed, story 2.4b), ou d'un PNJ
+// animé de l'hôte (`net_id` ≠ 0, story 3.4).
 struct LocalParam {
     std::uint8_t type = 0;
     std::uint8_t kind = 0;  // protocol::MotionParamKind
     float value = 0.0f;
     float time = 0.0f;
+    std::uint32_t net_id = 0;
 };
 // Arme en main du héros local (story 3.2), poussée par l'appelant quand elle change (et à la
 // première lecture dans un monde) : nom de l'objet tenu, vide si l'arme est rangée. Retenue dans
@@ -259,10 +271,29 @@ struct SetNpcHp {  // écrire ses PV (SetHitPoints(pv, fixer)), quand la valeur 
 struct ReleaseNpc {  // la sortir du registre (IA rendue) et l'oublier ; jamais détruite
     std::uint32_t net_id = 0;
 };
+// Animations des PNJ (story 3.4). Hôte : inscrire au registre le PS d'animation et l'enveloppe du
+// PNJ de ce GUID, en capture sous ce NetId (CaptureNpc), ou l'en retirer (UncaptureNpc).
+struct CaptureNpc {
+    std::uint32_t net_id = 0;
+    protocol::Guid guid{};
+};
+struct UncaptureNpc {
+    std::uint32_t net_id = 0;
+};
+// Invité : rejouer un Motion ou un réglage de l'hôte sur la réplique, sous ReplayGuard.
+struct PlayNpcMotion {
+    std::uint32_t net_id = 0;
+    std::string name;
+    protocol::Motion motion;
+};
+struct PlayNpcParam {
+    std::uint32_t net_id = 0;
+    protocol::MotionParam param;
+};
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
-                             ReleaseNpc>;
+                             ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -274,6 +305,11 @@ inline constexpr double kMaxMotionLeadMs = 1000.0;      // au-delà, un Motion �
 inline constexpr std::uint32_t kAniIdCount = 0x10000;   // AniId u16
 
 inline constexpr std::uint64_t kSnapshotStatsMs = 5000;  // bilan debug des snapshots
+
+// Story 3.4 (Q12, option A) : PNJ animés au plus (les plus proches), et budget visé de leurs
+// Motion, MotionParam et AniName (octets des messages par seconde, journalisé s'il est dépassé).
+inline constexpr std::size_t kMaxAnimatedNpcs = 8;
+inline constexpr std::uint32_t kNpcAnimBudgetBytesPerSec = 32 * 1024;
 
 enum class Level { Debug, Info, Warn, Error };
 struct LogLine {
@@ -304,6 +340,8 @@ public:
     bool wants_npcs(std::uint64_t now_ms) const;
     // Hôte : PNJ annoncés à l'invité. Invité : répliques suivies.
     std::size_t npc_count() const { return settings_.role == Role::Host ? npc_active_.size() : replicas_.size(); }
+    // Hôte : PNJ animés (story 3.4), au plus kMaxAnimatedNpcs.
+    std::size_t animated_npc_count() const { return npc_animated_.size(); }
     bool avatar_present() const { return avatar_present_; }
     bool avatar_dead() const { return avatar_dead_; }
     std::uint32_t conv() const { return conv_; }
@@ -319,6 +357,15 @@ private:
     void on_peer_motion(const protocol::Motion& m, Output& out);
     void on_local_param(std::uint64_t now, const LocalParam& in, Output& out);
     void on_peer_param(const protocol::MotionParam& p);
+    // Story 3.4. Hôte : réglage d'un PNJ animé, mis en attente (un par frame et par (PNJ, type,
+    // nature)) ; flush_npc_params envoie ceux de `net_id` et `type` (net_id 0 : tous ; type < 0 :
+    // tous les types), dans leur ordre, après le filtre des réglages identiques du PNJ.
+    void on_npc_local_param(std::uint64_t now, const LocalParam& in);
+    void flush_npc_params(std::uint32_t net_id, int type, Output& out);
+    void set_animated_npcs(const std::set<std::uint32_t>& animated, Output& out);
+    // Invité : Motion ou réglage d'un PNJ, mis dans la file de sa réplique.
+    void on_npc_motion(const protocol::Motion& m, Output& out);
+    void on_npc_param(const protocol::MotionParam& p);
     // Objet tenu ou porté (arme, story 3.2 ; armure, story 3.2c) : mêmes règles d'émission et
     // de réception, un état par type.
     enum class Carried : std::uint8_t { Weapon = 0, Armor = 1 };
@@ -330,6 +377,10 @@ private:
     void reset_carried_sent();
     bool accepts_peer_animation(std::uint32_t net_id) const;
     void play_due_motions(std::uint64_t now, Output& out);
+    struct PendingMotion;
+    // Rejoue les événements échus de `queue` à l'instant affiché `shown` (règles de l'avatar) :
+    // `npc_id` 0 = avatar du pair (PlayAvatarMotion/Param), sinon la réplique (PlayNpcMotion/Param).
+    void play_due(std::deque<PendingMotion>& queue, double shown, std::uint32_t npc_id, Output& out);
     void clear_peer_avatar_state();
     void send_snapshot(std::uint64_t now, const World& world, Output& out);
     // Story 3.3. Hôte : sélection, NetId, Spawn{1}/Despawn, entrées du snapshot.
@@ -419,6 +470,8 @@ private:
         float time = 0.0f;
     };
     LastParam last_params_[protocol::kMotionTypeCount][protocol::kMotionParamKindCount];
+    // Filtre des réglages : envoyé (true, `last` mis à jour) ou identique au dernier (false).
+    static bool keep_param(LastParam& last, const protocol::MotionParam& p);
     std::deque<PendingMotion> pending_;
     bool avatar_dead_ = false;   // Death appliqué (AvatarDeath émis)
     bool death_pending_ = false; // Death reçu, appliqué quand le temps affiché atteint death_at_
@@ -463,6 +516,7 @@ private:
     // Invité : NetId → réplique (ordre stable des commandes).
     struct Replica {
         core::Interpolator interp;
+        std::deque<PendingMotion> pending;  // story 3.4 : animations de l'hôte en attente d'affichage
         std::deque<std::pair<double, std::uint16_t>> hp_changes;  // (temps distant, PV), au changement
         bool hp_received = false;
         std::uint16_t last_hp = 0;  // derniers PV reçus
@@ -472,6 +526,17 @@ private:
     struct NpcCounters {
         unsigned spawned = 0, despawned = 0, unreadable = 0, unknown = 0, capped = 0, routine_blocked = 0;
     } npc_;
+    // Animations des PNJ (story 3.4). Hôte : NetId animés, filtre des réglages par PNJ, réglages de
+    // la frame en attente (ordre de leur dernière mise à jour).
+    std::set<std::uint32_t> npc_animated_;
+    using ParamTable = std::array<std::array<LastParam, protocol::kMotionParamKindCount>, protocol::kMotionTypeCount>;
+    std::unordered_map<std::uint32_t, ParamTable> npc_last_params_;
+    std::vector<protocol::MotionParam> npc_param_batch_;
+    struct NpcAnimCounters {
+        unsigned sent = 0, played = 0, superseded = 0, ignored = 0, dropped = 0;
+        unsigned params_sent = 0, params_played = 0, params_ignored = 0, params_grouped = 0;
+        std::uint64_t bytes = 0;  // hôte : octets des Motion, MotionParam et AniName des PNJ envoyés
+    } npc_anim_;
 
     std::uintptr_t armed_player_ = 0;  // joueur à l'armement (fin de monde s'il change)
     std::uint64_t linger_until_ = 0;   // Ended : fin du maintien du KCP

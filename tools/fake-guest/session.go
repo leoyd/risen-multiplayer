@@ -92,9 +92,9 @@ type sessionResult struct {
 	SnapshotsRx  int // snapshots de l'hôte reçus et lisibles
 	SnapshotsBad int // snapshots illisibles
 	MotionsTx    int // Motion envoyés (scénario ou écho, v5)
-	MotionsRx    int // Motion reçus de l'hôte
+	MotionsRx    int // Motion reçus de l'hôte (héros ; ceux des PNJ : NpcMotionsRx)
 	ParamsTx     int // MotionParam envoyés (scénario ou écho, v6)
-	ParamsRx     int // MotionParam reçus de l'hôte
+	ParamsRx     int // MotionParam reçus de l'hôte (héros ; ceux des PNJ : NpcParamsRx)
 	AniNamesRx   int // AniName reçus de l'hôte
 	DeathsRx     int // Death reçus de l'hôte
 	WeaponsTx    int // Weapon envoyés (Spawn, scénario ou écho, v7)
@@ -110,7 +110,12 @@ type sessionResult struct {
 	NpcIgnored    int                  // Spawn{1} ou Despawn de PNJ refusés (journalisés)
 	MaxEntities   int                  // plus grand nombre d'entités vu dans un snapshot de l'hôte
 	Npcs          map[uint32]*npcStats // bilan par NetId
-	EndReason     string
+	// Animations des PNJ (v10, story 3.4).
+	NpcMotionsRx    int // Motion d'un PNJ annoncé
+	NpcParamsRx     int // MotionParam d'un PNJ annoncé
+	NpcAnimIgnored  int // Motion ou MotionParam d'un NetId ≥ 1000 non annoncé ou retiré, ignorés
+	MaxAnimatedNpcs int // plus grand nombre de PNJ distincts animés en 1 s (8 au plus attendus)
+	EndReason       string
 }
 
 // npcStats : bilan d'un PNJ annoncé par l'hôte (v9) : annonces, poses reçues, PV.
@@ -124,6 +129,8 @@ type npcStats struct {
 	FirstHP   uint16
 	LastHP    uint16
 	HPChanges int
+	Motions   int // v10 : Motion reçus pour ce PNJ
+	Params    int // v10 : MotionParam reçus pour ce PNJ
 }
 
 // logger : une ligne horodatée par événement.
@@ -181,9 +188,11 @@ type guest struct {
 	deathSent      bool
 	motionRxPeriod int
 	paramRxPeriod  int
-	npcPosePeriod  int       // entités de PNJ reçues depuis la dernière ligne de bilan
-	endAt          time.Time // fin de --duration (zéro = aucune)
-	extraHello     bool      // --dup-hello : Hello supplémentaire encore à envoyer
+	npcPosePeriod  int             // entités de PNJ reçues depuis la dernière ligne de bilan
+	npcAnimPeriod  map[uint32]bool // v10 : PNJ animés depuis la dernière ligne de bilan
+	npcAnimWarned  map[uint32]bool // v10 : NetId ignorés déjà journalisés
+	endAt          time.Time       // fin de --duration (zéro = aucune)
+	extraHello     bool            // --dup-hello : Hello supplémentaire encore à envoyer
 	incoming       chan datagram
 }
 
@@ -192,6 +201,8 @@ func runSession(ctx context.Context, conn *net.UDPConn, cfg sessionConfig, out i
 	g := &guest{cfg: cfg, conn: conn, log: &logger{out: out}, rng: rand.New(rand.NewSource(cfg.Seed)),
 		start: time.Now()}
 	g.res.Npcs = map[uint32]*npcStats{}
+	g.npcAnimPeriod = map[uint32]bool{}
+	g.npcAnimWarned = map[uint32]bool{}
 	return g.run(ctx)
 }
 
@@ -246,10 +257,14 @@ func (g *guest) run(ctx context.Context) sessionResult {
 			g.sendSnapshot(now)
 			g.playEvents(now)
 			if !now.Before(g.nextHBLog) {
-				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d ; MotionParam reçus=%d ; PNJ suivis=%d poses=%d inattendues=%d",
+				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d ; MotionParam reçus=%d ; PNJ suivis=%d poses=%d inattendues=%d animés=%d",
 					g.hbTxPeriod, g.hbRxPeriod, g.res.HeartbeatsTx, g.res.HeartbeatsRx, g.snapTxPeriod, g.snapRxPeriod,
-					g.motionRxPeriod, g.paramRxPeriod, g.npcPresent(), g.npcPosePeriod, g.res.NpcUnknownRx)
+					g.motionRxPeriod, g.paramRxPeriod, g.npcPresent(), g.npcPosePeriod, g.res.NpcUnknownRx, len(g.npcAnimPeriod))
+				if len(g.npcAnimPeriod) > g.res.MaxAnimatedNpcs {
+					g.res.MaxAnimatedNpcs = len(g.npcAnimPeriod)
+				}
 				g.npcPosePeriod = 0
+				g.npcAnimPeriod = map[uint32]bool{}
 				g.hbTxPeriod, g.hbRxPeriod = 0, 0
 				g.snapTxPeriod, g.snapRxPeriod = 0, 0
 				g.motionRxPeriod = 0
@@ -693,12 +708,20 @@ func (g *guest) drain() (sessionResult, bool) {
 			g.hostNames[m.AniId] = m.Name
 			g.log.printf("<- AniName id=%d nom=%s", m.AniId, m.Name)
 		case protocol.Motion:
+			if m.NetId >= protocol.FirstNpcNetId {
+				g.npcAnimation(m.NetId, true, m.AniId)
+				continue
+			}
 			g.res.MotionsRx++
 			g.motionRxPeriod++
 			if name, ok := g.hostNames[m.AniId]; ok && g.cfg.Echo && m.NetId == protocol.HostNetId {
 				g.sendMotion(time.Now(), name, m)
 			}
 		case protocol.MotionParam:
+			if m.NetId >= protocol.FirstNpcNetId {
+				g.npcAnimation(m.NetId, false, 0)
+				continue
+			}
 			g.res.ParamsRx++
 			g.paramRxPeriod++
 			if g.cfg.Echo && m.NetId == protocol.HostNetId {
@@ -841,6 +864,35 @@ func (g *guest) npcEntity(e protocol.SnapshotEntity) {
 	}
 }
 
+// npcAnimation : Motion (motion) ou MotionParam d'un NetId de PNJ (v10). Accepté seulement d'un PNJ
+// annoncé et pas encore retiré, compté par NetId ; sinon ignoré, journalisé une fois par NetId.
+func (g *guest) npcAnimation(netID uint32, motion bool, aniID uint16) {
+	what := "MotionParam"
+	if motion {
+		what = "Motion"
+	}
+	s := g.res.Npcs[netID]
+	if s == nil || !s.Present {
+		g.res.NpcAnimIgnored++
+		if !g.npcAnimWarned[netID] {
+			g.npcAnimWarned[netID] = true
+			g.log.printf("<- %s PNJ netid=%d : ignoré (NetId non annoncé ou retiré)", what, netID)
+		}
+		return
+	}
+	g.npcAnimPeriod[netID] = true
+	if motion {
+		if s.Motions == 0 {
+			g.log.printf("<- Motion PNJ netid=%d premier geste ani=%d nom=%s", netID, aniID, g.hostNames[aniID])
+		}
+		s.Motions++
+		g.res.NpcMotionsRx++
+		return
+	}
+	s.Params++
+	g.res.NpcParamsRx++
+}
+
 // npcSummary : une ligne de bilan par PNJ vu, par NetId croissant.
 func (g *guest) npcSummary() {
 	if len(g.res.Npcs) == 0 {
@@ -853,14 +905,16 @@ func (g *guest) npcSummary() {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	g.log.printf("Bilan PNJ : %d vus, Spawn=%d Despawn=%d poses=%d entités inattendues=%d, au plus %d entités par snapshot",
 		len(ids), g.res.NpcSpawnsRx, g.res.NpcDespawnsRx, g.res.NpcPosesRx, g.res.NpcUnknownRx, g.res.MaxEntities)
+	g.log.printf("Bilan animations PNJ : Motion=%d MotionParam=%d ignorés=%d, au plus %d PNJ animés en 1 s",
+		g.res.NpcMotionsRx, g.res.NpcParamsRx, g.res.NpcAnimIgnored, g.res.MaxAnimatedNpcs)
 	for _, id := range ids {
 		s := g.res.Npcs[id]
 		present := ""
 		if s.Present {
 			present = " présent"
 		}
-		g.log.printf("  PNJ netid=%d guid=%x Spawn=%d Despawn=%d poses=%d PV %d -> %d (%d changements)%s", id, s.GUID[:],
-			s.Spawns, s.Despawns, s.Poses, s.FirstHP, s.LastHP, s.HPChanges, present)
+		g.log.printf("  PNJ netid=%d guid=%x Spawn=%d Despawn=%d poses=%d PV %d -> %d (%d changements) Motion=%d MotionParam=%d%s",
+			id, s.GUID[:], s.Spawns, s.Despawns, s.Poses, s.FirstHP, s.LastHP, s.HPChanges, s.Motions, s.Params, present)
 	}
 }
 

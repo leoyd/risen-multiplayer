@@ -1,4 +1,4 @@
-# Vecteurs de référence du protocole v9
+# Vecteurs de référence du protocole v10
 
 Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) et Go
 (faux invité, story 1.3). Ils sont la référence **indépendante de l'encodeur** : chaque
@@ -9,12 +9,13 @@ Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) 
 
 | Fichier | Message | Attendu |
 |---|---|---|
-| `hello.bin` | `Hello` v9, `"0.1.0"`, empreintes Steam x64 2023, `"Leo"`, `"It_Sword_01"` | décodé, réencodé à l'octet près |
+| `hello.bin` | `Hello` v10, `"0.1.0"`, empreintes Steam x64 2023, `"Leo"`, `"It_Sword_01"` | décodé, réencodé à l'octet près |
 | `welcome.bin` | `Welcome` `conv=0x12345678`, `(100.0, -50.5, 2000.0)`, lacet `1.5` | décodé, réencodé à l'octet près |
 | `reject.bin` | `Reject` raison 2 | décodé, réencodé à l'octet près |
 | `heartbeat.bin` | `Heartbeat` (fiable, sans canal) | décodé, réencodé à l'octet près |
 | `session_end.bin` | `SessionEnd` raison 1 (fiable, sans canal) | décodé, réencodé à l'octet près |
 | `motion.bin` | `Motion` v2 (fiable, sans canal), `net_id=2`, `type=0`, `ani_id=7`, descripteur présent | décodé, réencodé à l'octet près |
+| `motion_npc.bin` | `Motion` v10 d'un PNJ, `net_id=1000`, `type=0`, `ani_id=3`, sans descripteur | décodé, réencodé à l'octet près |
 | `spawn.bin` | `Spawn` v3 (fiable, sans canal), `net_id=2`, `type=0`, `(100.0, -50.5, 2000.0)`, lacet `1.5` | décodé, réencodé à l'octet près |
 | `spawn_npc.bin` | `Spawn` v9 de type 1 (PNJ), `net_id=1000`, `(100.0, -50.5, 2000.0)`, lacet `1.5`, GUID de 16 octets | décodé, réencodé à l'octet près |
 | `despawn.bin` | `Despawn` v3 (fiable, sans canal), `net_id=2` | décodé, réencodé à l'octet près |

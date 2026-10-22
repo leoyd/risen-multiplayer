@@ -13,14 +13,15 @@ std::optional<core::session::Input> local_input(const Capture& capture, const st
     if (capture.kind == CaptureKind::Param) {
         if (capture.type < 0 || capture.type >= protocol::kMotionTypeCount) return std::nullopt;
         return core::session::LocalParam{static_cast<std::uint8_t>(capture.type), capture.param_kind, capture.value,
-                                         capture.time};
+                                         capture.time, capture.net_id};
     }
     if (capture.type < 0 || capture.type >= protocol::kMotionTypeCount || !usable_motion_name(name)) {
         return std::nullopt;
     }
     static_assert(sizeof capture.desc == game::kPlayDescSize, "Capture::desc = eSMotionPlayBackDesc");
     return core::session::LocalMotion{
-        name, game::motion_from_call(capture.type, capture.flag, capture.desc_present ? &capture.desc : nullptr, 0)};
+        name, game::motion_from_call(capture.type, capture.flag, capture.desc_present ? &capture.desc : nullptr, 0),
+        capture.net_id};
 }
 
 }  // namespace mp::sync

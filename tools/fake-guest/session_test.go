@@ -570,4 +570,22 @@ func TestNpcReplicas(t *testing.T) {
 	expectLog(t, r, "<- Spawn PNJ netid=1000 guid=c3624668", "ignoré (NetId déjà annoncé)", "ignoré (NetId < 1000)",
 		"<- Despawn PNJ netid=1001", "<- Despawn PNJ netid=1001 : ignoré (NetId non annoncé)", "PNJ netid=1000 PV 150 -> 149",
 		"Bilan PNJ : 2 vus", "  PNJ netid=1000 guid=c3624668")
+	// v10 (story 3.4) : animations comptées par NetId de PNJ annoncé ; retiré ou inconnu → ignorées.
+	if a.Motions < 5 || a.Params != a.Motions || b.Motions != 1 || b.Params != 0 {
+		t.Errorf("animations : PNJ 1000 Motion=%d MotionParam=%d, PNJ 1001 Motion=%d MotionParam=%d", a.Motions, a.Params,
+			b.Motions, b.Params)
+	}
+	if r.res.NpcAnimIgnored != 2 || r.res.NpcMotionsRx != a.Motions+b.Motions || r.res.NpcParamsRx != a.Params {
+		t.Errorf("animations : Motion=%d MotionParam=%d ignorés=%d", r.res.NpcMotionsRx, r.res.NpcParamsRx, r.res.NpcAnimIgnored)
+	}
+	if r.res.MotionsRx != 0 || r.res.ParamsRx != 0 {
+		t.Errorf("Motion/MotionParam du héros comptés : %d/%d, attendu 0 (seuls des PNJ animés)", r.res.MotionsRx, r.res.ParamsRx)
+	}
+	if r.res.MaxAnimatedNpcs < 1 || r.res.MaxAnimatedNpcs > 2 {
+		t.Errorf("PNJ animés en 1 s : %d", r.res.MaxAnimatedNpcs)
+	}
+	expectLog(t, r, "<- Motion PNJ netid=1000 premier geste ani=5 nom=Wolf_Run",
+		"<- Motion PNJ netid=1001 : ignoré (NetId non annoncé ou retiré)",
+		"<- MotionParam PNJ netid=1005 : ignoré (NetId non annoncé ou retiré)", "Bilan animations PNJ : Motion=",
+		"  PNJ netid=1000 guid=c3624668")
 }

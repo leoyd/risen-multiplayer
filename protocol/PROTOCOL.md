@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 9
+# Protocole Risen Multiplayer — version 10
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -7,7 +7,8 @@ et le codec Go le suivent, et les vecteurs de `protocol/vectors/` en sont tirés
 La v1 couvrait **uniquement la session** (poignée de main, présence, fin de session). La v2
 (story 2.1) ajoute `Motion`, la v3 (story 2.2) `Spawn` et `Despawn`, la v4 (story 2.3) le
 snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) `MotionParam`, la v7 (story 3.2) `Weapon`, la v8 (story 3.2c) `Armor`, la v9 (story 3.3) les répliques de PNJ
-(`Spawn` de type 1 avec GUID, PV dans le snapshot). Les combats arrivent avec les stories
+(`Spawn` de type 1 avec GUID, PV dans le snapshot), la v10 (story 3.4) leurs animations (`Motion` et
+`MotionParam` de PNJ, sans changement de format). Les combats arrivent avec les stories
 suivantes et incrémenteront la version.
 
 ## 1. Règles générales
@@ -45,14 +46,14 @@ suivantes et incrémenteront la version.
 | 16 | `Heartbeat` | fiable | les deux sens, 1 Hz |
 | 17 | `SessionEnd` | fiable | les deux sens |
 | 18 | `AniName` | fiable | les deux sens : nom d'animation interné, avant son premier `Motion` (v5) |
-| 19 | `Motion` | fiable | les deux sens : une animation lancée sur une entité dont l'émetteur a l'autorité (v2) |
+| 19 | `Motion` | fiable | les deux sens : une animation lancée sur une entité dont l'émetteur a l'autorité (v2) ; PNJ répliqué, hôte → invité (v10) |
 | 20 | `Spawn` | fiable | les deux sens : apparition d'une entité dont l'émetteur a l'autorité (v3) ; type 1 = PNJ, hôte → invité (v9) |
 | 21 | `Despawn` | fiable | les deux sens : retrait d'une entité annoncée par `Spawn` (v3) |
 | 24 | `Death` | fiable | les deux sens : mort d'une entité dont l'émetteur a l'autorité ; le récepteur met la réplique en ragdoll (v5) |
-| 26 | `MotionParam` | fiable | les deux sens : réglage de locomotion (poids cible, vitesse de lecture) d'une entité animée (v6) |
+| 26 | `MotionParam` | fiable | les deux sens : réglage de locomotion (poids cible, vitesse de lecture) d'une entité animée (v6) ; PNJ répliqué, hôte → invité (v10) |
 | 27 | `Weapon` | fiable | les deux sens : arme en main d'une entité dont l'émetteur a l'autorité, vide si rangée (v7) |
 | 28 | `Armor` | fiable | les deux sens : armure portée par une entité dont l'émetteur a l'autorité, vide si aucune (v8) |
-| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v9** |
+| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v10** |
 
 Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -64,7 +65,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `9` en v9 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `10` en v10 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -276,13 +277,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide), ou que les `nombre` entités d'un snapshot |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle, ≠ 1 pour un snapshot |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 9 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 10 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) ; l'encodeur refuse aussi un nom de `Weapon` ou d'`Armor` de plus de 255 octets |
 | `TrailingBytes` | octets restants après la fin du message |
 | `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; `Spawn` : `type` autre que 0 ou 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 9, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 10, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -314,13 +315,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=9`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=10`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0900 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0a00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -330,7 +331,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `09 00` | `version_protocole` = 9 |
+| 0x02 | `0a 00` | `version_protocole` = 10 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -426,6 +427,28 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 | 0x1d | `00 00 00 00` | `d10` = 0 |
 | 0x21 | `00 00 40 3f` | `d14` = 0.75 |
 | 0x25 | `02 00 00 00` | `d18` = 2 |
+
+#### `motion_npc.bin` — `Motion` d'un PNJ (fiable, sans octet de canal), 41 octets
+
+v10 (story 3.4) : même format, `net_id` d'un PNJ annoncé par l'hôte. `net_id=1000`, `ms=1234`,
+`type=0`, `ani_id=3`, `flags=1` (flag, sans descripteur : les 7 scalaires valent 0).
+
+<!-- vector: motion_npc.bin -->
+```text
+00000000: 13e8 0300 00d2 0400 0000 0300 0100 0000  ................
+00000010: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+00000020: 0000 0000 0000 0000 00                   .........
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `13` | `MsgType` Motion (19) |
+| 0x01 | `e8 03 00 00` | `net_id` = 1000 (PNJ) |
+| 0x05 | `d2 04 00 00` | `ms` = 1234 |
+| 0x09 | `00` | `type` = 0 |
+| 0x0a | `03 00` | `ani_id` = 3 |
+| 0x0c | `01` | `flags` = flag seul |
+| 0x0d | 28 × `00` | `d00` à `d18` = 0 |
 
 #### `spawn.bin` — `Spawn` (fiable, sans octet de canal), 22 octets
 
@@ -651,11 +674,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 9.
+`Truncated` ; `peek_hello_version` → 10.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0900 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0a00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -665,7 +688,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0900 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0a00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -735,7 +758,7 @@ type ; un type inconnu n'est pas lisible).
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -796,7 +819,8 @@ d'appels.
     d'abord en `AniName{ani_id, nom}`, sur le même canal fiable : il précède donc toujours son
     premier `Motion`. Les `ani_id` repartent de 0 à chaque session ;
   - le récepteur n'accepte un `Motion` que du `NetId` de l'avatar du pair, avatar présent et
-    vivant ; un `ani_id` inconnu ou un scalaire non fini le fait ignorer (journalisé) ;
+    vivant, ou (invité, v10) d'un `NetId` de PNJ annoncé par l'hôte et pas encore retiré (« Animations
+    des PNJ ») ; un `ani_id` inconnu ou un scalaire non fini le fait ignorer (journalisé) ;
   - il rejoue chaque `Motion` quand son temps d'affichage (horloge distante − 150 ms, comme les
     snapshots) atteint `ms` ; un `Motion` en retard (ou reçu avant tout snapshot) part aussitôt ;
     parmi ceux qui partent à la même frame, seul le plus récent des types 0 et 1 est rejoué.
@@ -918,6 +942,31 @@ d'appels.
   - **Libération** : sur `Despawn{NetId}` (un `NetId` non annoncé est ignoré, journalisé), et pour
     toutes les répliques à `Ended` (fin de session ou de monde), la réplique sort du registre (IA
     rendue) et est oubliée ; elle n'est jamais tuée ni détruite.
+- **Animations des PNJ** (v10, story 3.4) : mêmes messages (`AniName`, `Motion`, `MotionParam`),
+  avec le `NetId` du PNJ ; l'hôte seul les émet.
+  - **Hôte, PNJ animés** : à chaque sélection (snapshot), les **8** premiers PNJ retenus (les plus
+    proches d'un des deux joueurs) sont animés ; un PNJ entre dans ce groupe ou en sort à la
+    sélection suivante, et en sort aussi à son `Despawn` et à la fin de session. Seuls les
+    `PlayMotion` et réglages de locomotion d'un PNJ animé sont envoyés, à partir du `PlayMotion`
+    suivant son entrée dans le groupe ; ceux d'un PNJ qui n'y est plus sont jetés.
+  - **Hôte, émission** : un `Motion` part comme celui du héros (daté en `ms`, `AniName` avant le
+    premier usage d'un nom). L'espace des `ani_id` est **unique par émetteur** : héros et PNJ
+    partagent le même. Les `MotionParam` d'un PNJ sont regroupés : au plus un par frame et par
+    (type, nature), le dernier ; un `Motion` d'un type fait d'abord partir les réglages en attente
+    de ce type pour ce PNJ (leur ordre est gardé). Le filtre des réglages identiques est celui du
+    héros (mêmes écarts, valeurs finales 0 ou 1 toujours envoyées, premier réglage après un `Motion`
+    du type), tenu par PNJ ; il repart à neuf quand le PNJ rentre dans le groupe.
+  - **Budget** : 32 Ko/s au plus pour l'ensemble des `Motion`, `MotionParam` et `AniName` des PNJ
+    (octets des messages, sans l'en-tête KCP). Un dépassement est journalisé, une fois par bilan de
+    5 s ; rien n'est retenu ni retardé.
+  - **Invité** : un `Motion` ou un `MotionParam` d'un `NetId` ≥ 1000 n'est accepté que d'un PNJ
+    annoncé (`Spawn{1}`) et pas encore retiré (`Despawn`, `Ended`) ; sinon il est ignoré et compté.
+    Il est rejoué sur la réplique avec les règles de l'avatar, appliquées **par PNJ** : 150 ms de
+    retard (même horloge distante), seul le plus récent `Motion` des types 0 et 1 qui partent à la
+    même frame est rejoué, les réglages des types 0/1 placés avant lui sont écartés. Le moteur de
+    l'invité n'anime jamais une réplique (ses `PlayMotion` et réglages de locomotion sont bloqués) :
+    hors du groupe des 8, elle reste figée dans sa dernière animation. À sa libération, sa file
+    d'animations est vidée et son moteur l'anime de nouveau.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -932,4 +981,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v9).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v10).

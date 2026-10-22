@@ -1,4 +1,5 @@
-// Captures du héros local → entrées de core/session (story 2.4). Code portable, testé sous
+// Captures du héros local (et des PNJ animés de l'hôte, story 3.4 : NetId porté par la capture)
+// → entrées de core/session (story 2.4). Code portable, testé sous
 // Linux : c'est ici que se fait le routage par nature (PlayMotion ou ragdoll) des captures de
 // l'AnimFilter.
 #pragma once

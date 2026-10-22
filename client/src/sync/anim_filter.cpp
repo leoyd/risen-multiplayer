@@ -23,8 +23,10 @@ void AnimFilter::set_local(void* animation_ps) {
 void AnimFilter::track(const TrackedEntity& entry) {
     if (entry.entity == nullptr) return;
     std::lock_guard<std::mutex> lock(mutex_);
+    if (entry.role == EntityRole::NpcCapture) npc_last_.erase(entry.net_id);  // filtre à neuf
     for (TrackedEntity& e : entities_) {
         if (e.entity == entry.entity) {
+            if (e.role == EntityRole::NpcCapture) npc_last_.erase(e.net_id);
             e = entry;
             return;
         }
@@ -35,6 +37,9 @@ void AnimFilter::track(const TrackedEntity& entry) {
 void AnimFilter::untrack(const void* entity) {
     if (entity == nullptr) return;
     std::lock_guard<std::mutex> lock(mutex_);
+    for (const TrackedEntity& e : entities_) {
+        if (e.entity == entity && e.role == EntityRole::NpcCapture) npc_last_.erase(e.net_id);
+    }
     entities_.erase(std::remove_if(entities_.begin(), entities_.end(),
                                    [entity](const TrackedEntity& e) { return e.entity == entity; }),
                     entities_.end());
@@ -43,6 +48,7 @@ void AnimFilter::untrack(const void* entity) {
 void AnimFilter::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     entities_.clear();
+    npc_last_.clear();
 }
 
 std::size_t AnimFilter::tracked_count() const {
@@ -76,7 +82,7 @@ bool AnimFilter::find_by_wrapper(const void* ptr, TrackedEntity& out) const {
 
 bool AnimFilter::blocks_locked(const void* ptr) const {
     for (const TrackedEntity& e : entities_) {
-        if (e.role == EntityRole::LocalHero) continue;
+        if (e.role == EntityRole::LocalHero || e.role == EntityRole::NpcCapture) continue;
         if (e.animation_ps == ptr || e.wrapper == ptr) return true;
     }
     return false;
@@ -101,6 +107,12 @@ unsigned AnimFilter::take_blocked() {
 }
 
 AnimFilter::Verdict AnimFilter::classify(void* ptr, std::uint32_t thread_id) {
+    std::uint32_t net_id = 0;
+    return classify(ptr, thread_id, net_id);
+}
+
+AnimFilter::Verdict AnimFilter::classify(void* ptr, std::uint32_t thread_id, std::uint32_t& net_id) {
+    net_id = 0;
     std::uint32_t expected = 0;
     if (!hook_thread_.compare_exchange_strong(expected, thread_id) && expected != thread_id) {
         hook_thread_varied_.store(true);
@@ -109,6 +121,13 @@ AnimFilter::Verdict AnimFilter::classify(void* ptr, std::uint32_t thread_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Le PS local passe avant tout : jamais bloqué, même suivi comme avatar par erreur.
     if (ptr == local_) return Verdict::Capture;
+    // PNJ animé de l'hôte (story 3.4) : capturé sous son NetId, jamais bloqué.
+    for (const TrackedEntity& e : entities_) {
+        if (e.role == EntityRole::NpcCapture && e.net_id != 0 && (e.animation_ps == ptr || e.wrapper == ptr)) {
+            net_id = e.net_id;
+            return Verdict::Capture;
+        }
+    }
     if (!blocks_locked(ptr)) return Verdict::Pass;
     if (replaying()) return Verdict::Pass;
     ++blocked_;
@@ -124,6 +143,23 @@ void AnimFilter::push(const Capture& capture) {
     ring_[head_] = capture;
     head_ = (head_ + 1) % kCaptureRing;
     ++count_;
+}
+
+bool AnimFilter::npc_param_changed(std::uint32_t net_id, int type, int kind, float value, float time) {
+    if (type < 0 || type >= 8 || kind < 0 || kind >= 4) return true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    LastCapture& last = npc_last_[net_id].last[type][kind];
+    if (last.valid && last.value == value && last.time == time) return false;
+    last = LastCapture{true, value, time};
+    return true;
+}
+
+void AnimFilter::npc_motion_started(std::uint32_t net_id, int type) {
+    if (type < 0 || type >= 8) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = npc_last_.find(net_id);
+    if (it == npc_last_.end()) return;
+    for (LastCapture& lc : it->second.last[type]) lc.valid = false;
 }
 
 bool AnimFilter::is_local(const void* animation_ps) const {

@@ -2823,3 +2823,314 @@ TEST("PNJ hôte : Spawn{1} ou Despawn de PNJ venus de l'invité → ignorés") {
     CHECK(commands_of<ReleaseNpc>(out).empty());
     CHECK(has_log(out, "PNJ 1000 : Despawn reçu : ignoré (l'hôte fait autorité sur les PNJ)"));
 }
+
+// --- Animations des PNJ (story 3.4) ------------------------------------------------------
+
+namespace {
+
+// PNJ n (1..n) à n × 100 cm du héros : le plus proche est le PNJ 1.
+std::vector<NpcState> npcs_in_line(std::uint8_t count, std::uint8_t first = 1) {
+    std::vector<NpcState> v;
+    for (std::uint8_t n = first; n < first + count; ++n) v.push_back(npc_at(n, 100.0f * n));
+    return v;
+}
+
+std::vector<std::uint32_t> captured_ids(const Output& out) {
+    std::vector<std::uint32_t> v;
+    for (const auto* c : commands_of<CaptureNpc>(out)) v.push_back(c->net_id);
+    return v;
+}
+
+std::vector<std::uint32_t> uncaptured_ids(const Output& out) {
+    std::vector<std::uint32_t> v;
+    for (const auto* c : commands_of<UncaptureNpc>(out)) v.push_back(c->net_id);
+    return v;
+}
+
+// Hôte en session (t0 = 1000) dont les PNJ 1 à `count` sont annoncés (tick 1050) et animés.
+Session host_with_animated(std::uint8_t count) {
+    Session s = host_in_session();
+    s.tick(1050, host_world(npcs_in_line(count)), {});
+    return s;
+}
+
+Input npc_motion_in(std::uint32_t net_id, const std::string& name, std::uint8_t type = 0) {
+    return LocalMotion{name, local_motion_of(type), net_id};
+}
+
+Input npc_param_in(std::uint32_t net_id, std::uint8_t type, proto::MotionParamKind kind, float value, float time = 0.0f) {
+    return LocalParam{type, static_cast<std::uint8_t>(kind), value, time, net_id};
+}
+
+// Invité en session (t0 = 100), PNJ 1000 et 1001 annoncés, AniName 3 = « Wolf_Run », 4 =
+// « Wolf_Attack », horloge calée : snapshots du tick t reçus à 200 + 50 t (décalage 200). Temps
+// affiché à `now` = now − 200 − 150.
+Session guest_with_npcs() {
+    Session g = guest_in_session();
+    g.tick(150, loaded_world(), reliable2(npc_spawn(1000), npc_spawn(1001, 8)));
+    g.tick(160, loaded_world(), reliable2(proto::AniName{3, "Wolf_Run"}, proto::AniName{4, "Wolf_Attack"}));
+    for (std::uint32_t tick = 0; tick < 4; ++tick) {
+        g.tick(200 + tick * 50, loaded_world(),
+               snapshot_in(npc_snapshot(tick, {npc_entity(1000, 0.0f, 100), npc_entity(1001, 0.0f, 100)})));
+    }
+    return g;
+}
+
+proto::Motion host_npc_motion(std::uint32_t net_id, std::uint16_t ani_id, std::uint32_t ms, std::uint8_t type = 0) {
+    proto::Motion m = local_motion_of(type);
+    m.net_id = net_id;
+    m.ani_id = ani_id;
+    m.ms = ms;
+    return m;
+}
+
+proto::MotionParam host_npc_param(std::uint32_t net_id, std::uint32_t ms, std::uint8_t type, float value) {
+    proto::MotionParam p;
+    p.net_id = net_id;
+    p.ms = ms;
+    p.type = type;
+    p.kind = static_cast<std::uint8_t>(proto::MotionParamKind::TargetWeight);
+    p.value = value;
+    p.time = 0.25f;
+    return p;
+}
+
+}  // namespace
+
+TEST("animations PNJ hôte : les 8 plus proches sont capturés (CaptureNpc avec GUID), pas le 9e") {
+    Session s = host_in_session();
+    const Output out = s.tick(1050, host_world(npcs_in_line(10)), {});
+    const auto caps = commands_of<CaptureNpc>(out);
+    CHECK_EQ(caps.size(), kMaxAnimatedNpcs);
+    // NetId attribués dans l'ordre des distances : 1000 (PNJ 1) … 1007 (PNJ 8).
+    for (std::size_t i = 0; i < caps.size(); ++i) {
+        CHECK_EQ(caps[i]->net_id, 1000u + static_cast<std::uint32_t>(i));
+        CHECK(caps[i]->guid == guid_of(static_cast<std::uint8_t>(i + 1)));
+    }
+    CHECK_EQ(s.animated_npc_count(), 8u);
+    CHECK_EQ(s.npc_count(), 10u);
+    // Rien ne change : pas de nouvelle commande.
+    const Output same = s.tick(1100, host_world(npcs_in_line(10)), {});
+    CHECK(commands_of<CaptureNpc>(same).empty() && commands_of<UncaptureNpc>(same).empty());
+}
+
+TEST("animations PNJ hôte : entrée et sortie du groupe des 8 suivent la sélection, Despawn et Ended") {
+    Session s = host_with_animated(9);  // 1000…1007 animés, 1008 (PNJ 9) annoncé seulement
+    // Le PNJ 9 passe devant tous les autres : il entre, le PNJ 8 (1007) sort.
+    std::vector<NpcState> npcs = npcs_in_line(8);
+    npcs.push_back(npc_at(9, 10.0f));
+    Output out = s.tick(1100, host_world(npcs), {});
+    CHECK(captured_ids(out) == std::vector<std::uint32_t>{1008u});
+    CHECK(uncaptured_ids(out) == std::vector<std::uint32_t>{1007u});
+    // Le PNJ 1 (1000) meurt : Despawn, il sort du groupe ; le PNJ 8 (1007) y revient.
+    npcs[0].alive = false;
+    out = s.tick(1150, host_world(npcs), {});
+    CHECK(uncaptured_ids(out) == std::vector<std::uint32_t>{1000u});
+    CHECK(captured_ids(out) == std::vector<std::uint32_t>{1007u});
+    CHECK_EQ(sent_of<proto::Despawn>(out).size(), 1u);
+    // Fin de session : tous retirés, sans rien envoyer aux PNJ.
+    out = s.tick(1200, host_world(npcs), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK_EQ(commands_of<UncaptureNpc>(out).size(), 8u);
+    CHECK_EQ(s.animated_npc_count(), 0u);
+}
+
+TEST("animations PNJ hôte : Motion d'un PNJ animé → AniName puis Motion sous son NetId, AniId partagés") {
+    Session s = host_with_animated(2);
+    Output out = s.tick(1060, host_world({}), {LocalMotion{"Hero_Run", local_motion_of()}, npc_motion_in(1001, "Wolf_Run"),
+                                              npc_motion_in(1000, "Hero_Run")});
+    const auto sent = reliables_sent(out);
+    CHECK_EQ(sent.size(), 5u);  // AniName 0, Motion héros, AniName 1, Motion 1001, Motion 1000
+    if (sent.size() == 5) {
+        const auto* an1 = std::get_if<proto::AniName>(&sent[2]);
+        const auto* m1 = std::get_if<proto::Motion>(&sent[3]);
+        const auto* m0 = std::get_if<proto::Motion>(&sent[4]);
+        CHECK(an1 != nullptr && an1->ani_id == 1 && an1->name == "Wolf_Run");
+        CHECK(m1 != nullptr && m1->net_id == 1001u && m1->ani_id == 1 && m1->ms == 60);
+        CHECK(m0 != nullptr && m0->net_id == 1000u && m0->ani_id == 0);  // nom déjà interné par le héros
+    }
+    const auto hero = sent_of<proto::Motion>(out);
+    CHECK(!hero.empty() && hero[0].net_id == proto::kHostNetId);
+}
+
+TEST("animations PNJ hôte : PNJ hors des 8 ou inconnu → rien n'est envoyé, compté au bilan") {
+    Session s = host_with_animated(9);  // 1008 annoncé, pas animé
+    Output out = s.tick(1060, host_world({}), {npc_motion_in(1008, "Wolf_Run"), npc_motion_in(4242, "Wolf_Run"),
+                                              npc_param_in(1008, 0, proto::MotionParamKind::PlaySpeed, 1.0f)});
+    CHECK(reliables_sent(out).empty());
+    for (std::uint64_t t = 1100; t < 6000; t += 500) s.tick(t, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
+    out = s.tick(6000, host_world({}, false), {});
+    CHECK(has_log(out, "animations des PNJ : animés 8, Motion envoyés 0, rejoués 0, écrasés 0, ignorés 2"));
+    CHECK(has_log(out, "MotionParam envoyés 0, regroupés 0, rejoués 0, ignorés 1, 0 o/s"));
+}
+
+TEST("animations PNJ hôte : réglages regroupés (un par frame et par PNJ, type, nature), filtrés par PNJ") {
+    Session s = host_with_animated(2);
+    std::vector<Input> in;
+    for (int i = 0; i < 5; ++i) in.push_back(npc_param_in(1000, 0, proto::MotionParamKind::TargetWeight, 0.1f * i, 0.25f));
+    in.push_back(npc_param_in(1001, 0, proto::MotionParamKind::TargetWeight, 0.4f, 0.25f));
+    in.push_back(npc_param_in(1000, 0, proto::MotionParamKind::PlaySpeed, 1.2f));
+    Output out = s.tick(1060, host_world({}), in);
+    auto p = sent_of<proto::MotionParam>(out);
+    CHECK_EQ(p.size(), 3u);
+    if (p.size() == 3) {
+        // Ordre de la dernière mise à jour : 1000 poids (0,4), 1001 poids, 1000 vitesse.
+        CHECK(p[0].net_id == 1000u && p[0].kind == 0 && std::fabs(p[0].value - 0.4f) < 1e-6f && p[0].ms == 60);
+        CHECK(p[1].net_id == 1001u && p[1].kind == 0);
+        CHECK(p[2].net_id == 1000u && p[2].kind == 1 && p[2].value == 1.2f);
+    }
+    // Frame suivante : identique au dernier envoyé pour ce PNJ → filtré ; l'autre PNJ a son filtre.
+    out = s.tick(1070, host_world({}), {npc_param_in(1000, 0, proto::MotionParamKind::TargetWeight, 0.405f, 0.25f),
+                                        npc_param_in(1001, 0, proto::MotionParamKind::TargetWeight, 0.8f, 0.25f)});
+    p = sent_of<proto::MotionParam>(out);
+    CHECK(p.size() == 1 && p[0].net_id == 1001u);
+    // Valeur finale exacte : toujours envoyée.
+    out = s.tick(1080, host_world({}), {npc_param_in(1001, 0, proto::MotionParamKind::TargetWeight, 0.0f, 0.25f)});
+    CHECK_EQ(sent_of<proto::MotionParam>(out).size(), 1u);
+    // Bilan : 5 réglages envoyés, 4 remplacés dans la frame.
+    for (std::uint64_t t = 1100; t < 6000; t += 500) s.tick(t, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
+    out = s.tick(6000, host_world({}, false), {});
+    CHECK(has_log(out, "MotionParam envoyés 5, regroupés 4, rejoués 0, ignorés 0, 19 o/s"));
+}
+
+TEST("animations PNJ hôte : un Motion fait partir avant lui les réglages de son type, puis invalide le filtre") {
+    Session s = host_with_animated(1);
+    s.tick(1060, host_world({}), {npc_param_in(1000, 0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)});
+    Output out = s.tick(1070, host_world({}), {npc_param_in(1000, 0, proto::MotionParamKind::PlaySpeed, 1.5f),
+                                               npc_param_in(1000, 2, proto::MotionParamKind::PlaySpeed, 0.5f),
+                                               npc_motion_in(1000, "Wolf_Run", 0),
+                                               npc_param_in(1000, 0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)});
+    const auto sent = reliables_sent(out);
+    // Vitesse du type 0, AniName, Motion, puis en fin de frame, dans l'ordre de mise à jour : vitesse
+    // du type 2 (en attente avant le Motion), poids du type 0 (identique, mais le filtre repart).
+    CHECK_EQ(sent.size(), 5u);
+    if (sent.size() == 5) {
+        const auto* a = std::get_if<proto::MotionParam>(&sent[0]);
+        CHECK(a != nullptr && a->type == 0 && a->kind == 1);
+        CHECK(std::holds_alternative<proto::AniName>(sent[1]));
+        CHECK(std::holds_alternative<proto::Motion>(sent[2]));
+        const auto* c = std::get_if<proto::MotionParam>(&sent[3]);
+        const auto* b = std::get_if<proto::MotionParam>(&sent[4]);
+        CHECK(c != nullptr && c->type == 2 && c->kind == 1);
+        CHECK(b != nullptr && b->type == 0 && b->kind == 0 && b->value == 1.0f);
+    }
+}
+
+TEST("animations PNJ hôte : PNJ sorti du groupe → ses réglages en attente ne partent pas ; revenu, filtre à neuf") {
+    Session s = host_with_animated(9);
+    s.tick(1060, host_world({}), {npc_param_in(1007, 0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)});
+    // 1007 sort du groupe au tick 1100 (PNJ 9 devant) : un réglage capturé avant la sélection part encore.
+    std::vector<NpcState> npcs = npcs_in_line(8);
+    npcs.push_back(npc_at(9, 10.0f));
+    s.tick(1100, host_world(npcs), {});
+    Output out = s.tick(1110, host_world({}), {npc_param_in(1007, 0, proto::MotionParamKind::TargetWeight, 0.5f, 0.25f)});
+    CHECK(sent_of<proto::MotionParam>(out).empty());
+    // Il revient : le même réglage qu'avant repart (filtre à neuf).
+    s.tick(1150, host_world(npcs_in_line(8)), {});
+    out = s.tick(1160, host_world({}), {npc_param_in(1007, 0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)});
+    CHECK_EQ(sent_of<proto::MotionParam>(out).size(), 1u);
+}
+
+TEST("animations PNJ hôte : budget de 32 Ko/s dépassé → une ligne par bilan, octets par seconde au bilan") {
+    Session s = host_with_animated(1);
+    std::vector<Input> in;
+    for (int i = 0; i < 4100; ++i) in.push_back(npc_motion_in(1000, "Wolf_Run"));
+    s.tick(1060, host_world({}), in);
+    for (std::uint64_t t = 1100; t < 6000; t += 500) s.tick(t, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
+    Output out = s.tick(6000, host_world({}, false), {});
+    // (12 + 4100 × 41) octets en 5 s = 33622 o/s.
+    CHECK(has_log(out, "Motion envoyés 4100"));
+    CHECK(has_log(out, "33622 o/s"));
+    std::size_t warns = 0;
+    for (const auto& l : out.logs) {
+        if (l.level == Level::Warn && l.text.find("au-delà du budget de 32768 o/s") != std::string::npos) ++warns;
+    }
+    CHECK_EQ(warns, 1u);
+    // Bilan suivant, sous le budget : pas de ligne.
+    s.tick(6100, host_world({}), {npc_motion_in(1000, "Wolf_Run")});
+    for (std::uint64_t t = 6500; t < 11000; t += 500) s.tick(t, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
+    out = s.tick(11000, host_world({}, false), {});
+    CHECK(!has_log(out, "au-delà du budget"));
+}
+
+TEST("animations PNJ invité : Motion et MotionParam d'un PNJ annoncé → rejoués 150 ms plus tard sur la réplique") {
+    Session g = guest_with_npcs();
+    // Motion daté de 300 ms distants : affiché quand now − 350 ≥ 300.
+    Output out = g.tick(400, loaded_world(),
+                        reliable2(host_npc_motion(1000, 3, 300), host_npc_param(1000, 300, 0, 1.0f)));
+    CHECK(commands_of<PlayNpcMotion>(out).empty());
+    out = g.tick(640, loaded_world(), {});
+    CHECK(commands_of<PlayNpcMotion>(out).empty());
+    out = g.tick(650, loaded_world(), {});
+    const auto pm = commands_of<PlayNpcMotion>(out);
+    const auto pp = commands_of<PlayNpcParam>(out);
+    CHECK(pm.size() == 1 && pm[0]->net_id == 1000u && pm[0]->name == "Wolf_Run" && pm[0]->motion.type == 0);
+    CHECK(pp.size() == 1 && pp[0]->net_id == 1000u && pp[0]->param.value == 1.0f);
+    CHECK(commands_of<PlayAvatarMotion>(out).empty());  // l'avatar n'est pas concerné
+}
+
+TEST("animations PNJ invité : par réplique, un seul Motion des types 0/1 par frame, réglage antérieur écarté") {
+    Session g = guest_with_npcs();
+    std::vector<Input> in;
+    in.push_back(ReliableIn{encode_r(host_npc_param(1000, 100, 0, 0.5f))});
+    in.push_back(ReliableIn{encode_r(host_npc_motion(1000, 3, 110))});
+    in.push_back(ReliableIn{encode_r(host_npc_motion(1001, 3, 115))});
+    in.push_back(ReliableIn{encode_r(host_npc_motion(1000, 4, 120))});
+    in.push_back(ReliableIn{encode_r(host_npc_motion(1000, 4, 125, 2))});  // type 2 : toujours rejoué
+    Output out = g.tick(600, loaded_world(), in);  // affiché 250 : tout est échu
+    const auto pm = commands_of<PlayNpcMotion>(out);
+    CHECK_EQ(pm.size(), 3u);
+    if (pm.size() == 3) {
+        CHECK(pm[0]->net_id == 1000u && pm[0]->name == "Wolf_Attack" && pm[0]->motion.type == 0);
+        CHECK(pm[1]->net_id == 1000u && pm[1]->motion.type == 2);
+        CHECK(pm[2]->net_id == 1001u && pm[2]->name == "Wolf_Run");  // l'autre réplique a sa file
+    }
+    CHECK(commands_of<PlayNpcParam>(out).empty());
+    for (std::uint64_t t = 700; t < 5100; t += 500) g.tick(t, loaded_world(), {});
+    out = g.tick(5100, loaded_world(), {});
+    CHECK(has_log(out, "animations des PNJ : animés 0, Motion envoyés 0, rejoués 3, écrasés 2, ignorés 0"));
+}
+
+TEST("animations PNJ invité : NetId inconnu ou retiré → ignoré, compté ; Despawn → file vidée, ReleaseNpc") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), reliable2(host_npc_motion(1005, 3, 300), host_npc_param(1005, 300, 0, 1.0f)));
+    // Motion en attente puis Despawn : jamais rejoué.
+    g.tick(410, loaded_world(), reliable(encode_r(host_npc_motion(1000, 3, 300))));
+    Output out = g.tick(420, loaded_world(), reliable(encode_r(proto::Despawn{1000})));
+    CHECK_EQ(commands_of<ReleaseNpc>(out).size(), 1u);
+    out = g.tick(430, loaded_world(), reliable(encode_r(host_npc_motion(1000, 3, 310))));
+    for (std::uint64_t t = 500; t < 5100; t += 100) {
+        out = g.tick(t, loaded_world(), {});
+        CHECK(commands_of<PlayNpcMotion>(out).empty());
+    }
+    out = g.tick(5100, loaded_world(), {});
+    CHECK(has_log(out, "rejoués 0, écrasés 0, ignorés 2, file pleine 0, MotionParam envoyés 0, regroupés 0, rejoués 0, ignorés 1"));
+    // AniId inconnu pour un PNJ annoncé : ignoré, journalisé une fois.
+    out = g.tick(5200, loaded_world(), reliable(encode_r(host_npc_motion(1001, 99, 300))));
+    CHECK(has_log(out, "Motion d'AniId 99 (PNJ 1001) ignoré : AniId inconnu"));
+}
+
+TEST("animations PNJ invité : fin de session → répliques libérées avec leurs animations en attente") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), reliable(encode_r(host_npc_motion(1000, 3, 900))));
+    Output out = g.tick(410, loaded_world(), reliable(encode_r(proto::SessionEnd{2})));
+    CHECK_EQ(commands_of<ReleaseNpc>(out).size(), 2u);
+    CHECK(commands_of<PlayNpcMotion>(out).empty());
+    CHECK(commands_of<PlayNpcMotion>(g.tick(2000, loaded_world(), {})).empty());
+}
+
+TEST("animations PNJ : l'hôte ignore un Motion de PNJ venu de l'invité ; l'avatar reste inchangé") {
+    Session s = host_with_avatar();
+    Output out = s.tick(1300, loaded_world(), reliable(encode_r(host_npc_motion(1000, 0, 100))));
+    CHECK(commands_of<PlayNpcMotion>(out).empty());
+    CHECK(commands_of<PlayAvatarMotion>(out).empty());
+}
+
+TEST("animations PNJ invité : Motion reçu avant tout snapshot → rejoué aussitôt, sans MoveNpc ni SetNpcHp") {
+    Session g = guest_in_session();  // aucun snapshot : horloge distante pas encore calée
+    g.tick(150, loaded_world(), reliable2(npc_spawn(1000), proto::AniName{3, "Wolf_Run"}));
+    const Output out = g.tick(160, loaded_world(), reliable(encode_r(host_npc_motion(1000, 3, 5000))));
+    const auto pm = commands_of<PlayNpcMotion>(out);
+    CHECK(pm.size() == 1 && pm[0]->net_id == 1000u && pm[0]->name == "Wolf_Run");
+    CHECK(commands_of<MoveNpc>(out).empty());
+    CHECK(commands_of<SetNpcHp>(out).empty());
+}

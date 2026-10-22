@@ -139,7 +139,7 @@ const char* const kValidControl[] = {"hello.bin", "welcome.bin", "reject.bin"};
 const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motion.bin", "spawn.bin",
                                       "despawn.bin",   "aniname.bin",     "death.bin",
                                       "motion_param.bin", "weapon.bin", "weapon_sheathed.bin",
-                                      "armor.bin",     "armor_removed.bin", "spawn_npc.bin"};
+                                      "armor.bin",     "armor_removed.bin", "spawn_npc.bin", "motion_npc.bin"};
 
 }  // namespace
 
@@ -275,6 +275,22 @@ TEST("protocole : vecteur motion.bin") {
     if (got != nullptr) CHECK(enc(*got) == b);
 }
 
+// v10 (story 3.4) : même format, NetId d'un PNJ ; sans descripteur, scalaires nuls.
+TEST("protocole : vecteur motion_npc.bin (v10) : Motion d'un PNJ") {
+    const Bytes b = load_vector("motion_npc.bin");
+    CHECK_EQ(b.size(), 41u);
+    Motion m;
+    m.net_id = kFirstNpcNetId;
+    m.ms = 1234;
+    m.type = 0;
+    m.ani_id = 3;
+    m.flags = kMotionFlagPlay;
+    const auto d = dr(b);
+    const Motion* got = std::get_if<Motion>(&d.message);
+    CHECK(d.ok() && got != nullptr && same(*got, m));
+    CHECK(enc(m) == b);
+}
+
 TEST("protocole : vecteur spawn.bin") {
     const Bytes b = load_vector("spawn.bin");
     const auto d = dr(b);
@@ -394,14 +410,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v9 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v10 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 9);
+    CHECK_EQ(version, 10);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 9);
+    CHECK_EQ(version, 10);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -412,12 +428,12 @@ TEST("protocole : peek_hello_version sur v9 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 9") {
+TEST("protocole : l'encodeur refuse une version autre que 10") {
     Hello h = sample_hello();
-    h.protocol_version = 8;
+    h.protocol_version = 9;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 10;
+    h.protocol_version = 11;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -543,7 +559,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 9);
+    CHECK_EQ(kProtocolVersion, 10);
     CHECK_EQ(static_cast<int>(kSpawnTypeHero), 0);
     CHECK_EQ(static_cast<int>(kSpawnTypeNpc), 1);
     CHECK_EQ(kFirstNpcNetId, 1000u);

@@ -428,8 +428,8 @@ puis met leur pose et leurs PV dans le snapshot. L'invité retrouve chaque PNJ n
 `gCScriptRoutine_PS::OnProcess` n'est plus appelé : IA figée), le place par `MoveTo` à la pose
 interpolée (150 ms de retard) et écrit ses PV (`SetHitPoints(pv, 2)`) quand ils changent. À la
 sortie du rayon, à la fin de session et à la fin de monde, la réplique retrouve son IA ; elle
-n'est jamais tuée ni détruite. Les animations et la mort des répliques viennent avec la
-story 3.4 : en 3.3, le moteur de l'invité les anime encore.
+n'est jamais tuée ni détruite. Les animations des répliques : story 3.4 (ci-dessous) ; leur mort :
+story 3.4b.
 
 Prérequis : `probe = 0`, overlay Steam désactivé, la même sauvegarde des deux côtés (les GUID des
 PNJ placés sont stables d'une machine et d'un chargement à l'autre, spike J2). Le log doit
@@ -457,6 +457,43 @@ gCScriptRoutine_PS::OnProcess)`.
    OnProcess de routine bloqués …`. Chez l'invité, ce dernier compteur doit croître tant que des
    répliques sont suivies (IA figée), et retomber à 0 après la fin de session.
 4. Rapporter les lignes `[sync] PNJ …` des deux côtés et le bilan du faux invité.
+
+### Animations des PNJ en jeu (story 3.4, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité, Wine) seulement. Protocole v10. À chaque sélection, l'hôte anime ses **8** PNJ répliqués les plus proches d'un des
+deux joueurs : leur PS d'animation et leur enveloppe EMotionFX entrent au registre (rôle de capture,
+avec leur NetId), et leurs `PlayMotion` et réglages de locomotion partent comme ceux du héros
+(`AniName`, `Motion`, `MotionParam` sous le NetId du PNJ, même espace d'`ani_id`). Les réglages d'un
+PNJ sont regroupés : au plus un par frame et par (type, nature). Budget visé : 32 Ko/s pour
+l'ensemble des PNJ. Chez l'invité, toute réplique est inscrite avec son PS d'animation et son
+enveloppe : son moteur ne l'anime plus. Les animations de l'hôte y sont rejouées 150 ms plus tard,
+avec les règles de l'avatar, PNJ par PNJ ; une réplique hors des 8 reste figée dans sa dernière
+animation, et une réplique libérée est de nouveau animée par son moteur.
+
+Limite connue : une réplique tuée localement par le héros de l'invité (possible jusqu'à la
+story 3.5, qui transmettra ses coups à l'hôte) reste debout, car ses animations et son ragdoll
+natifs sont bloqués.
+
+Prérequis : ceux de la story 3.3, et **`log_level = debug`** pour le bilan.
+
+1. **Risen hôte + faux invité (une machine)** :
+   `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s`, puis s'approcher d'un camp de
+   monstres, les laisser marcher et attaquer (les frapper). Attendu côté faux invité :
+   `<- Motion PNJ netid=1000 premier geste ani=… nom=…` pour chaque PNJ animé, aucune ligne
+   `: ignoré (NetId non annoncé ou retiré)`, la ligne par seconde `… animés=N` avec N ≤ 8 (hors
+   relève : un PNJ qui entre dans le groupe pendant qu'un autre en sort), et à la fin
+   `Bilan animations PNJ : Motion=… MotionParam=… ignorés=0, au plus K PNJ animés en 1 s`, puis
+   `Motion=… MotionParam=…` sur la ligne de chaque NetId. Côté hôte, le bilan
+   `[sync] snapshots (5 s)` se termine par `animations des PNJ : animés N, Motion envoyés …,
+   rejoués 0, écrasés 0, ignorés …, file pleine 0, MotionParam envoyés …, regroupés …, rejoués 0,
+   ignorés …, X o/s` : N ≤ 8, X sous 32768. Un dépassement donne la ligne
+   `[sync] animations des PNJ : … o/s envoyés, au-delà du budget de 32768 o/s` (une par bilan).
+2. **Deux machines (validation finale)** : l'hôte combat un monstre. Chez l'invité, la réplique
+   marche et attaque comme chez l'hôte, sans animation propre ; le bilan de l'invité porte
+   `rejoués …` non nuls et `ignorés 0`. À la fin de session, les monstres reprennent leur IA et
+   leurs animations.
+3. Rapporter le bilan des deux côtés (dernières lignes `[sync] snapshots (5 s)`) et celui du faux
+   invité.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

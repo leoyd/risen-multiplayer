@@ -463,6 +463,24 @@ func (h *simHost) tick() {
 				entities = append(entities, protocol.SnapshotEntity{NetId: 1001, X: 20, Y: 2, Z: 3, HP: 80})
 			}
 			entities = append(entities, protocol.SnapshotEntity{NetId: 1005, X: 30, Y: 2, Z: 3, HP: 10})
+			// v10 (story 3.4) : animations de PNJ annoncés (1000 chaque tick pair, 1001 au tick 4), d'un
+			// PNJ retiré (1001 au tick 11) et d'un NetId jamais annoncé (1005).
+			if tick == 2 {
+				h.sendReliable(protocol.AniName{AniId: 5, Name: "Wolf_Run"})
+			}
+			if tick >= 2 && tick%2 == 0 {
+				h.sendReliable(protocol.Motion{NetId: 1000, Ms: uint32(tick * 50), Kind: 0, AniId: 5, Flags: protocol.MotionFlagPlay})
+				h.sendReliable(protocol.MotionParam{NetId: 1000, Ms: uint32(tick * 50), Kind: 0,
+					Param: protocol.ParamPlaySpeed, Value: 1})
+			}
+			switch tick {
+			case 4:
+				h.sendReliable(protocol.Motion{NetId: 1001, Ms: uint32(tick * 50), Kind: 0, AniId: 5, Flags: protocol.MotionFlagPlay})
+			case 11:
+				h.sendReliable(protocol.Motion{NetId: 1001, Ms: uint32(tick * 50), Kind: 0, AniId: 5, Flags: protocol.MotionFlagPlay})
+				h.sendReliable(protocol.MotionParam{NetId: 1005, Ms: uint32(tick * 50), Kind: 0,
+					Param: protocol.ParamPlaySpeed, Value: 1})
+			}
 			switch tick {
 			case 10, 12:
 				h.sendReliable(protocol.Despawn{NetId: 1001})

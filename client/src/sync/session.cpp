@@ -221,6 +221,23 @@ void execute(cs::Output out) {
                 npc::release(rn->net_id);
                 continue;
             }
+            // Animations des PNJ (story 3.4) : capture chez l'hôte, rejeu chez l'invité.
+            if (const auto* cn = std::get_if<cs::CaptureNpc>(&cmd)) {
+                npc::capture(cn->net_id, cn->guid);
+                continue;
+            }
+            if (const auto* un = std::get_if<cs::UncaptureNpc>(&cmd)) {
+                npc::uncapture(un->net_id);
+                continue;
+            }
+            if (const auto* pn = std::get_if<cs::PlayNpcMotion>(&cmd)) {
+                npc::play(pn->net_id, pn->name, pn->motion);
+                continue;
+            }
+            if (const auto* pq = std::get_if<cs::PlayNpcParam>(&cmd)) {
+                npc::play_param(pq->net_id, pq->param);
+                continue;
+            }
             if (g_transport == nullptr) continue;
             bool posted = true;
             if (auto* s = std::get_if<cs::Send>(&cmd)) {
@@ -338,8 +355,8 @@ void frame() {
         }
     }
     local_captures(world);
-    // Story 3.3 : répliques revérifiées une fois par frame, avant leurs commandes ; appels de
-    // routine bloqués (IA figée), pour le bilan debug.
+    // Story 3.3 : répliques (et, story 3.4, PNJ animés de l'hôte) revérifiées une fois par frame,
+    // avant leurs commandes ; appels de routine bloqués (IA figée), pour le bilan debug.
     if (npc::count() != 0) npc::validate();
     world.routine_blocked = sync::anim_filter().take_routine_blocked();
     execute(g_session->tick(now, world, g_inputs));

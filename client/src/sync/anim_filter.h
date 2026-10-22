@@ -10,6 +10,9 @@
 // - Avatar et réplique de PNJ : les appels que le moteur lance de lui-même sur leur PS
 //   d'animation ou leur enveloppe sont bloqués ; seul le rejeu, sous ReplayGuard sur le même
 //   thread, passe.
+// - PNJ animé de l'hôte (rôle NpcCapture, story 3.4) : ses appels sont capturés comme ceux du
+//   héros local, avec son NetId, jamais bloqués. Ses réglages identiques au dernier capturé
+//   (par type et nature) n'entrent pas dans l'anneau.
 // - Anneau des captures, vidé par la frame.
 //
 // Le filtre ne touche jamais au jeu : il ne manipule que des pointeurs opaques. Portable
@@ -20,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace mp::sync {
@@ -33,10 +37,11 @@ enum class CaptureKind : std::uint8_t {
     Param,    // eCWrapper_emfx3ActorInstance::SetTargetWeight / SetPlaySpeed (story 2.4b)
 };
 
-// Un appel du héros local, copié par le hook. Les deux natures partagent l'anneau : leur
-// ordre est conservé.
+// Un appel du héros local, ou d'un PNJ animé de l'hôte (story 3.4), copié par le hook. Les
+// natures et les entités partagent l'anneau : leur ordre est conservé.
 struct Capture {
     CaptureKind kind = CaptureKind::Motion;
+    std::uint32_t net_id = 0;    // 0 : héros local ; sinon NetId du PNJ capturé (rôle NpcCapture)
     // PlayMotion
     int type = 0;
     bool flag = false;
@@ -58,7 +63,8 @@ struct Capture {
 // rôle LocalHero n'est jamais bloquée.
 // Le héros local reste déclaré par set_local (capturé) : ce rôle décrit une entrée du registre,
 // il ne déclenche pas la capture.
-enum class EntityRole : std::uint8_t { LocalHero, Avatar, NpcReplica };
+// NpcCapture (story 3.4) : PNJ animé de l'hôte, capturé sous son NetId, jamais bloqué.
+enum class EntityRole : std::uint8_t { LocalHero, Avatar, NpcReplica, NpcCapture };
 
 // Une entité suivie. Les pointeurs sont opaques ; nuls si absents (sauf `entity`, la clé).
 struct TrackedEntity {
@@ -67,6 +73,7 @@ struct TrackedEntity {
     void* routine_ps = nullptr;    // gCScriptRoutine_PS (0x24)
     void* wrapper = nullptr;       // eCWrapper_emfx3ActorInstance (story 2.4b)
     EntityRole role = EntityRole::Avatar;
+    std::uint32_t net_id = 0;      // NetId (rôle NpcCapture : porté par ses captures)
 };
 
 class AnimFilter {
@@ -99,6 +106,14 @@ public:
     // locomotion). Capture pour le PS local ; Block pour un avatar ou une réplique de PNJ hors
     // rejeu ; Pass sinon.
     Verdict classify(void* ptr, std::uint32_t thread_id);
+    // Idem ; sur Capture, `net_id` reçoit 0 (héros local) ou le NetId du PNJ capturé (story 3.4).
+    Verdict classify(void* ptr, std::uint32_t thread_id, std::uint32_t& net_id);
+    // Hook, PNJ capturé (story 3.4) : un réglage (type 0..7, nature 0..3) identique au dernier
+    // capturé pour ce NetId est écarté (false) ; sinon il est retenu comme dernier (true). Un
+    // PlayMotion du PNJ sur un type invalide ses derniers réglages (npc_motion_started). Tables
+    // remises à zéro à l'inscription et au retrait du PNJ.
+    bool npc_param_changed(std::uint32_t net_id, int type, int kind, float value, float time);
+    void npc_motion_started(std::uint32_t net_id, int type);
     // PS du héros local ? (sans effet sur les compteurs)
     bool is_local(const void* animation_ps) const;
     // Hook gCScriptRoutine_PS::OnProcess en session (story 3.3) : `routine_ps` est-il le PS de
@@ -136,6 +151,15 @@ private:
     unsigned dropped_ = 0;
     unsigned blocked_ = 0;
     unsigned routine_blocked_ = 0;
+    struct LastCapture {
+        bool valid = false;
+        float value = 0.0f;
+        float time = 0.0f;
+    };
+    struct NpcCaptureTable {
+        LastCapture last[8][4];
+    };
+    std::unordered_map<std::uint32_t, NpcCaptureTable> npc_last_;
     std::atomic<std::uint32_t> hook_thread_{0};
     std::atomic<bool> hook_thread_varied_{false};
 };

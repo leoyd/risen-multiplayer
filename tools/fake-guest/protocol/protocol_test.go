@@ -55,6 +55,8 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"motion_param.bin", true, MotionParam{NetId: 2, Ms: 1234, Kind: 0, Param: ParamTargetWeight, Value: 1.0, Time: 0.25}},
 		{"motion.bin", true, Motion{NetId: 2, Ms: 1234, Kind: 0, AniId: 7, Flags: 3, D00: 0.25, D04: 0.5, D08: 1, D0C: 1.0,
 			D10: 0, D14: 0.75, D18: 2}},
+		// v10 (story 3.4) : Motion d'un PNJ, même format.
+		{"motion_npc.bin", true, Motion{NetId: FirstNpcNetId, Ms: 1234, Kind: 0, AniId: 3, Flags: 1}},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
@@ -125,7 +127,7 @@ func TestAllVectorsCovered(t *testing.T) {
 		"motion.bin": true, "motion_bad_type.bin": true, "aniname.bin": true, "death.bin": true,
 		"aniname_empty.bin": true, "motion_param.bin": true, "motion_param_bad.bin": true,
 		"weapon.bin": true, "weapon_sheathed.bin": true, "armor.bin": true, "armor_removed.bin": true,
-		"spawn_npc.bin": true, "spawn_bad_type.bin": true, "snapshot_multi.bin": true}
+		"spawn_npc.bin": true, "spawn_bad_type.bin": true, "snapshot_multi.bin": true, "motion_npc.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())

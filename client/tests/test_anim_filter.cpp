@@ -295,3 +295,103 @@ TEST("registre : blocks_routine — seul le PS de routine d'une réplique de PNJ
     f.clear();
     CHECK(!f.blocks_routine(&g_routine_a));
 }
+
+TEST("registre : PNJ capturé de l'hôte (story 3.4) — Capture avec son NetId, jamais bloqué") {
+    AnimFilter f;
+    f.set_local(kLocal);
+    TrackedEntity npc;
+    npc.entity = &g_entity_a;
+    npc.animation_ps = kReplica;
+    npc.wrapper = &g_wrapper_a;
+    npc.net_id = 1003;
+    npc.role = EntityRole::NpcCapture;
+    f.track(npc);
+    std::uint32_t net_id = 77;
+    CHECK(f.classify(kReplica, 1, net_id) == Verdict::Capture);
+    CHECK_EQ(net_id, 1003u);
+    net_id = 77;
+    CHECK(f.classify(&g_wrapper_a, 1, net_id) == Verdict::Capture);  // réglages de locomotion
+    CHECK_EQ(net_id, 1003u);
+    CHECK(f.classify(kLocal, 1, net_id) == Verdict::Capture);  // héros local : NetId 0
+    CHECK_EQ(net_id, 0u);
+    CHECK(f.classify(kOther, 1, net_id) == Verdict::Pass);
+    CHECK_EQ(net_id, 0u);
+    // Ragdoll d'un PNJ de l'hôte : jamais bloqué.
+    CHECK(f.classify_ragdoll(kReplica, true, 1) != Verdict::Block);
+    CHECK_EQ(f.take_blocked(), 0u);
+    CHECK(!f.blocks_routine(nullptr));
+    // Retiré : plus capturé.
+    f.untrack(&g_entity_a);
+    CHECK(f.classify(kReplica, 1, net_id) == Verdict::Pass);
+    CHECK_EQ(net_id, 0u);
+}
+
+TEST("registre : réplique de PNJ avec PS d'animation et enveloppe (story 3.4) — moteur bloqué, rejeu libre") {
+    AnimFilter f;
+    TrackedEntity npc;
+    npc.entity = &g_entity_a;
+    npc.animation_ps = kReplica;
+    npc.wrapper = &g_wrapper_a;
+    npc.routine_ps = &g_routine_a;
+    npc.net_id = 1000;
+    npc.role = EntityRole::NpcReplica;
+    f.track(npc);
+    std::uint32_t net_id = 0;
+    CHECK(f.classify(kReplica, 1, net_id) == Verdict::Block);
+    CHECK(f.classify(&g_wrapper_a, 1) == Verdict::Block);
+    {
+        AnimFilter::ReplayGuard guard;
+        CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+        CHECK(f.classify(&g_wrapper_a, 1) == Verdict::Pass);
+    }
+    CHECK_EQ(f.take_blocked(), 2u);
+    CHECK(f.blocks_routine(&g_routine_a));
+    // Libérée : son moteur l'anime de nouveau, IA rendue.
+    f.untrack(&g_entity_a);
+    CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+    CHECK(!f.blocks_routine(&g_routine_a));
+}
+
+TEST("filtre : réglages identiques d'un PNJ capturé écartés, par PNJ ; Motion du type et réinscription les relancent") {
+    AnimFilter f;
+    CHECK(f.npc_param_changed(1000, 0, 1, 1.0f, 0.0f));
+    CHECK(!f.npc_param_changed(1000, 0, 1, 1.0f, 0.0f));
+    CHECK(f.npc_param_changed(1001, 0, 1, 1.0f, 0.0f));  // autre PNJ : son propre filtre
+    CHECK(f.npc_param_changed(1000, 0, 1, 1.0f, 0.5f));  // autre durée
+    CHECK(f.npc_param_changed(1000, 0, 0, 1.0f, 0.5f));  // autre nature
+    CHECK(!f.npc_param_changed(1000, 0, 0, 1.0f, 0.5f));
+    f.npc_motion_started(1000, 1);  // autre type : sans effet
+    CHECK(!f.npc_param_changed(1000, 0, 0, 1.0f, 0.5f));
+    f.npc_motion_started(1000, 0);
+    CHECK(f.npc_param_changed(1000, 0, 0, 1.0f, 0.5f));
+    CHECK(f.npc_param_changed(1000, 9, 0, 1.0f, 0.5f));  // hors bornes : jamais filtré
+    CHECK(f.npc_param_changed(1000, 9, 0, 1.0f, 0.5f));
+    // Inscription (ou retrait) du PNJ : filtre à neuf.
+    TrackedEntity npc;
+    npc.entity = &g_entity_b;
+    npc.animation_ps = kReplica;
+    npc.net_id = 1000;
+    npc.role = EntityRole::NpcCapture;
+    f.track(npc);
+    CHECK(f.npc_param_changed(1000, 0, 0, 1.0f, 0.5f));
+    CHECK(!f.npc_param_changed(1000, 0, 0, 1.0f, 0.5f));
+    f.untrack(&g_entity_b);
+    CHECK(f.npc_param_changed(1000, 0, 0, 1.0f, 0.5f));
+    CHECK(!f.npc_param_changed(1001, 0, 1, 1.0f, 0.0f));  // 1001 non touché
+}
+
+TEST("filtre : captures d'un PNJ et du héros partagent l'anneau, NetId conservé, ordre gardé") {
+    AnimFilter f;
+    Capture a;
+    a.net_id = 1002;
+    a.type = 3;
+    Capture b;
+    b.type = 1;
+    f.push(a);
+    f.push(b);
+    Capture out[4];
+    unsigned dropped = 0;
+    CHECK_EQ(f.drain(out, 4, dropped), 2u);
+    CHECK(out[0].net_id == 1002u && out[0].type == 3);
+    CHECK(out[1].net_id == 0u && out[1].type == 1);
+}

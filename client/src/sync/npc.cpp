@@ -3,15 +3,19 @@
 #include "common/log.h"
 #include "game/combat.h"
 #include "game/entity.h"
+#include "game/motion_desc.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mp::sync::npc {
@@ -29,8 +33,33 @@ struct Replica {
     protocol::Guid guid{};
     game::Entity entity;
     void* routine_ps = nullptr;
+    void* animation_ps = nullptr;  // story 3.4 : au registre (moteur bloqué), cible du rejeu
+    void* wrapper = nullptr;
+    bool param_error_logged = false;
 };
 std::map<std::uint32_t, Replica> g_replicas;
+// Story 3.4, invité : ressource de chaque nom d'animation (nul : introuvable) et noms déjà signalés
+// en échec, vidés par release_all, hors session (pointeurs d'un monde peut-être détruit).
+constexpr std::size_t kMaxResources = 4096;
+std::unordered_map<std::string, void*> g_resources;
+std::unordered_set<std::string> g_failed_names;
+// Story 3.4, hôte : PNJ animés (rôle NpcCapture), NetId → GUID et entité (revérifiée par validate).
+struct Captured {
+    protocol::Guid guid{};
+    game::Entity entity;
+};
+std::map<std::uint32_t, Captured> g_captured;
+// PNJ que la session veut animer (CaptureNpc) sans capture active (échec, ou PNJ perdu) : nouvel
+// essai depuis validate(), au plus une fois par seconde, jusqu'au succès ou à uncapture/release_all.
+struct Wanted {
+    protocol::Guid guid{};
+    std::chrono::steady_clock::time_point next_try{};
+};
+std::map<std::uint32_t, Wanted> g_wanted;
+constexpr std::chrono::seconds kCaptureRetry{1};
+std::set<std::uint32_t> g_capture_failed;  // « capture échouée » : une ligne par NetId et par session
+std::set<std::uint32_t> g_capture_lost;    // « PNJ animé perdu » : une ligne par NetId et par session
+
 // NetId dont le GUID est introuvable (ou la réplique perdue) : une ligne par NetId et par session.
 std::set<std::uint32_t> g_missing;
 
@@ -78,6 +107,33 @@ std::map<std::uint32_t, Replica>::iterator drop(std::map<std::uint32_t, Replica>
     const std::uint32_t net_id = it->first;
     if (g_missing.insert(net_id).second) log::warn(who(net_id) + " : " + why + " : oubliée, snapshots ignorés");
     return g_replicas.erase(it);
+}
+
+// Essai de capture : true si le PNJ est inscrit au registre (rôle NpcCapture).
+bool try_capture(std::uint32_t net_id, const protocol::Guid& guid) {
+    auto fail = [&](const std::string& why) {
+        if (g_capture_failed.insert(net_id).second) {
+            log::warn(who(net_id) + " : capture échouée (" + why + ") : animations non envoyées, nouvel essai chaque seconde");
+        }
+        return false;
+    };
+    void* found = nullptr;
+    if (!find_entity(guid, found) || found == nullptr) return fail("GUID " + guid_text(guid) + " introuvable chez l'hôte");
+    Captured c;
+    c.guid = guid;
+    c.entity.ptr = found;
+    TrackedEntity tracked;
+    tracked.entity = found;
+    tracked.net_id = net_id;
+    tracked.role = EntityRole::NpcCapture;
+    if (!game::get_animation_ps(c.entity, tracked.animation_ps) || tracked.animation_ps == nullptr) {
+        return fail("pas d'eCAnimation_PS");
+    }
+    if (!game::get_actor_wrapper(tracked.animation_ps, tracked.wrapper)) tracked.wrapper = nullptr;
+    anim_filter().track(tracked);
+    g_captured.emplace(net_id, c);
+    log::debug(who(net_id) + " animé : PS " + hex_ptr(tracked.animation_ps) + ", enveloppe " + hex_ptr(tracked.wrapper));
+    return true;
 }
 
 }  // namespace
@@ -173,10 +229,22 @@ void spawn(std::uint32_t net_id, const protocol::Guid& guid, const Pose& pose) {
         return;
     }
     g_missing.erase(net_id);
-    // Registre (AD-12) : seul sync/npc y inscrit des répliques. Sans PS d'animation (story 3.4).
+    // Story 3.4 : PS d'animation et enveloppe au registre : le moteur de l'invité n'anime plus la
+    // réplique (AD-8). Absents : journalisé, la réplique reste animée par son moteur.
+    if (!game::get_animation_ps(r.entity, r.animation_ps) || r.animation_ps == nullptr) {
+        r.animation_ps = nullptr;
+        log::warn(who(net_id) + " : pas d'eCAnimation_PS : animée par le moteur de l'invité");
+    } else if (!game::get_actor_wrapper(r.animation_ps, r.wrapper) || r.wrapper == nullptr) {
+        r.wrapper = nullptr;
+        log::warn(who(net_id) + " : pas d'enveloppe EMotionFX : locomotion non protégée");
+    }
+    // Registre (AD-12) : seul sync/npc y inscrit des répliques.
     TrackedEntity tracked;
     tracked.entity = r.entity.ptr;
     tracked.routine_ps = r.routine_ps;
+    tracked.animation_ps = r.animation_ps;
+    tracked.wrapper = r.wrapper;
+    tracked.net_id = net_id;
     tracked.role = EntityRole::NpcReplica;
     anim_filter().track(tracked);
     auto it = g_replicas.emplace(net_id, r).first;
@@ -189,7 +257,86 @@ void spawn(std::uint32_t net_id, const protocol::Guid& guid, const Pose& pose) {
     std::string name;
     game::get_entity_name(r.entity, name);  // diagnostic seulement (vide si indisponible)
     log::info(who(net_id) + " répliqué : " + (name.empty() ? std::string() : "« " + name + " », ") + "entité " +
-              hex_ptr(found) + ", GUID " + guid_text(guid) + ", IA figée");
+              hex_ptr(found) + ", PS " + hex_ptr(r.animation_ps) + ", GUID " + guid_text(guid) +
+              ", IA et animations figées");
+}
+
+void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion) {
+    auto it = g_replicas.find(net_id);
+    if (it == g_replicas.end() || it->second.animation_ps == nullptr) return;
+    Replica& r = it->second;
+    auto failed = [&](const char* why) {
+        if (g_failed_names.insert(name).second) {
+            log::warn(who(net_id) + " : « " + name + " » non rejoué (" + why + ")");
+        }
+    };
+    auto res = g_resources.find(name);
+    if (res == g_resources.end()) {
+        void* resource = nullptr;
+        if (!game::get_motion(name, resource)) {
+            failed("GetMotion a levé une exception (SEH)");
+            return;  // pas mis en cache : on réessaiera
+        }
+        if (g_resources.size() >= kMaxResources) g_resources.clear();
+        res = g_resources.emplace(name, resource).first;
+    }
+    if (res->second == nullptr) {
+        failed("ressource introuvable");
+        return;
+    }
+    static std::uint8_t desc[game::kPlayDescSize];
+    const void* desc_arg = game::replay_desc(motion, desc);
+    if (!game::set_motion(r.animation_ps, motion.type, res->second)) {
+        failed("SetMotion a levé une exception (SEH)");
+        return;
+    }
+    AnimFilter::ReplayGuard guard;  // le hook laisse passer ce PlayMotion sur la réplique
+    if (!game::play_motion(r.animation_ps, motion.type, const_cast<void*>(desc_arg), game::replay_flag(motion))) {
+        failed("PlayMotion a levé une exception (SEH)");
+    }
+}
+
+void play_param(std::uint32_t net_id, const protocol::MotionParam& param) {
+    auto it = g_replicas.find(net_id);
+    if (it == g_replicas.end() || it->second.wrapper == nullptr) return;
+    Replica& r = it->second;
+    bool ok = false;
+    {
+        AnimFilter::ReplayGuard guard;  // le hook laisse passer ce réglage sur la réplique
+        switch (static_cast<protocol::MotionParamKind>(param.kind)) {
+            case protocol::MotionParamKind::TargetWeight:
+                ok = game::set_target_weight(r.wrapper, param.type, param.value, param.time);
+                break;
+            case protocol::MotionParamKind::PlaySpeed:
+                ok = game::set_play_speed(r.wrapper, param.type, param.value);
+                break;
+            case protocol::MotionParamKind::FadeOut:
+                ok = game::switch_fade_out(r.wrapper, param.type, param.value != 0.0f, param.time);
+                break;
+            case protocol::MotionParamKind::StopMotion:
+                ok = game::wrapper_stop_motion(r.wrapper, param.type, param.time, param.value != 0.0f);
+                break;
+        }
+    }
+    if (!ok && !r.param_error_logged) {
+        r.param_error_logged = true;
+        log::error(who(net_id) + " : réglage de locomotion a levé une exception (SEH)");
+    }
+}
+
+void capture(std::uint32_t net_id, const protocol::Guid& guid) {
+    if (g_captured.count(net_id) != 0) return;
+    g_wanted.erase(net_id);
+    if (!try_capture(net_id, guid)) g_wanted[net_id] = Wanted{guid, std::chrono::steady_clock::now() + kCaptureRetry};
+}
+
+void uncapture(std::uint32_t net_id) {
+    g_wanted.erase(net_id);
+    auto it = g_captured.find(net_id);
+    if (it == g_captured.end()) return;
+    anim_filter().untrack(it->second.entity.ptr);  // AD-12 : le registre d'abord
+    g_captured.erase(it);
+    log::debug(who(net_id) + " : plus animé");
 }
 
 void move(std::uint32_t net_id, const Pose& pose) {
@@ -219,6 +366,35 @@ void validate() {
         }
         it = drop(it, "réplique perdue (GetEntity ne la retrouve plus)");
     }
+    // Story 3.4, hôte : un PNJ capturé détruit ne doit pas laisser son PS au registre (adresse
+    // réutilisée par une autre entité). Il reste voulu (g_wanted) : nouvel essai ci-dessous.
+    const auto now_t = std::chrono::steady_clock::now();
+    for (auto it = g_captured.begin(); it != g_captured.end();) {
+        void* now = nullptr;
+        if (find_entity(it->second.guid, now) && now == it->second.entity.ptr) {
+            ++it;
+            continue;
+        }
+        anim_filter().untrack(it->second.entity.ptr);
+        if (g_capture_lost.insert(it->first).second) {
+            log::warn(who(it->first) + " : PNJ animé perdu (GetEntity ne le retrouve plus) : nouvel essai chaque seconde");
+        }
+        g_wanted[it->first] = Wanted{it->second.guid, now_t + kCaptureRetry};
+        it = g_captured.erase(it);
+    }
+    // PNJ voulus sans capture : un essai par seconde au plus, jusqu'au succès ou à uncapture.
+    for (auto it = g_wanted.begin(); it != g_wanted.end();) {
+        if (now_t < it->second.next_try) {
+            ++it;
+            continue;
+        }
+        if (try_capture(it->first, it->second.guid)) {
+            it = g_wanted.erase(it);
+            continue;
+        }
+        it->second.next_try = now_t + kCaptureRetry;
+        ++it;
+    }
 }
 
 void release(std::uint32_t net_id) {
@@ -231,15 +407,29 @@ void release(std::uint32_t net_id) {
 }
 
 void release_all() {
-    if (g_replicas.empty() && g_missing.empty()) return;
+    if (g_replicas.empty() && g_missing.empty() && g_captured.empty() && g_capture_failed.empty() &&
+        g_wanted.empty() && g_capture_lost.empty() &&
+        g_resources.empty() && g_failed_names.empty()) {
+        return;
+    }
     for (const auto& entry : g_replicas) anim_filter().untrack(entry.second.entity.ptr);
+    for (const auto& entry : g_captured) anim_filter().untrack(entry.second.entity.ptr);
     if (!g_replicas.empty()) {
         log::info("[sync] PNJ : " + std::to_string(g_replicas.size()) + " réplique(s) oubliée(s) hors session");
     }
+    if (!g_captured.empty()) {
+        log::info("[sync] PNJ : " + std::to_string(g_captured.size()) + " PNJ animé(s) retiré(s) hors session");
+    }
     g_replicas.clear();
     g_missing.clear();
+    g_captured.clear();
+    g_wanted.clear();
+    g_capture_failed.clear();
+    g_capture_lost.clear();
+    g_resources.clear();  // ressources d'un monde peut-être détruit
+    g_failed_names.clear();
 }
 
-std::size_t count() { return g_replicas.size(); }
+std::size_t count() { return g_replicas.size() + g_captured.size() + g_wanted.size(); }
 
 }  // namespace mp::sync::npc

@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v9 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v10 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, `ErrBadValue`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -106,7 +106,18 @@ annoncé)`), premier snapshot de chaque PNJ et chaque changement de PV (`PNJ net
 Une entité de snapshot inattendue (ni le héros de l'hôte ni un PNJ annoncé) est ignorée et
 comptée. La ligne par seconde ajoute `PNJ suivis=… poses=… inattendues=…` ; à la fin, `Bilan PNJ :
 N vus, Spawn=… Despawn=… poses=… entités inattendues=…, au plus K entités par snapshot`, puis une ligne par `NetId` (GUID,
-annonces, retraits, poses, PV du premier au dernier, nombre de changements).
+annonces, retraits, poses, PV du premier au dernier, nombre de changements, et depuis la v10 nombre de
+`Motion` et de `MotionParam` reçus).
+
+### Animations des PNJ (v10, story 3.4)
+
+Un `Motion` ou un `MotionParam` d'un `NetId` ≥ 1000 n'est accepté que d'un PNJ annoncé et pas
+encore retiré ; il est compté par `NetId` (le premier geste de chaque PNJ est journalisé :
+`<- Motion PNJ netid=1000 premier geste ani=… nom=…`). Sinon il est ignoré et compté, journalisé
+une fois par `NetId` (`<- Motion PNJ netid=… : ignoré (NetId non annoncé ou retiré)`). La ligne par
+seconde ajoute `animés=N` (PNJ distincts animés dans la seconde) ; à la fin, `Bilan animations
+PNJ : Motion=… MotionParam=… ignorés=…, au plus K PNJ animés en 1 s`. L'écho ne renvoie jamais
+les animations des PNJ.
 
 ### Écho (`--echo`, story 2.4)
 

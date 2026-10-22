@@ -266,6 +266,12 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_local_param(now, std::get<LocalParam>(in), out);
         }
     }
+    // Story 3.4 : réglages des PNJ de la frame, un par (PNJ, type, nature).
+    if (state_ == State::InSession) {
+        flush_npc_params(0, -1, out);
+    } else {
+        npc_param_batch_.clear();
+    }
     if (state_ != State::Ended) timers(now, out);
     if (state_ == State::InSession) {
         send_death(world, out);
@@ -664,6 +670,10 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     next_npc_id_ = proto::kFirstNpcNetId;
     replicas_.clear();  // vide en pratique : libérées à Ended
     npc_ = NpcCounters{};
+    npc_animated_.clear();  // story 3.4 : vide en pratique (UncaptureNpc à Ended)
+    npc_last_params_.clear();
+    npc_param_batch_.clear();
+    npc_anim_ = NpcAnimCounters{};
     avatar_pose_ok_ = false;
     proto::Spawn spawn;
     spawn.net_id = own_net_id();
@@ -825,6 +835,37 @@ void Session::select_npcs(const World& world, std::vector<proto::SnapshotEntity>
         e.hp = clamp_hp(n.hp);
         entities.push_back(e);
     }
+    // Story 3.4 : les kMaxAnimatedNpcs plus proches sont animés (déjà triés par distance).
+    std::set<std::uint32_t> animated;
+    for (std::size_t i = 0; i < ids.size() && animated.size() < kMaxAnimatedNpcs; ++i) animated.insert(ids[i]);
+    set_animated_npcs(animated, out);
+}
+
+void Session::set_animated_npcs(const std::set<std::uint32_t>& animated, Output& out) {
+    for (auto it = npc_animated_.begin(); it != npc_animated_.end();) {
+        if (animated.count(*it) != 0) {
+            ++it;
+            continue;
+        }
+        const std::uint32_t id = *it;
+        it = npc_animated_.erase(it);
+        npc_last_params_.erase(id);  // filtre à neuf s'il revient
+        npc_param_batch_.erase(std::remove_if(npc_param_batch_.begin(), npc_param_batch_.end(),
+                                              [id](const proto::MotionParam& p) { return p.net_id == id; }),
+                               npc_param_batch_.end());
+        out.commands.push_back(UncaptureNpc{id});
+        out.logs.push_back({Level::Debug, "[sync] PNJ " + std::to_string(id) + " : plus animé"});
+    }
+    for (const std::uint32_t id : animated) {
+        if (!npc_animated_.insert(id).second) continue;
+        auto guid = npc_guids_.find(id);
+        if (guid == npc_guids_.end()) {  // impossible : tout NetId sélectionné a son GUID
+            npc_animated_.erase(id);
+            continue;
+        }
+        out.commands.push_back(CaptureNpc{id, guid->second});
+        out.logs.push_back({Level::Debug, "[sync] PNJ " + std::to_string(id) + " : animé"});
+    }
 }
 
 void Session::on_npc_spawn(const proto::Spawn& sp, Output& out) {
@@ -876,19 +917,24 @@ bool Session::on_npc_entity(std::uint32_t tick, const proto::SnapshotEntity& e) 
 }
 
 void Session::place_npcs(std::uint64_t now, Output& out) {
-    if (replicas_.empty() || !clock_.ready()) return;
-    const double shown = clock_.remote_ms(now) - core::kInterpolationDelayMs;
+    if (replicas_.empty()) return;
+    const bool ready = clock_.ready();
+    // Animations (story 3.4) : comme l'avatar, avant tout snapshot elles partent aussitôt.
+    const double shown = ready ? clock_.remote_ms(now) - core::kInterpolationDelayMs : 1e300;
     for (auto& [id, r] : replicas_) {
-        int hp = -1;
-        while (!r.hp_changes.empty() && r.hp_changes.front().first <= shown) {
-            hp = r.hp_changes.front().second;
-            r.hp_changes.pop_front();
+        if (ready) {
+            int hp = -1;
+            while (!r.hp_changes.empty() && r.hp_changes.front().first <= shown) {
+                hp = r.hp_changes.front().second;
+                r.hp_changes.pop_front();
+            }
+            if (hp >= 0 && hp != r.applied_hp) {
+                r.applied_hp = hp;
+                out.commands.push_back(SetNpcHp{id, hp});
+            }
         }
-        if (hp >= 0 && hp != r.applied_hp) {
-            r.applied_hp = hp;
-            out.commands.push_back(SetNpcHp{id, hp});
-        }
-        if (r.interp.empty()) continue;  // pas encore de snapshot : reste à la pose du Spawn
+        play_due(r.pending, shown, id, out);
+        if (!ready || r.interp.empty()) continue;  // pas encore de snapshot : reste à la pose du Spawn
         out.commands.push_back(MoveNpc{id, r.interp.sample(shown).pose});
     }
 }
@@ -900,6 +946,8 @@ void Session::release_npcs(const std::string& why, Output& out) {
                                              " réplique(s) libérée(s) : " + why});
         replicas_.clear();
     }
+    set_animated_npcs({}, out);  // hôte (story 3.4) : plus aucun PNJ capturé
+    npc_param_batch_.clear();
     npc_ids_.clear();
     npc_guids_.clear();
     npc_active_.clear();
@@ -939,6 +987,12 @@ void Session::clear_peer_avatar_state() {
 
 void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& out) {
     if (state_ != State::InSession) return;
+    // Story 3.4 : un PNJ capturé qui n'est plus animé (capture d'une frame en retard) est jeté.
+    const bool npc = in.net_id != 0;
+    if (npc && (settings_.role != Role::Host || npc_animated_.count(in.net_id) == 0)) {
+        ++npc_anim_.ignored;
+        return;
+    }
     // Un Motion que le pair refuserait (champ hors domaine, scalaire non fini) ne part pas, et
     // son nom n'est pas interné : jamais d'AniName sans Motion.
     const proto::Motion& lm = in.motion;
@@ -947,6 +1001,8 @@ void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& 
         !proto::encode_reliable(lm, probe)) {
         return;
     }
+    // Réglages de ce PNJ et de ce type en attente : ils précèdent ce Motion (ordre gardé).
+    if (npc) flush_npc_params(in.net_id, lm.type, out);
     auto it = ani_ids_.find(in.name);
     const bool fresh = it == ani_ids_.end();  // nom nouveau : AniName d'abord
     std::uint16_t id = 0;
@@ -968,14 +1024,23 @@ void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& 
         ++next_ani_id_;
         id = an.ani_id;
         ani_ids_.emplace(in.name, id);
+        if (npc) npc_anim_.bytes += bytes.size();
         out.commands.push_back(SendReliable{std::move(bytes)});
     }
     proto::Motion m = in.motion;
-    m.net_id = own_net_id();
+    m.net_id = npc ? in.net_id : own_net_id();
     m.ani_id = id;
     m.ms = static_cast<std::uint32_t>(now - t0_);
     Bytes bytes;
     if (!proto::encode_reliable(m, bytes)) return;  // validé avant l'internement : ne peut échouer
+    if (npc) {
+        // Story 3.4 : même espace d'AniId que le héros ; filtre des réglages propre au PNJ.
+        npc_anim_.bytes += bytes.size();
+        out.commands.push_back(SendReliable{std::move(bytes)});
+        ++npc_anim_.sent;
+        for (LastParam& lp : npc_last_params_[m.net_id][m.type]) lp.valid = false;
+        return;
+    }
     out.commands.push_back(SendReliable{std::move(bytes)});
     ++anim_.sent;
     // Nouvelle animation sur ce type : son premier réglage repartira, même identique (2.4b).
@@ -1090,6 +1155,10 @@ void Session::apply_due_carried(std::uint64_t now, Output& out) {
 
 void Session::on_local_param(std::uint64_t now, const LocalParam& in, Output& out) {
     if (state_ != State::InSession) return;
+    if (in.net_id != 0) {  // story 3.4 : PNJ animé de l'hôte
+        on_npc_local_param(now, in);
+        return;
+    }
     proto::MotionParam p;
     p.net_id = own_net_id();
     p.ms = static_cast<std::uint32_t>(now - t0_);
@@ -1099,7 +1168,12 @@ void Session::on_local_param(std::uint64_t now, const LocalParam& in, Output& ou
     p.time = in.time;
     Bytes bytes;
     if (!proto::encode_reliable(p, bytes)) return;  // type, nature ou valeur hors domaine
-    LastParam& last = last_params_[p.type][p.kind];
+    if (!keep_param(last_params_[p.type][p.kind], p)) return;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    ++anim_.params_sent;
+}
+
+bool Session::keep_param(LastParam& last, const proto::MotionParam& p) {
     // Seuls les changements partent ; une valeur finale exacte de 0 ou 1 (fin de fondu) part
     // toujours, même proche de la précédente, pour que l'avatar ne reste pas à 0,99 ou 0,008.
     // Fondu et arrêt (natures 2 et 3) : seulement s'ils diffèrent (valeur ou durée).
@@ -1109,14 +1183,60 @@ void Session::on_local_param(std::uint64_t now, const LocalParam& in, Output& ou
                                                                                                    : 0.0f;
     if (last.valid && std::fabs(p.value - last.value) <= eps && std::fabs(p.time - last.time) <= kParamTimeEpsilon &&
         !exact_end) {
-        return;
+        return false;
     }
     last = LastParam{true, p.value, p.time};
-    out.commands.push_back(SendReliable{std::move(bytes)});
-    ++anim_.params_sent;
+    return true;
+}
+
+void Session::on_npc_local_param(std::uint64_t now, const LocalParam& in) {
+    if (settings_.role != Role::Host || npc_animated_.count(in.net_id) == 0) {
+        ++npc_anim_.params_ignored;
+        return;
+    }
+    proto::MotionParam p;
+    p.net_id = in.net_id;
+    p.ms = static_cast<std::uint32_t>(now - t0_);
+    p.type = in.type;
+    p.kind = in.kind;
+    p.value = in.value;
+    p.time = in.time;
+    Bytes probe;
+    if (!proto::encode_reliable(p, probe)) return;  // type, nature ou valeur hors domaine
+    // Un par frame et par (PNJ, type, nature) : le dernier, à la place de son aîné.
+    for (auto it = npc_param_batch_.begin(); it != npc_param_batch_.end(); ++it) {
+        if (it->net_id == p.net_id && it->type == p.type && it->kind == p.kind) {
+            npc_param_batch_.erase(it);
+            ++npc_anim_.params_grouped;
+            break;
+        }
+    }
+    npc_param_batch_.push_back(p);
+}
+
+void Session::flush_npc_params(std::uint32_t net_id, int type, Output& out) {
+    if (npc_param_batch_.empty()) return;
+    std::vector<proto::MotionParam> kept;
+    for (const proto::MotionParam& p : npc_param_batch_) {
+        if ((net_id != 0 && p.net_id != net_id) || (type >= 0 && p.type != type)) {
+            kept.push_back(p);
+            continue;
+        }
+        if (!keep_param(npc_last_params_[p.net_id][p.type][p.kind], p)) continue;
+        Bytes bytes;
+        if (!proto::encode_reliable(p, bytes)) continue;  // validé à l'entrée : ne peut échouer
+        npc_anim_.bytes += bytes.size();
+        out.commands.push_back(SendReliable{std::move(bytes)});
+        ++npc_anim_.params_sent;
+    }
+    npc_param_batch_ = std::move(kept);
 }
 
 void Session::on_peer_param(const proto::MotionParam& p) {
+    if (settings_.role == Role::Guest && p.net_id >= proto::kFirstNpcNetId) {  // story 3.4
+        on_npc_param(p);
+        return;
+    }
     if (!accepts_peer_animation(p.net_id)) {
         ++anim_.params_ignored;
         return;
@@ -1132,6 +1252,10 @@ void Session::on_peer_param(const proto::MotionParam& p) {
 }
 
 void Session::on_peer_motion(const proto::Motion& m, Output& out) {
+    if (settings_.role == Role::Guest && m.net_id >= proto::kFirstNpcNetId) {  // story 3.4
+        on_npc_motion(m, out);
+        return;
+    }
     if (!accepts_peer_animation(m.net_id)) {
         ++anim_.ignored;
         return;
@@ -1156,39 +1280,100 @@ void Session::on_peer_motion(const proto::Motion& m, Output& out) {
     pending_.push_back(std::move(e));
 }
 
+void Session::on_npc_motion(const proto::Motion& m, Output& out) {
+    auto r = replicas_.find(m.net_id);
+    if (r == replicas_.end()) {  // NetId jamais annoncé ou déjà retiré
+        ++npc_anim_.ignored;
+        return;
+    }
+    auto name = peer_names_.find(m.ani_id);
+    const bool finite = std::isfinite(m.d00) && std::isfinite(m.d04) && std::isfinite(m.d0c) && std::isfinite(m.d14);
+    if (name == peer_names_.end() || !finite) {
+        ++npc_anim_.ignored;
+        if (warned_ani_ids_.insert(m.ani_id).second) {
+            out.logs.push_back({Level::Warn, "[sync] Motion d'AniId " + std::to_string(m.ani_id) + " (PNJ " +
+                                                 std::to_string(m.net_id) + ") ignoré : " +
+                                                 (name == peer_names_.end() ? "AniId inconnu" : "scalaire non fini")});
+        }
+        return;
+    }
+    std::deque<PendingMotion>& q = r->second.pending;
+    if (q.size() >= kMaxPendingMotions) {
+        q.pop_front();
+        ++npc_anim_.dropped;
+    }
+    PendingMotion e;
+    e.motion = m;
+    e.name = name->second;
+    q.push_back(std::move(e));
+}
+
+void Session::on_npc_param(const proto::MotionParam& p) {
+    auto r = replicas_.find(p.net_id);
+    if (r == replicas_.end()) {
+        ++npc_anim_.params_ignored;
+        return;
+    }
+    std::deque<PendingMotion>& q = r->second.pending;
+    if (q.size() >= kMaxPendingMotions) {
+        q.pop_front();
+        ++npc_anim_.dropped;
+    }
+    PendingMotion e;
+    e.is_param = true;
+    e.param = p;
+    q.push_back(std::move(e));
+}
+
 void Session::play_due_motions(std::uint64_t now, Output& out) {
     if (pending_.empty()) return;
     // Même instant d'affichage que les snapshots ; avant tout snapshot, aussitôt.
     const double shown = clock_.ready() ? clock_.remote_ms(now) - core::kInterpolationDelayMs : 1e300;
+    play_due(pending_, shown, 0, out);
+}
+
+void Session::play_due(std::deque<PendingMotion>& queue, double shown, std::uint32_t npc_id, Output& out) {
+    if (queue.empty()) return;
     // Un Motion daté de plus de kMaxMotionLeadMs dans le futur (horloge mal recalée, pair
     // fautif) part aussitôt : il ne bloque pas ceux qui le suivent.
     std::size_t due = 0;
-    while (due < pending_.size() && (static_cast<double>(pending_[due].ms()) <= shown ||
-                                     static_cast<double>(pending_[due].ms()) > shown + kMaxMotionLeadMs)) {
+    while (due < queue.size() && (static_cast<double>(queue[due].ms()) <= shown ||
+                                  static_cast<double>(queue[due].ms()) > shown + kMaxMotionLeadMs)) {
         ++due;
     }
     if (due == 0) return;
+    const bool npc = npc_id != 0;
     // Types 0 et 1 (locomotion) : seul le plus récent de chacun part ; les réglages de ce type
     // placés avant lui visaient l'animation qu'il remplace : écartés aussi.
     std::size_t last_of_type[2] = {due, due};
     for (std::size_t i = 0; i < due; ++i) {
-        if (pending_[i].is_param) continue;
-        const std::uint8_t type = pending_[i].motion.type;
+        if (queue[i].is_param) continue;
+        const std::uint8_t type = queue[i].motion.type;
         if (type <= 1) last_of_type[type] = i;
     }
     for (std::size_t i = 0; i < due; ++i) {
-        PendingMotion& p = pending_[i];
+        PendingMotion& p = queue[i];
         if (p.is_param) {
             if (p.param.type <= 1 && last_of_type[p.param.type] != due && i < last_of_type[p.param.type]) {
-                ++anim_.superseded;
+                ++(npc ? npc_anim_.superseded : anim_.superseded);
                 continue;
             }
-            out.commands.push_back(PlayAvatarParam{peer_net_id(), p.param});
-            ++anim_.params_played;
+            if (npc) {
+                out.commands.push_back(PlayNpcParam{npc_id, p.param});
+                ++npc_anim_.params_played;
+            } else {
+                out.commands.push_back(PlayAvatarParam{peer_net_id(), p.param});
+                ++anim_.params_played;
+            }
             continue;
         }
         if (p.motion.type <= 1 && last_of_type[p.motion.type] != i) {
-            ++anim_.superseded;
+            ++(npc ? npc_anim_.superseded : anim_.superseded);
+            continue;
+        }
+        if (npc) {  // pas de ligne par geste : jusqu'à 8 PNJ animés
+            out.commands.push_back(PlayNpcMotion{npc_id, std::move(p.name), p.motion});
+            ++npc_anim_.played;
             continue;
         }
         char lag[64];
@@ -1197,7 +1382,7 @@ void Session::play_due_motions(std::uint64_t now, Output& out) {
         out.commands.push_back(PlayAvatarMotion{peer_net_id(), std::move(p.name), p.motion});
         ++anim_.played;
     }
-    pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(due));
+    queue.erase(queue.begin(), queue.begin() + static_cast<std::ptrdiff_t>(due));
 }
 
 void Session::place_avatar(std::uint64_t now, Output& out) {
@@ -1227,20 +1412,32 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
 void Session::snapshot_stats(std::uint64_t now, Output& out) {
     if (now < next_stats_) return;
     next_stats_ = now + kSnapshotStatsMs;
-    char buf[900];
+    char buf[1400];
+    const auto npc_rate = static_cast<unsigned long long>(npc_anim_.bytes * 1000 / kSnapshotStatsMs);
     std::snprintf(buf, sizeof buf,
                   "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
                   "frames de l'avatar : interpolées %u, extrapolées %u, figées %u ; décalage horloge %.1f ms ; "
                   "Motion : envoyés %u, rejoués %u, écrasés %u, ignorés %u, file pleine %u ; "
                   "MotionParam : envoyés %u, rejoués %u, ignorés %u ; "
                   "PNJ : suivis %zu, annoncés %u, retirés %u, plafond %u, liste illisible %u, entités inconnues %u, "
-                  "OnProcess de routine bloqués %u",
+                  "OnProcess de routine bloqués %u ; "
+                  "animations des PNJ : animés %zu, Motion envoyés %u, rejoués %u, écrasés %u, ignorés %u, "
+                  "file pleine %u, MotionParam envoyés %u, regroupés %u, rejoués %u, ignorés %u, %llu o/s",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
                   anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
                   npc_count(), npc_.spawned, npc_.despawned, npc_.capped, npc_.unreadable, npc_.unknown,
-                  npc_.routine_blocked);
+                  npc_.routine_blocked, npc_animated_.size(), npc_anim_.sent, npc_anim_.played,
+                  npc_anim_.superseded, npc_anim_.ignored, npc_anim_.dropped, npc_anim_.params_sent,
+                  npc_anim_.params_grouped, npc_anim_.params_played, npc_anim_.params_ignored, npc_rate);
     out.logs.push_back({Level::Debug, buf});
+    // Story 3.4 (Q12) : budget des animations des PNJ, une ligne par bilan au plus.
+    if (npc_rate > kNpcAnimBudgetBytesPerSec) {
+        out.logs.push_back({Level::Warn, "[sync] animations des PNJ : " + std::to_string(npc_rate) +
+                                             " o/s envoyés, au-delà du budget de " +
+                                             std::to_string(kNpcAnimBudgetBytesPerSec) + " o/s"});
+    }
+    npc_anim_ = NpcAnimCounters{};
     const SnapshotCounters zero{};
     snap_ = zero;
     anim_ = MotionCounters{};

@@ -72,7 +72,8 @@ This is a **hobby project**, released as open source so that others can pick it 
 - the walk → stop transition is not very smooth, and the walk animation can occasionally stall for a moment;
 - only the right hand and the armour are replicated (no shield, torch, rings or amulets);
 - a guest who sells or drops an item listed in `guest_equipment` gets it back on the next session (items are created when missing);
-- NPC replicas (story 3.3) are still animated by the guest's engine, and their deaths are not replicated yet (story 3.4); an NPC that only exists in the host's game (spawned during play) is ignored on the guest;
+- NPC replicas are animated by the host (story 3.4, the 8 NPCs closest to a player; the others stay frozen in their last animation) — **implemented and tested on the bench, not yet validated in-game**; their deaths are not replicated yet (story 3.4b);
+- a replica killed locally by the guest's hero (possible until story 3.5 routes the guest's hits to the host) stays standing: its engine animations and ragdoll are blocked; an NPC that only exists in the host's game (spawned during play) is ignored on the guest;
 - in story 3.3 the guest's hero can still hit or even kill a replica locally: damage is not synchronised yet (stories 3.5 and 3.6), so the replica's HP is simply overwritten by the host's on the next change.
 
 ## 📦 Installation (players)
@@ -211,10 +212,10 @@ graph TD
 ```
 
 - **The host is authoritative.** Each player's game simulates their own hero; the other side shows a **replica** (avatar) driven by the network.
-- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v9**):
+- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v10**):
   - one UDP socket, a channel byte at the start of every datagram;
   - channel 2: handshake (`Hello`, `Welcome`, `Reject`);
-  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`, `Weapon` (name of the weapon in hand, empty when sheathed), `Armor` (name of the armour worn, empty when none); since v9, `Spawn` type 1 announces an NPC replica (NetId ≥ 1000, matched on the guest by its 16-byte GUID);
+  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`, `Weapon` (name of the weapon in hand, empty when sheathed), `Armor` (name of the armour worn, empty when none); since v9, `Spawn` type 1 announces an NPC replica (NetId ≥ 1000, matched on the guest by its 16-byte GUID); since v10, the host also sends `Motion`/`MotionParam` for its 8 closest NPC replicas;
   - channel 1: unreliable full-state snapshots at 20 Hz (hero, plus up to 53 NPCs from the host, closest first, with their HP);
   - display delayed by 150 ms, Hermite interpolation, extrapolation ≤ 250 ms;
   - every message has binary test vectors checked by both the C++ and Go codecs.

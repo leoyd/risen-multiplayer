@@ -12,7 +12,14 @@
 //   de Kill ni de destruction. Une fois par frame (validate), GetEntity(GUID) doit redonner la
 //   même entité, sinon la réplique est perdue ; un MoveTo en SEH la libère aussi (IA rendue).
 //   Sans gCScriptRoutine_PS, le PNJ est traité comme un GUID introuvable.
-// - Le PS d'animation n'est pas inscrit : le moteur anime encore la réplique (story 3.4).
+// - Animations (story 3.4) :
+//   - hôte : CaptureNpc inscrit le PS d'animation et l'enveloppe EMotionFX du PNJ de ce GUID
+//     (GetEntity), rôle NpcCapture avec son NetId : ses PlayMotion et réglages sont capturés comme
+//     ceux du héros. UncaptureNpc et release_all l'en retirent. Une capture en échec, ou un PNJ
+//     perdu (validate), reste voulu : validate réessaie au plus une fois par seconde ;
+//   - invité : la réplique est inscrite avec son PS d'animation et son enveloppe : son moteur ne
+//     l'anime plus (seul le rejeu, sous ReplayGuard, passe). play / play_param rejouent les
+//     animations de l'hôte ; libérée, elle sort du registre et son moteur l'anime de nouveau.
 //
 // Tout est appelé depuis la frame (hook OnProcess, AD-2). Les erreurs sont journalisées ;
 // aucune ne remonte.
@@ -20,6 +27,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include "core/session.h"
 
@@ -34,13 +42,23 @@ void spawn(std::uint32_t net_id, const protocol::Guid& guid, const core::session
 void move(std::uint32_t net_id, const core::session::Pose& pose);
 void set_hp(std::uint32_t net_id, int hp);
 void release(std::uint32_t net_id);
-// Une fois par frame, avant les commandes : chaque réplique dont GetEntity(GUID) ne rend plus
-// la même entité sort du registre et de la table (journalisée une fois par NetId).
+// Story 3.4, invité : rejoue un Motion (GetMotion(nom) → SetMotion → PlayMotion, descripteur
+// reconstruit) ou un réglage de locomotion de l'hôte sur la réplique, sous ReplayGuard. Un échec
+// est journalisé une fois par nom (Motion) ou par réplique (réglage).
+void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion);
+void play_param(std::uint32_t net_id, const protocol::MotionParam& param);
+// Story 3.4, hôte : inscrit (capture) ou retire (uncapture) le PNJ animé `net_id`.
+void capture(std::uint32_t net_id, const protocol::Guid& guid);
+void uncapture(std::uint32_t net_id);
+// Une fois par frame, avant les commandes : chaque réplique (ou PNJ capturé de l'hôte) dont
+// GetEntity(GUID) ne rend plus la même entité sort du registre et de la table (journalisée une
+// fois par NetId).
 void validate();
 // Hors session (après Ended, ReleaseNpc déjà exécutés) : filet de sécurité, toutes les
 // répliques restantes sortent du registre, sans appel au jeu ; les NetId introuvables déjà
 // signalés sont oubliés (une ligne par NetId et par session). Sans effet si tout est vide.
+// Les PNJ capturés de l'hôte sortent aussi du registre.
 void release_all();
-std::size_t count();
+std::size_t count();  // répliques (invité), PNJ capturés ou à capturer (hôte)
 
 }  // namespace mp::sync::npc

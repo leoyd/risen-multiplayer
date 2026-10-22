@@ -440,6 +440,19 @@ if start_host_npcs pnj $p 30000 80; then
     # Un NetId n'est jamais lié à deux GUID : chaque NetId du bilan apparaît une fois.
     dup=$(grep -oE "^.*  PNJ netid=[0-9]+" "$g" | grep -oE "netid=[0-9]+" | sort | uniq -d | wc -l)
     if [[ $dup -eq 0 ]]; then ok "PNJ : un NetId par GUID"; else ko "PNJ : NetId en double dans le bilan"; fi
+    # Story 3.4 : les 8 plus proches sont animés ; Motion et MotionParam par NetId de PNJ.
+    expect_count "animations PNJ : jamais plus de 8 PNJ capturés par l'hôte" "$h" "ERROR.*CaptureNpc" 0
+    expect_log "animations PNJ : PNJ capturés par l'hôte" "$h" "CaptureNpc NetId 1000 : PNJ animés="
+    expect_log "animations PNJ : PNJ sorti du groupe" "$h" "UncaptureNpc NetId 10[0-9][0-9]"
+    expect_log "animations PNJ : premier geste d'un PNJ reçu" "$g" "<- Motion PNJ netid=10[0-9][0-9] premier geste ani=[0-9]* nom=Npc_Walk"
+    animated=$(sed -nE 's/.*au plus ([0-9]+) PNJ animés en 1 s.*/\1/p' "$g" | tail -1)
+    if [[ -n $animated && $animated -ge 8 && $animated -le 16 ]]; then
+        ok "animations PNJ : $animated PNJ animés en 1 s au plus (8 à la fois, relèves comprises)"
+    else
+        ko "animations PNJ : ${animated:-?} PNJ animés en 1 s au plus (8 à 16 attendu)"; grep "Bilan animations" "$g"
+    fi
+    with_params=$(grep -cE "^.*  PNJ netid=[0-9]+ .* Motion=[1-9][0-9]* MotionParam=[1-9]" "$g")
+    if [[ $with_params -ge 8 ]]; then ok "animations PNJ : $with_params PNJ avec Motion et MotionParam au bilan"; else ko "animations PNJ : ${with_params:-0} PNJ animés au bilan (8 au moins attendus)"; fi
 fi
 
 # --- Story 1.5 : mort de l'hôte en session → SessionEnd{3} ----------------------------

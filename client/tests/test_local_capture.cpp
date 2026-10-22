@@ -87,3 +87,23 @@ TEST("captures : réglage de locomotion → LocalParam (type, nature, valeur, du
     c.type = 8;
     CHECK(!local_input(c, "").has_value());
 }
+
+TEST("captures : NetId d'un PNJ capturé (story 3.4) porté par LocalMotion et LocalParam ; héros : 0") {
+    Capture m = motion_capture(0, false);
+    m.net_id = 1004;
+    auto in = local_input(m, "Wolf_Run");
+    const auto* lm = in ? std::get_if<cs::LocalMotion>(&*in) : nullptr;
+    CHECK(lm != nullptr && lm->net_id == 1004u && lm->name == "Wolf_Run" && lm->motion.net_id == 0);
+    Capture p;
+    p.kind = CaptureKind::Param;
+    p.type = 0;
+    p.param_kind = 1;
+    p.value = 1.0f;
+    p.net_id = 1004;
+    in = local_input(p, "");
+    const auto* lp = in ? std::get_if<cs::LocalParam>(&*in) : nullptr;
+    CHECK(lp != nullptr && lp->net_id == 1004u);
+    in = local_input(motion_capture(0, false), "Hero_Run");
+    lm = in ? std::get_if<cs::LocalMotion>(&*in) : nullptr;
+    CHECK(lm != nullptr && lm->net_id == 0u);
+}

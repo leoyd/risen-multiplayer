@@ -165,3 +165,18 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-3-repliques-pnj.md`
   summary: PNJ vivant à 0 PV chez l'hôte (humain à terre, pas `IsDead`) : l'invité appelle `SetHitPoints(0, 2)` sur la réplique, ce qui peut déclencher son propre « à terre » ou sa mort locale.
   evidence: maybe-false, medium si vrai ; à trancher avec la story 3.4 (mort des répliques) : observer en jeu un humain mis à terre chez l'hôte près de l'invité.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4-animations-pnj.md`
+  summary: Story 3.4b, mort des répliques de PNJ — l'hôte émet `Death{NetId}` (à la place du `Despawn` de raison « mort »), l'invité tue sa réplique une fois et la garde morte jusqu'à la fin de session. Décision Q11 de l'utilisateur (2026-10-22) : option A, mort « visuelle » sans `Kill` natif (`AIMode = 12` puis ragdoll), donc ni XP, ni quête, ni succès chez l'invité ; le cadavre garde son inventaire natif, pillable par l'invité (butin propre à chacun).
+  evidence: Story 3.4 découpée par l'utilisateur (spec au-dessus de la cible de taille) ; la mort est indépendante des animations. Repères : `PROTOCOL.md:195-201, 811-818`, `core/session.cpp:563-577, 728-729`, `sync/npc.cpp:224`, `game/combat.h:41-42` (`set_ai_mode` seulement dans `resolve_combat`), `sync/avatar.cpp:474-494` (`die`). Y trancher aussi le PNJ vivant à 0 PV (entrée ci-dessus).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4-animations-pnj.md`
+  summary: Un PNJ qui entre dans les 8 animés (ou une réplique qui apparaît) n'a pas d'état d'animation initial : il reste figé jusqu'au `PlayMotion` suivant de l'hôte, ce qui peut tarder en locomotion continue.
+  evidence: Medium, voulu par la matrice de la 3.4 ; à observer en jeu (faux invité puis deux machines). Piste : à `CaptureNpc`, lire et envoyer l'animation courante de chaque type.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4-animations-pnj.md`
+  summary: Anneau de 256 captures partagé entre le héros et les 8 PNJ animés : une saturation ferait perdre des captures du héros, et le filtre `npc_last_` retient une valeur dont la capture a été perdue.
+  evidence: maybe-false, medium si vrai ; le compteur « captures perdues » du log en jeu près d'un camp tranchera. Pistes : `push` qui rend un booléen, places réservées au héros.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4-animations-pnj.md`
+  summary: Trafic des animations de PNJ (jusqu'à 32 Ko/s) sur la file KCP sans limite : heartbeat et `Despawn` retardés possibles ; le débit journalisé ignore les en-têtes KCP.
+  evidence: maybe-false, medium si vrai ; mesurer `ikcp_waitsnd` en jeu. Lié au report `ikcp_send` sans limite.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4-animations-pnj.md`
+  summary: Code DLL de la 3.4 (`execute`, `npc::capture`/`play`/`play_param`, branche PNJ de `on_wrapper_call`) sans test automatique.
+  evidence: Même couture `game::` que 3.1 à 3.3 ; couvert seulement par la procédure en jeu du README.

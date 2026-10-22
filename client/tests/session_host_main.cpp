@@ -19,6 +19,9 @@
 // 2,5 s, les PNJ impairs partent à 60 m et plus (sortie du rayon, place pour ceux qui
 // attendaient au-delà du 53ᵉ), puis reviennent (même NetId) ; le PNJ 0 meurt à 2 s. Ils sont
 // lus, comme dans la DLL, seulement quand Session::wants_npcs le demande.
+// Animations des PNJ (story 3.4) : chaque PNJ capturé (CaptureNpc, jusqu'à UncaptureNpc) lance un
+// PlayMotion toutes les 200 ms (« Npc_Walk » ou « Npc_Attack ») et trois réglages de poids par
+// frame (regroupés en un par la session), comme le ferait le hook dans la DLL.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -28,6 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <ctime>
 #include <string>
 #include <thread>
@@ -155,6 +159,9 @@ int main(int argc, char** argv) {
         }
     };
 
+    // Story 3.4 : PNJ capturés → prochain PlayMotion simulé (ms) et nombre de gestes lancés.
+    std::map<std::uint32_t, std::uint64_t> captured;
+    std::uint64_t npc_motions = 0;
     std::vector<Input> inputs;
     int avatars = 0;  // avatars présents (story 2.2) : ne doit jamais dépasser 1
     // Story 2.3 : plus grand saut entre deux MoveAvatar successifs (une téléportation visible).
@@ -223,6 +230,22 @@ int main(int argc, char** argv) {
             }
         }
         const std::uint64_t now = now_ms();
+        if (session.state() == State::InSession) {
+            const double t = static_cast<double>(now - session_start) / 1000.0;
+            for (auto& [id, next] : captured) {
+                if (now >= next) {
+                    next = now + 200;
+                    mp::protocol::Motion m;
+                    m.type = 0;
+                    m.flags = mp::protocol::kMotionFlagPlay;
+                    inputs.push_back(LocalMotion{(npc_motions++ % 3 == 2) ? "Npc_Attack" : "Npc_Walk", m, id});
+                }
+                for (int k = 0; k < 3; ++k) {
+                    const float w = static_cast<float>(0.5 + 0.5 * std::sin(2.0 * t + 0.1 * k));
+                    inputs.push_back(LocalParam{0, 0, w, 0.25f, id});
+                }
+            }
+        }
         if (session.state() == State::InSession && !in_session) session_start = now;
         in_session = session.state() == State::InSession;
         world.npcs.clear();
@@ -294,6 +317,15 @@ int main(int argc, char** argv) {
                     ++avatars;
                     print(avatars > 1 ? "ERROR" : "INFO", "[test] SpawnAvatar NetId " + std::to_string(sa->net_id) +
                                                               " : avatars présents=" + std::to_string(avatars));
+                } else if (const auto* cn = std::get_if<CaptureNpc>(&cmd)) {
+                    captured[cn->net_id] = 0;
+                    print(captured.size() > kMaxAnimatedNpcs ? "ERROR" : "INFO",
+                          "[test] CaptureNpc NetId " + std::to_string(cn->net_id) +
+                              " : PNJ animés=" + std::to_string(captured.size()));
+                } else if (const auto* un = std::get_if<UncaptureNpc>(&cmd)) {
+                    captured.erase(un->net_id);
+                    print("INFO", "[test] UncaptureNpc NetId " + std::to_string(un->net_id) +
+                                      " : PNJ animés=" + std::to_string(captured.size()));
                 } else if (const auto* da = std::get_if<DespawnAvatar>(&cmd)) {
                     report("retrait");
                     track = Track{};
