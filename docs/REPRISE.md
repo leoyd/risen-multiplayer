@@ -14,12 +14,11 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 | 3.2 | Arme de l’avatar (message `Weapon`, protocole **v7**) | fait, **validé en jeu sur une machine** le 2026-10-21 (7 armes, écho) |
 | 3.2b | Équipement de l’invité : `guest_equipment`, héros invité, avatar équipé chez l’hôte (protocole toujours v7) | fait, **avatar validé en jeu sur une machine** le 2026-10-21 ; équipement de l’avatar différé de 15 frames (`docs/re/equipement.md`) ; héros d’un invité réel non testé |
 | 3.2c | Armure portée, transmise à l’avatar dans les deux sens (message `Armor`, protocole **v8**) | fait, **validé en jeu sur une machine** le 2026-10-21 (changements d’armure suivis, tunique de retour quand l’armure est retirée) |
-| 3.3 | Répliques des PNJ : apparition, position, PV (`Spawn{1}` avec GUID, protocole **v9**) | fait ; **côté hôte testé en jeu** le 2026-10-22 (annonces, GUID, PV) ; correctif : délai de grâce de 2 s pour les PNJ absents de la liste du moteur (`8887fe1`), **à revérifier en jeu** ; côté invité (GUID, IA figée) seulement testable à deux machines |
+| 3.3 | Répliques des PNJ : apparition, position, PV (`Spawn{1}` avec GUID, protocole **v9**) | fait ; **côté hôte testé en jeu** le 2026-10-22 (annonces, GUID, PV) ; correctif : délai de grâce de 2 s pour les PNJ absents de la liste du moteur (`8887fe1`), **revérifié en jeu** le 2026-10-22 (retraits espacés, tous « absent de la liste depuis 2 s », 73 annonces pour 55 retraits en 2 min de va-et-vient) ; côté invité (GUID, IA figée) seulement testable à deux machines |
 | 3.4 → 3.7 | Animations et mort des répliques, dégâts dans les deux sens, à terre et réapparition | à faire |
 
 - **Branches** :
-  - `main` contient tout jusqu’à la 3.2c ; il a 2 commits d’avance sur `origin`, **non poussés**.
-  - La 3.3 est sur `story/3-3-repliques-pnj` (`f8bf0ae`, puis le correctif `8887fe1` et ce commit), **ni fusionnée ni poussée**.
+  - `main` contient tout jusqu’à la 3.3 (fusion en avance rapide le 2026-10-22) ; il a des commits d’avance sur `origin`, **non poussés**.
 
 ## Décisions de l’utilisateur à ne pas rediscuter
 
@@ -36,16 +35,15 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre demain
 
-1. **Revérifier la 3.3 en jeu**, Risen en hôte, avec `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s`, près d’un camp de monstres. Les allers-retours `Spawn`/`Despawn` à 40 m doivent avoir presque disparu, et les retraits restants indiquer `absent de la liste depuis 2 s`. Ensuite, fusionner `story/3-3-repliques-pnj` dans `main`.
-2. **Story suivante** : `/bmad-build story 3.4` (animations et mort des répliques). À trancher : le budget `Motion` des PNJ (Q12), la mort d’une réplique (Q11), et le PNJ vivant à 0 PV (reporté dans `deferred-work.md`). Le contexte compilé `epic-3-context.md` est à jour.
-3. **Recompiler et installer** :
+1. **Story suivante** : `/bmad-build story 3.4` (animations et mort des répliques). À trancher : le budget `Motion` des PNJ (Q12), la mort d’une réplique (Q11), et le PNJ vivant à 0 PV (reporté dans `deferred-work.md`). Le contexte compilé `epic-3-context.md` est à jour.
+2. **Recompiler et installer** :
    ```bash
    cmake --build client/build && cmake --build client/build-tests && ctest --test-dir client/build-tests
    cp client/build/Script_Multiplayer.dll ~/.local/share/Steam/steamapps/common/Risen/bin/scripts/
    (cd tools/fake-guest && go build)
    ```
    `multiplayer.ini` installé : `role = host`, `probe = 0`, `log_level = debug`. **Overlay Steam désactivé.**
-4. **Tester en jeu** : Risen en hôte, puis `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s --echo`. Les procédures par story sont dans `client/README.md`. Le log est dans `bin/scripts/Script_Multiplayer.log`.
+3. **Tester en jeu** : Risen en hôte, puis `tools/fake-guest/fake-guest --host 127.0.0.1 --duration 120s --echo`. Les procédures par story sont dans `client/README.md`. Le log est dans `bin/scripts/Script_Multiplayer.log`.
 
 ## Points ouverts à vérifier en jeu
 
