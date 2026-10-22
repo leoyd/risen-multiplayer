@@ -112,6 +112,9 @@ J0 (FR-1 à FR-3), J1 (FR-4 à FR-8), J2 (FR-9 à FR-12). Uniquement la version 
 - **J4 :** persistance du profil de l’invité (équipement, XP, loot) sur le serveur, et quêtes annexes qui avancent pour les deux.
 - **J5 :** relèvement d’un joueur à terre, en remplacement de la réapparition automatique.
 - **Plus tard :** arc et magie en coop, laisse entre joueurs, version GOG.
+- **Versions suivantes, facilité de mise en route** (demandé par Léo le 2026-10-23, après la préparation du premier test à deux machines) :
+  - **Menu de configuration au lancement du jeu :** il remplace l’édition à la main de `multiplayer.ini` (rôle, IP de l’hôte, port, pseudo, équipement). Il revient sur le non-objectif « pas d’interface en jeu », qui ne vaut que pour le MVP.
+  - **Téléchargement de la sauvegarde de l’hôte à la connexion :** avant d’entrer dans le monde, l’invité récupère la sauvegarde de l’hôte et la charge. Les deux jeux partent ainsi du même état (PNJ appariés par GUID), sans copie manuelle du fichier `.save`.
 
 ## 7. Mesures de réussite
 - **SM-1 (principale) :** Léo et Max nettoient ensemble un camp de monstres de la zone de départ, sans désynchronisation visible ni crash. Valide FR-7 et FR-9 à FR-12.
