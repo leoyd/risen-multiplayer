@@ -89,6 +89,9 @@ ressort ; `--armor NOM` lui met une armure (story 3.2c), que ce même `SIGHUP` r
 `--npcs N` (story 3.3) simule N PNJ autour du héros de l'hôte (le PNJ i à 5 m + 50 cm × i, PV qui
 baissent ; de 1,5 à 2,5 s après l'entrée en session, les impairs sortent du rayon puis reviennent ;
 le PNJ 0 meurt à 2 s), lus seulement quand `Session::wants_npcs` le demande, comme dans la DLL.
+`--pause-at MS --pause-ms MS` (story 3.4a) fige une fois sa boucle (ni `poll` ni tick), `MS` ms
+après l'entrée en session, comme une cinématique ou un chargement ; à la reprise, il journalise la
+même ligne que la DLL (`[sync] jeu en pause : N heartbeat(s) envoyé(s) par le thread réseau`).
 `tests/session_fake_guest.sh` le lance face au faux invité (compilé à la volée par `go build`)
 et vérifie les codes de sortie et les logs : nominal, `--dup-hello`, `--bad-version`, deux
 invités (le second reçoit `Reject{4}`), `--drop 20`, `--kill` (timeout de l'hôte), puis
@@ -110,9 +113,11 @@ changée par le scénario) appliquée dans l'ordre (`AvatarArmor`), après `Spaw
 `AvatarArmor` sans `--armor` ; (story 3.3) 80 PNJ simulés (`--npcs 80`) : 53 annoncés au premier
 snapshot (`Spawn{1}`, NetId dès 1000), les autres attendent, sorties du rayon, mort et éviction
 (`Despawn`), réannonce sous le même NetId, PV suivis par le faux invité, au plus 54 entités par
-snapshot et aucun message de PNJ ignoré. Le test CTest
+snapshot et aucun message de PNJ ignoré ; (story 3.4a) l'hôte en pause 7 s face au faux invité
+`--strict-timeout` (timeout compté sur les seuls messages, pas sur les acquittements KCP) : aucun
+timeout des deux côtés, au moins 4 heartbeats de secours journalisés à la reprise. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
-80 s. Lancement à la main :
+90 s. Lancement à la main :
 
 ```bash
 client/tests/session_fake_guest.sh client/build-tests/session_host tools/fake-guest
@@ -484,9 +489,10 @@ Prérequis : ceux de la story 3.3, et **`log_level = debug`** pour le bilan.
    relève : un PNJ qui entre dans le groupe pendant qu'un autre en sort), et à la fin
    `Bilan animations PNJ : Motion=… MotionParam=… ignorés=0, au plus K PNJ animés en 1 s`, puis
    `Motion=… MotionParam=…` sur la ligne de chaque NetId. Côté hôte, le bilan
-   `[sync] snapshots (5 s)` se termine par `animations des PNJ : animés N, Motion envoyés …,
+   `[sync] snapshots (5 s)` porte `animations des PNJ : animés N, Motion envoyés …,
    rejoués 0, écrasés 0, ignorés …, file pleine 0, MotionParam envoyés …, regroupés …, rejoués 0,
-   ignorés …, X o/s` : N ≤ 8, X sous 32768. Un dépassement donne la ligne
+   ignorés …, X o/s` (suivi, depuis la story 3.4a, de `PNJ reçus avant leur Spawn …`) : N ≤ 8,
+   X sous 32768. Un dépassement donne la ligne
    `[sync] animations des PNJ : … o/s envoyés, au-delà du budget de 32768 o/s` (une par bilan).
 2. **Deux machines (validation finale)** : l'hôte combat un monstre. Chez l'invité, la réplique
    marche et attaque comme chez l'hôte, sans animation propre ; le bilan de l'invité porte
@@ -494,6 +500,56 @@ Prérequis : ceux de la story 3.3, et **`log_level = debug`** pour le bilan.
    leurs animations.
 3. Rapporter le bilan des deux côtés (dernières lignes `[sync] snapshots (5 s)`) et celui du faux
    invité.
+
+### Robustesse de session (story 3.4a, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité) seulement. Protocole inchangé (v10).
+- **Pause du jeu** : quand la frame (`OnProcess`) ne lit plus le transport depuis 1,5 s
+  (cinématique, chargement, menu bloquant), le thread réseau envoie lui-même un `Heartbeat` par
+  seconde, 60 s au plus (au-delà, il se tait et le pair conclut au timeout 5 s plus tard). À la
+  reprise, la frame journalise `[sync] jeu en pause : N heartbeat(s) envoyé(s) par le thread
+  réseau`, et `[sync] jeu en pause plus de 60 s : …` si la borne a été atteinte.
+- **PNJ en avance** (invité) : une entrée de snapshot d'un PNJ dont le `Spawn` n'est pas encore
+  arrivé est gardée 500 ms (la plus récente par NetId, 64 NetId au plus), puis appliquée à
+  l'arrivée du `Spawn`. Le bilan `[sync] snapshots (5 s)` se termine par `PNJ reçus avant leur
+  Spawn N` ; une entrée expirée compte dans « entités inconnues » et « entités ignorées ».
+- **Fin de session** : une seule ligne `PNJ N : plus animé` par PNJ animé ; `sync/npc` écrit
+  `PNJ N : retiré du registre des captures`.
+- **Fin de monde** : dès que la frame voit le monde changer (non chargé, ou autre héros), les
+  répliques et les PNJ capturés sont oubliés sans appel au jeu, avant leur revérification par
+  `GetEntity` (`[sync] PNJ : N réplique(s) oubliée(s) : fin de monde`, `… PNJ animé(s)
+  retiré(s) : fin de monde`).
+
+Prérequis : recompiler, copier `client/build/Script_Multiplayer.dll` dans `bin/scripts/`,
+**`log_level = debug`**, overlay Steam désactivé. Log : `bin/scripts/Script_Multiplayer.log`.
+
+1. **Une machine, Risen hôte + faux invité** :
+   `tools/fake-guest/fake-guest --host 127.0.0.1 --strict-timeout --duration 120s --echo`.
+   - ouvrir le menu Échap, puis faire un chargement rapide (moins de 60 s). Le menu Échap peut ne
+     pas figer `OnProcess` : l'absence de la ligne « jeu en pause » est alors normale ; elle
+     n'apparaît que pour une pause de plus de 1,5 s (chargement) ;
+   - attendu : pas de `timeout` chez le faux invité pendant les pauses du jeu ;
+   - au chargement, l'hôte journalise `[sync] PNJ : N réplique(s)/PNJ animé(s) … : fin de monde`,
+     puis `InSession → Ended : fin de monde`, sans aucun `réplique perdue` ni `PNJ animé perdu` ;
+   - si la frame a été suspendue plus de 1,5 s : `[sync] jeu en pause : N heartbeat(s) envoyé(s)
+     par le thread réseau`.
+2. **Deux machines, cinématique** : l'invité déclenche une cinématique scriptée ou un long dialogue
+   avec transition (par exemple la capture par l'Inquisition). Attendu chez l'invité :
+   `[sync] jeu en pause : N heartbeat(s)…` à la reprise ; chez l'hôte, pas de
+   `timeout (5 s sans nouvelles du pair)`, et la session continue (snapshots reçus au bilan
+   suivant).
+3. **Deux machines, PNJ à l'arrivée** : s'approcher d'un camp. Attendu chez l'invité : dans
+   `[sync] snapshots (5 s)`, « entités inconnues » proche de 0 et le dernier compteur
+   `PNJ reçus avant leur Spawn` > 0 ; les PNJ bougent dès leur apparition.
+4. **Fin de session de l'hôte** (l'invité quitte) : une seule ligne `PNJ N : plus animé` par PNJ
+   animé, plus `PNJ N : retiré du registre des captures`.
+5. **Deux machines, rechargement de l'hôte** : l'invité reçoit `SessionEnd{2}` ; l'hôte oublie
+   ses PNJ « fin de monde » et ne plante pas.
+
+Limite connue : pendant un chargement, la frame n'est pas appelée ; le registre peut encore
+contenir les PS des répliques détruites jusqu'à la première frame du nouveau monde (une entité
+du nouveau monde placée à la même adresse aurait ses `PlayMotion` ou son `OnProcess` de routine
+bloqués jusque-là).
 
 ### Fin de session en jeu (story 1.5, une machine)
 

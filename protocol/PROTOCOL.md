@@ -805,6 +805,16 @@ d'appels.
   Une implémentation peut ne compter que les **messages** reçus du pair (contrôle, ou fiables
   rendus par KCP) plutôt que chaque datagramme : les heartbeats à 1 Hz suffisent à maintenir
   l'activité. C'est le cas de la DLL.
+- **Pause du jeu** (story 3.4a, sans changement de format ni de version) : quand la boucle du jeu
+  d'un pair est suspendue (cinématique, chargement, menu bloquant), ses heartbeats ne doivent pas
+  s'interrompre. Après **1,5 s** sans que le jeu ait lu le transport, l'émetteur continue d'envoyer
+  `Heartbeat` à **1 Hz** sur le canal fiable depuis son thread réseau, **60 s** au plus ; au-delà,
+  il se tait, et le pair conclut au timeout 5 s plus tard (un jeu figé pour de bon est donc
+  détecté en 65 s environ). Ces `Heartbeat` sont des messages ordinaires : le récepteur ne les
+  distingue pas. Une fin de monde reste annoncée par `SessionEnd{2}` à la reprise du jeu.
+  Si le jeu se fige pendant le maintien du KCP après `SessionEnd` (chargement juste après une fin
+  de monde), ces `Heartbeat` peuvent partir après le `SessionEnd`, tant que le KCP est gardé : le
+  pair les ignore (il est lui-même en maintien, ou son KCP est fermé).
 - Fin volontaire = envoi de `SessionEnd{raison}` sur le canal fiable, puis fermeture du KCP.
   La session est terminée dès l'envoi, mais le KCP est **gardé 1 s** (horloge monotone) pour
   laisser partir le segment et recevoir son acquittement ; pendant ce maintien, tout message

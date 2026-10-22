@@ -46,7 +46,7 @@
   summary: [fait 2026-10-17, story 1.5 : maintien de 1 s, normatif au §8] Durée de maintien du KCP après un `SessionEnd` envoyé, fixée dans §8 avec la fin de session volontaire. Vérifié côté hôte seulement (tests Linux et faux invité) ; côté invité de la DLL, non validé (deux machines).
   evidence: En 1.4, `Ended` suit toujours un timeout, un `SessionEnd`/`Reject` reçu ou un hôte injoignable : rien à envoyer.
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-heberger-rejoindre.md`
-  summary: Mesurer en jeu si `OnProcess` s'arrête plus de 5 s (écran de chargement, saccade) ; si oui, envoyer le heartbeat depuis le thread réseau ou prévenir le pair.
+  summary: [fait 2026-10-23, story 3.4a : heartbeat de secours depuis le thread réseau après 1,5 s sans lecture du transport, 60 s au plus ; banc « pause de l'hôte 7 s » ; validation à deux machines à faire] Mesurer en jeu si `OnProcess` s'arrête plus de 5 s (écran de chargement, saccade) ; si oui, envoyer le heartbeat depuis le thread réseau ou prévenir le pair.
   evidence: Les heartbeats partent de la frame ; une pause de plus de 5 s ferait conclure le pair à un timeout (non vérifié).
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-heberger-rejoindre.md`
   summary: Vérifier à deux machines, sous pertes, que compter l'activité du pair sur les messages KCP (et non les datagrammes) ne cause pas de faux timeout.
@@ -67,7 +67,7 @@
   summary: Observer en jeu le retour au menu principal en cours de session (attendu : `player` nul ou `running` faux, donc « fin de monde » et `SessionEnd{2}`).
   evidence: Non fait pendant le test du 2026-10-17 ; couvert seulement par les tests de `core/session`.
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-5-fin-de-session.md`
-  summary: Marge faible entre la pause d'`OnProcess` pendant un chargement rapide (environ 3,5 s mesurées) et le timeout de 5 s ; à revoir si des timeouts apparaissent à la place de « fin de monde » (heartbeat depuis le thread réseau, ou timeout plus long).
+  summary: [fait 2026-10-23, story 3.4a : même heartbeat de secours, le timeout reste de 5 s] Marge faible entre la pause d'`OnProcess` pendant un chargement rapide (environ 3,5 s mesurées) et le timeout de 5 s ; à revoir si des timeouts apparaissent à la place de « fin de monde » (heartbeat depuis le thread réseau, ou timeout plus long).
   evidence: `docs/re/fin-de-monde.md`, réponse 4 ; complète l'entrée de la story 1.4 sur la pause d'`OnProcess`.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-1-miroir-par-nom.md`
@@ -180,3 +180,18 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-4-animations-pnj.md`
   summary: Code DLL de la 3.4 (`execute`, `npc::capture`/`play`/`play_param`, branche PNJ de `on_wrapper_call`) sans test automatique.
   evidence: Même couture `game::` que 3.1 à 3.3 ; couvert seulement par la procédure en jeu du README.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4a-robustesse-session.md`
+  summary: Pendant un chargement, la frame n'est pas appelée : le registre (`AnimFilter`) garde les PS des répliques détruites jusqu'à la première frame du nouveau monde ; une entité du nouveau monde placée à la même adresse verrait ses `PlayMotion` ou son `OnProcess` de routine bloqués jusque-là.
+  evidence: Report prévu par la spec 3.4a (D7) : il faudrait un signal de fin de monde hors frame (un hook), interdit dans cette story.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4a-robustesse-session.md`
+  summary: Valider la 3.4a à deux machines : cinématique ou chargement de plus de 5 s chez l'invité sans timeout chez l'hôte, PNJ en avance (« reçus avant leur Spawn » > 0), rechargement de l'hôte sans « réplique perdue » ni « PNJ animé perdu ».
+  evidence: Testé au banc seulement (Linux, faux invité `--strict-timeout`) ; procédure « Robustesse de session » de `client/README.md`.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4a-robustesse-session.md`
+  summary: Un rechargement qui redonne au héros la même adresse sans aucune frame « monde non chargé » n'est vu ni par `core/session` ni par `sync/npc` (pas de fin de monde, répliques gardées).
+  evidence: Critère de fin de monde inchangé (`player`, `running`) ; à mesurer en jeu (lignes `[sync] signaux` pendant un chargement rapide), voir aussi l'entrée de la story 1.5 sur `eCEntity::GetID`.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4a-robustesse-session.md`
+  summary: Pendant une pause longue (jusqu'à 60 s), les messages fiables du pair s'accumulent (file d'événements de 4096, puis fenêtre KCP) et sont rejoués d'un coup à la reprise (snapshots, animations, Spawn/Despawn de PNJ).
+  evidence: Non mesuré ; à observer en jeu après une cinématique longue (compteurs `event_queue_full`, rafale au premier tick).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-4a-robustesse-session.md`
+  summary: La fin de monde côté DLL (`npc::release_all("fin de monde")` avant `validate`, dans `sync/session.cpp::frame`) n'a pas de test automatique.
+  evidence: Code `sync/` sans banc (même couture `game::` que 3.1 à 3.4) ; couvert seulement par la procédure en jeu du README.

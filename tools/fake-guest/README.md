@@ -67,6 +67,7 @@ Empreintes du `Hello` : celles de `hello.bin` (Risen Steam x64, janvier 2023). �
 | `--kill` | à la fin de `--duration`, sort **sans rien envoyer** : l'hôte doit constater le timeout 5 s plus tard |
 | `--dup-hello` | chaque `Hello` part deux fois (l'hôte doit renvoyer le même `Welcome`), et un `Hello` supplémentaire part en session, une fois le premier heartbeat échangé et acquitté (l'hôte doit l'ignorer) |
 | `--bad-version` | envoie le `Hello` de `hello_future.bin` (version 0xFFFF) : l'hôte doit répondre `Reject{1}` |
+| `--strict-timeout` | (story 3.4a) le timeout de 5 s n'est repoussé que par les **messages** de l'hôte (contrôle, messages fiables rendus par KCP, snapshots), pas par chaque datagramme : les acquittements KCP d'un hôte au jeu figé ne maintiennent plus la session. Sert à vérifier les heartbeats de secours de l'hôte pendant une pause du jeu |
 
 `--quit` et `--kill` sont exclusifs et demandent `--duration` > 0.
 
@@ -159,4 +160,4 @@ par seconde :
 | 1 | erreur d'usage ou de socket |
 | 2 | `Reject` reçu (raison journalisée) |
 | 3 | hôte injoignable (aucune réponse en 10 s) |
-| 4 | timeout (5 s sans datagramme de l'hôte en session) |
+| 4 | timeout (5 s sans datagramme de l'hôte en session ; avec `--strict-timeout`, sans message) |

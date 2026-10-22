@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c et 3.3 : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c, 3.3, 3.4 et 3.4a : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -29,10 +29,11 @@ expect_count() {  # <nom> <fichier> <motif> <nombre>
     if [[ $n -eq $4 ]]; then ok "$1"; else ko "$1 : « $3 » $n fois, attendu $4"; sed 's/^/    /' "$2"; fi
 }
 
-# start_host <nom> <port> <max-ms> [fins] : lance l'hôte en arrière-plan, attend que le
-# transport écoute. Échec : log de l'hôte affiché, hôte arrêté, code non nul (scénario sauté).
+# start_host <nom> <port> <max-ms> [fins] [options de session_host…] : lance l'hôte en
+# arrière-plan, attend que le transport écoute. Échec : log de l'hôte affiché, hôte arrêté, code
+# non nul (scénario sauté).
 start_host() {
-    "$host_bin" --port "$2" --max-ms "$3" --ends "${4:-1}" > "$work/$1.host.log" 2>&1 &
+    "$host_bin" --port "$2" --max-ms "$3" --ends "${4:-1}" "${@:5}" > "$work/$1.host.log" 2>&1 &
     host_pid=$!
     for _ in $(seq 100); do
         grep -q "transport démarré" "$work/$1.host.log" && return 0
@@ -453,6 +454,29 @@ if start_host_npcs pnj $p 30000 80; then
     fi
     with_params=$(grep -cE "^.*  PNJ netid=[0-9]+ .* Motion=[1-9][0-9]* MotionParam=[1-9]" "$g")
     if [[ $with_params -ge 8 ]]; then ok "animations PNJ : $with_params PNJ avec Motion et MotionParam au bilan"; else ko "animations PNJ : ${with_params:-0} PNJ animés au bilan (8 au moins attendus)"; fi
+fi
+
+# --- Story 3.4a : jeu de l'hôte en pause 7 s (cinématique, chargement) : pas de timeout ------
+# Le faux invité --strict-timeout ne compte que les messages de l'hôte : seuls les heartbeats de
+# secours du thread réseau de l'hôte maintiennent la session pendant la pause.
+p=$((base_port + 18))
+if start_host pause $p 30000 1 --pause-at 1000 --pause-ms 7000; then
+    h=$work/pause.host.log
+    g=$work/pause.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 10s --quit --strict-timeout > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "pause : invité" 0 $rc "$g"
+    expect_log "pause : pause simulée par l'hôte" "$h" "\[test\] pause du jeu simulée : 7000 ms"
+    expect_count "pause : pas de timeout chez l'hôte" "$h" "timeout" 0
+    expect_count "pause : pas de timeout chez l'invité" "$g" "timeout" 0
+    expect_log "pause : fin par l'invité" "$h" "InSession → Ended : fin de session par le pair : départ du joueur (1)"
+    n=$(sed -nE 's/.*\[sync\] jeu en pause : ([0-9]+) heartbeat\(s\) envoyé\(s\) par le thread réseau.*/\1/p' "$h" | head -1)
+    if [[ -n $n && $n -ge 4 ]]; then
+        ok "pause : $n heartbeat(s) de secours journalisés à la reprise (≥ 4)"
+    else
+        ko "pause : ${n:-aucun} heartbeat de secours journalisé (≥ 4 attendus)"; sed 's/^/    /' "$h"
+    fi
+    expect_count "pause : borne de 60 s non atteinte" "$h" "jeu en pause plus de" 0
 fi
 
 # --- Story 1.5 : mort de l'hôte en session → SessionEnd{3} ----------------------------

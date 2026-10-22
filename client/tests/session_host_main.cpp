@@ -3,6 +3,7 @@
 // monde, vider poll(), tick, exécuter les commandes, écrire les logs.
 //
 // Usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N]
+//                     [--pause-at MS --pause-ms MS]
 // Sort après la E-ième fin de session (défaut 1), une fois le maintien terminé (Ended →
 // Inactive), ou après T ms (défaut 30000). Log sur stdout ; la dernière ligne est
 // « état final : <état> ». Code de sortie : 0, ou 1 sur erreur d'usage.
@@ -22,6 +23,10 @@
 // Animations des PNJ (story 3.4) : chaque PNJ capturé (CaptureNpc, jusqu'à UncaptureNpc) lance un
 // PlayMotion toutes les 200 ms (« Npc_Walk » ou « Npc_Attack ») et trois réglages de poids par
 // frame (regroupés en un par la session), comme le ferait le hook dans la DLL.
+// Pause du jeu (story 3.4a) : --pause-at MS --pause-ms MS fige la boucle une fois, MS ms après
+// l'entrée en InSession, pendant --pause-ms (ni poll ni tick : sleep), comme une cinématique ou un
+// chargement. Le heartbeat de secours du transport doit maintenir la session ; à la reprise, la
+// même ligne de log que la DLL compte les heartbeats envoyés par le thread réseau.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -86,7 +91,11 @@ int main(int argc, char** argv) {
     std::string weapon;
     std::string armor;
     long npc_count = 0;
+    long pause_at = -1;
+    long pause_ms = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
+        if (std::strcmp(argv[i], "--pause-at") == 0) pause_at = std::strtol(argv[i + 1], nullptr, 10);
+        if (std::strcmp(argv[i], "--pause-ms") == 0) pause_ms = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--npcs") == 0) npc_count = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--weapon") == 0) weapon = argv[i + 1];
         if (std::strcmp(argv[i], "--armor") == 0) armor = argv[i + 1];
@@ -95,9 +104,10 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--ends") == 0) max_ends = std::strtol(argv[i + 1], nullptr, 10);
     }
     if (port <= 0 || port > 65535 || max_ms <= 0 || max_ends <= 0 || npc_count < 0 || npc_count > 255 ||
-        argc % 2 == 0) {
+        pause_ms < 0 || (pause_ms > 0 && pause_at < 0) || argc % 2 == 0) {
         std::fprintf(stderr,
-                     "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N]\n");
+                     "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N] "
+                     "[--pause-at MS --pause-ms MS]\n");
         return 1;
     }
     std::signal(SIGUSR1, on_sigusr1);
@@ -185,7 +195,16 @@ int main(int argc, char** argv) {
     bool weapon_pushed = false;
     bool armor_worn = !armor.empty();
     bool armor_pushed = false;
+    bool paused = false;  // story 3.4a : la pause n'a lieu qu'une fois
+    std::uint64_t keepalives_seen = 0, keepalive_capped_seen = 0;
     while (now_ms() < static_cast<std::uint64_t>(max_ms)) {
+        if (!paused && pause_ms > 0 && in_session &&
+            now_ms() >= session_start + static_cast<std::uint64_t>(pause_at)) {
+            paused = true;
+            print("INFO", "[test] pause du jeu simulée : " + std::to_string(pause_ms) + " ms sans poll ni tick");
+            std::this_thread::sleep_for(std::chrono::milliseconds(pause_ms));
+            print("INFO", "[test] reprise du jeu");
+        }
         if (g_reload_requests != reloads_seen) {
             reloads_seen = g_reload_requests;
             world.player += 0x1000;  // nouveau monde : autre héros, vivant
@@ -229,6 +248,19 @@ int main(int argc, char** argv) {
                 inputs.push_back(SnapshotIn{std::move(std::get<mp::net::SnapshotReceived>(ev).bytes)});
             }
         }
+        {  // Story 3.4a : mêmes lignes que la DLL (sync/session) à la reprise de la frame.
+            const mp::net::Stats st = transport.stats();
+            if (st.keepalives_sent > keepalives_seen) {
+                print("INFO", "[sync] jeu en pause : " + std::to_string(st.keepalives_sent - keepalives_seen) +
+                                  " heartbeat(s) envoyé(s) par le thread réseau");
+                keepalives_seen = st.keepalives_sent;
+            }
+            if (st.keepalive_capped > keepalive_capped_seen) {
+                print("WARN", "[sync] jeu en pause plus de " + std::to_string(kKeepaliveMaxPauseMs / 1000) +
+                                  " s : le thread réseau a cessé ses heartbeats de secours (timeout probable chez le pair)");
+                keepalive_capped_seen = st.keepalive_capped;
+            }
+        }
         const std::uint64_t now = now_ms();
         if (session.state() == State::InSession) {
             const double t = static_cast<double>(now - session_start) / 1000.0;
@@ -261,10 +293,12 @@ int main(int argc, char** argv) {
             for (auto& cmd : pending[p].commands) {
                 if (auto* s = std::get_if<Start>(&cmd)) {
                     std::string error;
-                    if (!transport.start(s->port, error)) {
+                    if (!transport.start(s->port, s->options, error)) {
                         pending.push_back(session.fail(now_ms(), "réseau : " + error));
                         break;
                     }
+                    keepalives_seen = 0;  // story 3.4a : compteurs du nouveau transport
+                    keepalive_capped_seen = 0;
                     print("INFO", "[sync] transport démarré sur le port UDP " + std::to_string(transport.local_port()));
                 } else if (auto* s = std::get_if<Send>(&cmd)) {
                     transport.post(mp::net::SendControl{s->destination, std::move(s->bytes)});

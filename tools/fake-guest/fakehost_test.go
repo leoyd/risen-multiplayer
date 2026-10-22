@@ -36,6 +36,9 @@ type hostConfig struct {
 	// 1005 jamais annoncée ; 1001 retiré au tick 10 (Despawn répété au tick 12, à ignorer) puis
 	// réannoncé au tick 14.
 	SendNpcs bool
+	// Story 3.4a : jeu de l'hôte figé. Après l'entrée en session (Welcome, Spawn), plus aucun
+	// message (ni heartbeat ni snapshot), mais le KCP continue d'acquitter les segments reçus.
+	AcksOnly bool
 }
 
 var (
@@ -446,6 +449,9 @@ func (h *simHost) tick() {
 		h.mu.Lock()
 		h.rec.ended = "SessionEnd envoyé"
 		h.mu.Unlock()
+		return
+	}
+	if h.cfg.AcksOnly {
 		return
 	}
 	if !now.Before(h.nextHB) {

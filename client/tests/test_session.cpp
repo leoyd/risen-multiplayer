@@ -3134,3 +3134,152 @@ TEST("animations PNJ invité : Motion reçu avant tout snapshot → rejoué auss
     CHECK(commands_of<MoveNpc>(out).empty());
     CHECK(commands_of<SetNpcHp>(out).empty());
 }
+
+// --- Robustesse de session (story 3.4a) --------------------------------------------------
+
+TEST("secours 3.4a : Start de l'hôte et de l'invité porte un Heartbeat décodable et les délais") {
+    for (const Settings& settings : {host_settings(), guest_settings()}) {
+        Session s(settings);
+        const Output out = s.tick(0, loaded_world(), {});
+        const auto starts = commands_of<Start>(out);
+        CHECK_EQ(starts.size(), 1u);
+        if (starts.empty()) continue;
+        const mp::net::Options& o = starts[0]->options;
+        const auto decoded = proto::decode_reliable(o.keepalive.data(), o.keepalive.size());
+        CHECK(decoded.ok());
+        if (decoded.ok()) CHECK(std::holds_alternative<proto::Heartbeat>(decoded.message));
+        CHECK_EQ(o.keepalive_interval_ms, 1000u);
+        CHECK_EQ(o.keepalive_after_ms, 1500u);
+        CHECK_EQ(o.keepalive_max_pause_ms, 60000u);
+    }
+    // Les délais du timeout et du heartbeat ne changent pas.
+    CHECK_EQ(kPeerTimeoutMs, 5000u);
+    CHECK_EQ(kHeartbeatIntervalMs, 1000u);
+}
+
+namespace {
+
+// Ligne du bilan debug de l'invité (t0 = 100 : bilan à 5100), après des ticks vides.
+std::string guest_stats_line(Session& g, std::uint64_t from) {
+    for (std::uint64_t t = from; t < 5100; t += 400) g.tick(t, loaded_world(), {});
+    const Output out = g.tick(5100, loaded_world(), {});
+    for (const auto& line : out.logs) {
+        if (line.text.find("[sync] snapshots (5 s)") != std::string::npos) return line.text;
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST("PNJ en avance 3.4a : entrée avant le Spawn → appliquée à son arrivée, comptée en fin de bilan") {
+    Session g = guest_in_session();  // t0 = 100
+    Output out = g.tick(200, loaded_world(), snapshot_in(npc_snapshot(2, {npc_entity(1000, 42.0f, 77)})));
+    CHECK(commands_of<MoveNpc>(out).empty());
+    out = g.tick(300, loaded_world(), reliable(encode_r(npc_spawn(1000))));  // 100 ms plus tard
+    CHECK_EQ(commands_of<SpawnNpc>(out).size(), 1u);
+    out = g.tick(310, loaded_world(), {});
+    const auto moves = commands_of<MoveNpc>(out);
+    CHECK_EQ(moves.size(), 1u);
+    if (!moves.empty()) CHECK(moves[0]->net_id == 1000u && moves[0]->pose.x == 42.0f);
+    // PV du snapshot (tick 2 = 100 ms distants) écrits à leur instant d'affichage.
+    std::vector<int> hps;
+    for (std::uint64_t t = 320; t <= 400; t += 10) {
+        const Output o = g.tick(t, loaded_world(), {});
+        for (const auto* c : commands_of<SetNpcHp>(o)) hps.push_back(c->hp);
+    }
+    CHECK(hps == std::vector<int>{77});
+    const std::string line = guest_stats_line(g, 410);
+    CHECK(line.find("entités ignorées 0") != std::string::npos);
+    CHECK(line.find("entités inconnues 0") != std::string::npos);
+    // Nouveau compteur en fin de ligne.
+    const std::string tail = "PNJ reçus avant leur Spawn 1";
+    CHECK(line.size() >= tail.size() && line.compare(line.size() - tail.size(), tail.size(), tail) == 0);
+}
+
+TEST("PNJ en avance 3.4a : plusieurs entrées (ticks 10, 12, 11) → seule la plus récente est appliquée") {
+    Session g = guest_in_session();
+    g.tick(200, loaded_world(), snapshot_in(npc_snapshot(10, {npc_entity(1000, 10.0f, 50)})));
+    g.tick(250, loaded_world(), snapshot_in(npc_snapshot(12, {npc_entity(1000, 12.0f, 50)})));
+    g.tick(260, loaded_world(), snapshot_in(npc_snapshot(11, {npc_entity(1000, 11.0f, 50)})));
+    g.tick(300, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    const Output out = g.tick(310, loaded_world(), {});
+    const auto moves = commands_of<MoveNpc>(out);
+    CHECK_EQ(moves.size(), 1u);
+    if (!moves.empty()) CHECK_EQ(moves[0]->pose.x, 12.0f);
+    const std::string line = guest_stats_line(g, 400);
+    CHECK(line.find("entités inconnues 0") != std::string::npos);
+    CHECK(line.find("PNJ reçus avant leur Spawn 1") != std::string::npos);
+}
+
+TEST("PNJ en avance 3.4a : Spawn 600 ms après l'entrée → expirée, comptée inconnue, réplique à la pose du Spawn") {
+    Session g = guest_in_session();
+    g.tick(200, loaded_world(), snapshot_in(npc_snapshot(2, {npc_entity(1000, 42.0f, 77)})));
+    Output out = g.tick(800, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    CHECK_EQ(commands_of<SpawnNpc>(out).size(), 1u);
+    out = g.tick(810, loaded_world(), {});
+    CHECK(commands_of<MoveNpc>(out).empty());  // reste à la pose du Spawn
+    CHECK(commands_of<SetNpcHp>(out).empty());
+    const std::string line = guest_stats_line(g, 900);
+    CHECK(line.find("entités ignorées 1") != std::string::npos);
+    CHECK(line.find("entités inconnues 1") != std::string::npos);
+    CHECK(line.find("PNJ reçus avant leur Spawn 0") != std::string::npos);
+}
+
+TEST("PNJ en avance 3.4a : 65e NetId inconnu → ignoré et compté tout de suite") {
+    Session g = guest_in_session();
+    std::vector<proto::SnapshotEntity> many;
+    for (std::uint32_t i = 0; i < 65; ++i) many.push_back(npc_entity(1000 + i, static_cast<float>(i), 10));
+    // 54 entités au plus par snapshot : deux snapshots.
+    g.tick(200, loaded_world(), snapshot_in(npc_snapshot(2, std::vector<proto::SnapshotEntity>(many.begin(), many.begin() + 40))));
+    g.tick(210, loaded_world(), snapshot_in(npc_snapshot(2, std::vector<proto::SnapshotEntity>(many.begin() + 40, many.end()))));
+    g.tick(300, loaded_world(), reliable2(npc_spawn(1000), npc_spawn(1064, 8)));
+    const Output out = g.tick(310, loaded_world(), {});
+    const auto moves = commands_of<MoveNpc>(out);
+    CHECK(moves.size() == 1 && moves[0]->net_id == 1000u);  // 1064 n'a pas été gardé
+    const std::string line = guest_stats_line(g, 400);
+    CHECK(line.find("PNJ reçus avant leur Spawn 1") != std::string::npos);
+    // 1064 tout de suite, puis les 63 autres gardés sans Spawn, à leur expiration.
+    CHECK(line.find("entités inconnues 64") != std::string::npos);
+    CHECK(line.find("entités ignorées 64") != std::string::npos);
+}
+
+TEST("PNJ en avance 3.4a : entrées gardées vidées à Ended ; l'hôte ne garde rien") {
+    {
+        Session g = guest_in_session();
+        g.tick(200, loaded_world(), snapshot_in(npc_snapshot(2, {npc_entity(1000, 42.0f, 77)})));
+        const Output out = g.tick(250, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+        CHECK(g.state() == State::Ended);
+        CHECK(commands_of<ReleaseNpc>(out).empty());
+    }
+    {
+        Session s = host_in_session();  // t0 = 1000 : bilan à 6000
+        s.tick(1100, loaded_world(), snapshot_in(npc_snapshot(2, {npc_entity(1000, 42.0f, 77)})));
+        std::string line;
+        for (std::uint64_t t = 1200; t <= 6000; t += 400) {
+            for (const auto& l : s.tick(t, loaded_world(), {}).logs) {
+                if (l.text.find("[sync] snapshots (5 s)") != std::string::npos) line = l.text;
+            }
+        }
+        CHECK(line.find("entités inconnues 1") != std::string::npos);
+        CHECK(line.find("PNJ reçus avant leur Spawn 0") != std::string::npos);
+    }
+}
+
+TEST("fin de session hôte 3.4a : 3 PNJ animés, Ended → un UncaptureNpc et une ligne « plus animé » par PNJ") {
+    Session s = host_with_animated(3);
+    const Output out = s.tick(1100, host_world(npcs_in_line(3)), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK(s.state() == State::Ended);
+    CHECK(uncaptured_ids(out) == (std::vector<std::uint32_t>{1000u, 1001u, 1002u}));
+    for (std::uint32_t id = 1000; id <= 1002; ++id) {
+        std::size_t lines = 0;
+        for (const auto& l : out.logs) {
+            if (l.text == "[sync] PNJ " + std::to_string(id) + " : plus animé") ++lines;
+        }
+        CHECK_EQ(lines, 1u);
+    }
+    std::size_t all = 0;
+    for (const auto& l : out.logs) all += l.text.find("plus animé") != std::string::npos ? 1 : 0;
+    CHECK_EQ(all, 3u);
+    // Plus rien ensuite (maintien, retour à Inactive).
+    CHECK(commands_of<UncaptureNpc>(s.tick(2200, host_world(npcs_in_line(3)), {})).empty());
+}

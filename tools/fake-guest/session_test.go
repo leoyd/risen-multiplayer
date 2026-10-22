@@ -356,6 +356,31 @@ func TestHostSilent(t *testing.T) {
 	}
 }
 
+// Story 3.4a : un hôte au jeu figé n'envoie plus que des acquittements KCP. Par défaut ils
+// maintiennent la session ; avec --strict-timeout, seul un message compte : timeout.
+func TestStrictTimeout(t *testing.T) {
+	t.Parallel()
+	for _, strict := range []bool{false, true} {
+		hc := defaultHost()
+		hc.AcksOnly = true
+		host := startHost(t, hc)
+		cfg := guestConfig(host.addr())
+		cfg.StrictTimeout = strict
+		cfg.Duration = 3 * testPeerTimeout
+		r := runGuest(t, context.Background(), cfg)
+		host.stop()
+		if !strict {
+			expectCode(t, r, exitOK)
+			continue
+		}
+		expectCode(t, r, exitTimeout)
+		expectLog(t, r, "Ended raison=timeout")
+		if r.elapsed > testPeerTimeout+time.Second {
+			t.Errorf("timeout strict après %v (≈%v attendu)", r.elapsed, testPeerTimeout)
+		}
+	}
+}
+
 func TestHostSessionEnd(t *testing.T) {
 	t.Parallel()
 	hc := defaultHost()
@@ -472,7 +497,7 @@ func TestParseConfig(t *testing.T) {
 	if cfg.Host != netip.MustParseAddrPort("10.0.0.7:27960") || cfg.Hello.Nickname != "Invite" ||
 		cfg.Hello.ModVersion != "0.1.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != protocol.ProtocolVersion ||
 		cfg.Duration != 0 || cfg.Kill || cfg.Drop != 0 || cfg.Seed != 1 || cfg.DupHello || cfg.BadVersion ||
-		cfg.Weapon != "It_1H_Sword" || cfg.Armor != nil {
+		cfg.Weapon != "It_1H_Sword" || cfg.Armor != nil || cfg.StrictTimeout {
 		t.Errorf("config par défaut : %+v", cfg)
 	}
 
@@ -495,6 +520,7 @@ func TestParseConfig(t *testing.T) {
 		{[]string{"--weapon", "-"}, func(c sessionConfig) bool { return c.Weapon == "" }},
 		{[]string{"--armor", "It_Armor_Inquisitor"}, func(c sessionConfig) bool { return c.Armor != nil && *c.Armor == "It_Armor_Inquisitor" }},
 		{[]string{"--armor", "-"}, func(c sessionConfig) bool { return c.Armor != nil && *c.Armor == "" }},
+		{[]string{"--strict-timeout"}, func(c sessionConfig) bool { return c.StrictTimeout }},
 	}
 	for _, c := range cases {
 		cfg, code := parseConfig(append(append([]string{}, base...), c.args...), &errOut)

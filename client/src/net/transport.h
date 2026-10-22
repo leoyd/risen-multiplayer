@@ -84,6 +84,17 @@ struct Options {
     // Test seulement : probabilité de jeter chaque datagramme à l'envoi (0 = aucune perte).
     double drop_rate = 0.0;
     std::uint32_t drop_seed = 12345;  // graine fixe : pertes reproductibles
+
+    // Heartbeat de secours (story 3.4a) : quand la frame n'a plus appelé poll() depuis
+    // `keepalive_after_ms`, le thread réseau confie lui-même `keepalive` (message fiable
+    // `[MsgType][charge]` fourni par la session) à KCP, toutes les `keepalive_interval_ms`, tant
+    // que le KCP est ouvert. Au-delà de `keepalive_max_pause_ms` de silence, il se tait : le pair
+    // finit par conclure au timeout. Une frame qui rappelle poll() remet l'état à neuf.
+    // `keepalive` vide : désactivé.
+    Bytes keepalive;
+    std::uint32_t keepalive_interval_ms = 1000;
+    std::uint32_t keepalive_after_ms = 1500;
+    std::uint32_t keepalive_max_pause_ms = 60000;
 };
 
 struct Stats {
@@ -111,6 +122,8 @@ struct Stats {
     std::uint64_t event_queue_full = 0;      // événements de contrôle jetés (file entrante pleine) ;
                                              // les messages fiables restent dans KCP
     std::uint64_t internal_errors = 0;       // allocation impossible (commande ou KCP perdus)
+    std::uint64_t keepalives_sent = 0;       // heartbeats de secours confiés à KCP (frame silencieuse)
+    std::uint64_t keepalive_capped = 0;      // pauses ayant dépassé keepalive_max_pause_ms (une par pause)
 };
 
 class Transport {
@@ -140,7 +153,8 @@ public:
     // false si la file est pleine : la commande est jetée et comptée.
     bool post(Command command);
 
-    // Retire le plus ancien événement reçu. false si la file est vide.
+    // Retire le plus ancien événement reçu. false si la file est vide. Chaque appel note
+    // l'instant (la frame est vivante) : sans appel, le heartbeat de secours prend le relais.
     bool poll(Event& event);
 
     // Copie instantanée des compteurs.
@@ -164,6 +178,7 @@ private:
     void open_reliable(std::uint32_t conv, const Endpoint& peer);
     void close_reliable();
     void drain_reliable();
+    void keepalive();
     void send_datagram(const Endpoint& to, const std::uint8_t* data, std::size_t size);
     void push_event(Event event);
     std::uint32_t now_ms() const;
@@ -175,6 +190,7 @@ private:
     std::deque<Event> events_;
     std::atomic<bool> stop_requested_{false};
     std::atomic<std::uint16_t> local_port_{0};
+    std::atomic<std::uint32_t> last_poll_ms_{0};  // dernier poll() de la frame (horloge de now_ms)
     std::unique_ptr<Counters> counters_;  // atomiques
 
     // Côté frame uniquement.
@@ -187,6 +203,10 @@ private:
     std::unique_ptr<Reliable> reliable_;  // KCP ouvert, ou nul
     std::uint64_t rng_state_ = 0;
     std::chrono::steady_clock::time_point clock_origin_;
+    // Heartbeat de secours : dernier instant de poll() vu, prochain envoi dû, pause plafonnée.
+    std::uint32_t keepalive_mark_ = 0;
+    std::uint32_t keepalive_next_ = 0;
+    bool keepalive_capped_ = false;
 };
 
 }  // namespace mp::net

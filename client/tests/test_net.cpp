@@ -499,3 +499,137 @@ TEST("net : CloseReliable, envoi sans KCP, message vide, réouverture avec un au
     CHECK(got == (Bytes{0x11, 0x02}));
     CHECK_EQ(b.stats().ignored_wrong_conv, 0u);
 }
+
+// --- Heartbeat de secours (story 3.4a) ---------------------------------------------------
+// Durées réduites (×1/10) : mêmes règles que 1500 / 1000 / 60000 ms.
+
+namespace {
+
+const Bytes kKeepalive{0x07, 0x4B};  // octets opaques pour le transport
+
+Options keepalive_options(std::uint32_t interval, std::uint32_t after, std::uint32_t max_pause) {
+    Options o;
+    o.keepalive = kKeepalive;
+    o.keepalive_interval_ms = interval;
+    o.keepalive_after_ms = after;
+    o.keepalive_max_pause_ms = max_pause;
+    return o;
+}
+
+// Ouvre le KCP entre `a` et `b` et attend que les commandes soient exécutées ; les frames des
+// deux côtés restent vivantes (poll) pendant l'attente.
+void open_pair(Transport& a, Transport& b) {
+    a.post(OpenReliable{kConv, loopback(b.local_port())});
+    b.post(OpenReliable{kConv, loopback(a.local_port())});
+    CHECK(wait_until(std::chrono::milliseconds(2000), [&] {
+        Event e;
+        while (a.poll(e) || b.poll(e)) {
+        }
+        return a.pending_commands() == 0 && b.pending_commands() == 0;
+    }));
+}
+
+// Messages fiables égaux à kKeepalive lus sur `t` ; `first` : instant du premier.
+int count_keepalives(Transport& t, Clock::time_point* first = nullptr) {
+    int n = 0;
+    Event e;
+    while (t.poll(e)) {
+        const auto* r = std::get_if<ReliableReceived>(&e);
+        if (r == nullptr || r->bytes != kKeepalive) continue;
+        if (n == 0 && first != nullptr) *first = Clock::now();
+        ++n;
+    }
+    return n;
+}
+
+}  // namespace
+
+TEST("net : secours — frame en pause, KCP ouvert : heartbeats après le silence, puis à intervalle") {
+    Transport a, b;
+    if (!start_or_report(a, 0, keepalive_options(100, 150, 60000)) || !start_or_report(b, 0)) return;
+    open_pair(a, b);
+    Event e;
+    a.poll(e);  // dernier signe de vie de la frame de `a`
+    const auto paused_at = Clock::now();
+    int received = 0;
+    Clock::time_point first{};
+    bool first_seen = false;
+    wait_until(std::chrono::milliseconds(700), [&] {
+        Clock::time_point t{};
+        const int n = count_keepalives(b, &t);
+        if (n > 0 && !first_seen) {
+            first_seen = true;
+            first = t;
+        }
+        received += n;
+        return false;
+    });
+    CHECK(first_seen);
+    if (first_seen) CHECK(first - paused_at >= std::chrono::milliseconds(140));  // pas avant le silence
+    CHECK(received >= 4);   // ≈ 150, 250, … 650 ms : 6 attendus
+    CHECK(received <= 7);
+    CHECK(a.stats().keepalives_sent >= 4u);
+    CHECK_EQ(a.stats().keepalive_capped, 0u);
+}
+
+TEST("net : secours — frame vivante : aucun heartbeat de secours") {
+    Transport a, b;
+    if (!start_or_report(a, 0, keepalive_options(100, 150, 60000)) || !start_or_report(b, 0)) return;
+    open_pair(a, b);
+    int received = 0;
+    wait_until(std::chrono::milliseconds(600), [&] {
+        Event e;
+        while (a.poll(e)) {
+        }
+        received += count_keepalives(b);
+        return false;
+    });
+    CHECK_EQ(received, 0);
+    CHECK_EQ(a.stats().keepalives_sent, 0u);
+}
+
+TEST("net : secours — pause au-delà de la borne : plus d'envoi, plafond compté une fois, puis remise à neuf") {
+    Transport a, b;
+    if (!start_or_report(a, 0, keepalive_options(50, 100, 400)) || !start_or_report(b, 0)) return;
+    open_pair(a, b);
+    Event e;
+    a.poll(e);
+    CHECK(wait_until(std::chrono::milliseconds(2000), [&] { return a.stats().keepalive_capped == 1; }));
+    const std::uint64_t sent = a.stats().keepalives_sent;
+    CHECK(sent >= 4u);  // ≈ 100 à 400 ms toutes les 50 ms
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK_EQ(a.stats().keepalives_sent, sent);  // la borne fait taire le secours
+    CHECK_EQ(a.stats().keepalive_capped, 1u);
+    // La frame revient puis se fige de nouveau : le secours repart, une nouvelle pause est comptée.
+    a.poll(e);
+    CHECK(wait_until(std::chrono::milliseconds(2000), [&] { return a.stats().keepalives_sent > sent; }));
+    CHECK(wait_until(std::chrono::milliseconds(2000), [&] { return a.stats().keepalive_capped == 2; }));
+}
+
+TEST("net : secours — non configuré, ou KCP fermé : rien n'est envoyé") {
+    {  // keepalive vide, KCP ouvert
+        Transport a, b;
+        if (!start_or_report(a, 0, keepalive_options(50, 100, 60000)) || !start_or_report(b, 0)) return;
+        Transport c;
+        Options none = keepalive_options(50, 100, 60000);
+        none.keepalive.clear();
+        if (!start_or_report(c, 0, none)) return;
+        open_pair(c, b);
+        // `a` : secours configuré mais jamais de KCP.
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        CHECK_EQ(c.stats().keepalives_sent, 0u);
+        CHECK_EQ(a.stats().keepalives_sent, 0u);
+        CHECK_EQ(a.stats().reliable_without_kcp, 0u);
+        CHECK_EQ(count_keepalives(b), 0);
+    }
+    {  // KCP ouvert puis fermé : le secours cesse
+        Transport a, b;
+        if (!start_or_report(a, 0, keepalive_options(50, 100, 60000)) || !start_or_report(b, 0)) return;
+        open_pair(a, b);
+        a.post(CloseReliable{});
+        CHECK(wait_until(std::chrono::milliseconds(2000), [&] { return a.pending_commands() == 0; }));
+        const std::uint64_t sent = a.stats().keepalives_sent;
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        CHECK_EQ(a.stats().keepalives_sent, sent);
+    }
+}

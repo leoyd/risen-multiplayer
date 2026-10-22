@@ -22,9 +22,9 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v8, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v10, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
-Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte.
+Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte (--strict-timeout : sans message).
 
 Options :
 `
@@ -45,7 +45,7 @@ Codes de sortie :
   1  erreur d'usage ou de socket
   2  Reject reçu de l'hôte
   3  hôte injoignable (aucune réponse en 10 s)
-  4  timeout (5 s sans datagramme de l'hôte en session)
+  4  timeout (5 s sans datagramme de l'hôte en session ; --strict-timeout : sans message)
 `
 
 // run : ligne de commande complète, rend le code de sortie.
@@ -93,6 +93,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	equipment := fs.String("equipment", "", "équipement de l'invité envoyé dans Hello : templates séparés par des virgules (vide : aucun)")
 	weapon := fs.String("weapon", "It_1H_Sword", "arme en main de l'invité, envoyée en Weapon après le Spawn (« - » : arme rangée)")
 	armor := fs.String("armor", "", "armure de l'invité, envoyée en Armor après le Weapon (« - » : sans armure ; vide : pas d'Armor)")
+	strictTimeout := fs.Bool("strict-timeout", false, "timeout compté sur les seuls messages de l'hôte (contrôle, messages fiables rendus par KCP, snapshots), pas sur les acquittements KCP")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
 		fs.PrintDefaults()
@@ -193,6 +194,8 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 		Echo:       *echo,
 		Weapon:     weaponName,
 		Armor:      armorName,
+
+		StrictTimeout: *strictTimeout,
 	}
 	defaultTimings(&cfg)
 	return cfg, parseOK

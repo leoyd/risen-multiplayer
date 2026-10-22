@@ -42,7 +42,8 @@ std::uint64_t next_random(std::uint64_t& state) {
     X(ignored_snapshot) X(ignored_unknown_channel) X(ignored_no_reliable)                   \
     X(ignored_wrong_peer) X(ignored_wrong_conv) X(kcp_input_errors) X(reliable_without_kcp) \
     X(reliable_send_errors) X(command_queue_full) X(event_queue_full) X(internal_errors)      \
-    X(snapshots_sent) X(snapshots_received) X(snapshot_without_peer)
+    X(snapshots_sent) X(snapshots_received) X(snapshot_without_peer) X(keepalives_sent)       \
+    X(keepalive_capped)
 
 struct Transport::Counters {
 #define MP_DECLARE(name) std::atomic<std::uint64_t> name{0};
@@ -102,6 +103,10 @@ bool Transport::start(std::uint16_t port, const Options& options, std::string& e
     options_ = options;
     rng_state_ = options.drop_seed;
     clock_origin_ = std::chrono::steady_clock::now();
+    last_poll_ms_.store(0);
+    keepalive_mark_ = 0;
+    keepalive_next_ = options.keepalive_after_ms;
+    keepalive_capped_ = false;
     stop_requested_.store(false);
     reliable_.reset();
 
@@ -145,6 +150,7 @@ bool Transport::post(Command command) {
 }
 
 bool Transport::poll(Event& event) {
+    last_poll_ms_.store(now_ms(), std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(events_mutex_);
     if (events_.empty()) return false;
     event = std::move(events_.front());
@@ -199,6 +205,7 @@ void Transport::loop_once() {
     }
     for (Command& command : batch) execute(command);
 
+    keepalive();
     if (reliable_) {
         ikcp_update(reliable_->kcp, now_ms());
         drain_reliable();
@@ -329,6 +336,38 @@ void Transport::drain_reliable() {
         message.resize(static_cast<std::size_t>(n));
         push_event(ReliableReceived{std::move(message)});
     }
+}
+
+// Heartbeat de secours (story 3.4a) : la frame (thread du jeu) ne lit plus le transport, par
+// exemple pendant une cinématique ou un chargement. Le message vient de la session : ce thread
+// reste un tuyau d'octets (AD-2). Appelé avant ikcp_update, qui l'envoie aussitôt.
+void Transport::keepalive() {
+    if (!reliable_ || options_.keepalive.empty()) return;
+    const std::uint32_t last = last_poll_ms_.load(std::memory_order_relaxed);
+    const std::uint32_t now = now_ms();
+    if (last != keepalive_mark_) {  // la frame est revenue : état à neuf
+        keepalive_mark_ = last;
+        keepalive_next_ = last + options_.keepalive_after_ms;
+        keepalive_capped_ = false;
+    }
+    const std::uint32_t silence = now - last;
+    if (silence < options_.keepalive_after_ms) return;
+    if (silence > options_.keepalive_max_pause_ms) {  // jeu figé pour de bon : le pair conclura
+        if (!keepalive_capped_) {
+            keepalive_capped_ = true;
+            bump(counters_->keepalive_capped);
+        }
+        return;
+    }
+    if (static_cast<std::int32_t>(now - keepalive_next_) < 0) return;
+    keepalive_next_ = now + options_.keepalive_interval_ms;
+    if (options_.keepalive.size() > static_cast<std::size_t>(INT_MAX) ||
+        ikcp_send(reliable_->kcp, reinterpret_cast<const char*>(options_.keepalive.data()),
+                  static_cast<int>(options_.keepalive.size())) < 0) {
+        bump(counters_->reliable_send_errors);
+        return;
+    }
+    bump(counters_->keepalives_sent);
 }
 
 int Transport::on_kcp_output(const char* segment, int size) {

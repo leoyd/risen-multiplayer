@@ -54,11 +54,12 @@ void uncapture(std::uint32_t net_id);
 // GetEntity(GUID) ne rend plus la même entité sort du registre et de la table (journalisée une
 // fois par NetId).
 void validate();
-// Hors session (après Ended, ReleaseNpc déjà exécutés) : filet de sécurité, toutes les
-// répliques restantes sortent du registre, sans appel au jeu ; les NetId introuvables déjà
-// signalés sont oubliés (une ligne par NetId et par session). Sans effet si tout est vide.
-// Les PNJ capturés de l'hôte sortent aussi du registre.
-void release_all();
+// Hors session (après Ended, ReleaseNpc déjà exécutés) ou dès que la frame voit le monde changer
+// (story 3.4a, avant validate) : toutes les répliques restantes sortent du registre, sans appel au
+// jeu ; les NetId introuvables déjà signalés sont oubliés (une ligne par NetId et par session).
+// Sans effet si tout est vide. Les PNJ capturés de l'hôte sortent aussi du registre. `cause`
+// (« hors session », « fin de monde ») termine la ligne de log.
+void release_all(const std::string& cause);
 std::size_t count();  // répliques (invité), PNJ capturés ou à capturer (hôte)
 
 }  // namespace mp::sync::npc

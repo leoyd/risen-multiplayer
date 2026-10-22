@@ -63,6 +63,10 @@ type sessionConfig struct {
 	Echo       bool          // renvoie les snapshots, les Motion, l'arme et l'armure de l'hôte comme les siens (story 2.4)
 	Weapon     string        // arme en main envoyée après le Spawn (v7), vide = rangée
 	Armor      *string       // armure envoyée après le Spawn et le Weapon (v8) ; nil = pas d'Armor, "" = sans armure
+	// Story 3.4a : le timeout n'est repoussé que par les messages de l'hôte (contrôle décodé,
+	// message fiable rendu par KCP, snapshot décodé), pas par chaque datagramme : les seuls
+	// acquittements KCP d'un hôte au jeu figé ne maintiennent plus la session.
+	StrictTimeout bool
 
 	HelloInterval     time.Duration
 	ConnectTimeout    time.Duration
@@ -527,7 +531,7 @@ func (g *guest) handle(d datagram) (sessionResult, bool) {
 	if len(d.b) == 0 {
 		return sessionResult{}, false
 	}
-	if g.st == inSession {
+	if g.st == inSession && !g.cfg.StrictTimeout {
 		g.lastPeer = time.Now() // tout datagramme de l'hôte compte (§8)
 	}
 	switch protocol.Channel(d.b[0]) {
@@ -544,6 +548,7 @@ func (g *guest) handle(d datagram) (sessionResult, bool) {
 			g.res.SnapshotsBad++
 			return sessionResult{}, false
 		}
+		g.messageFromHost()
 		if len(s.Entities) > g.res.MaxEntities {
 			g.res.MaxEntities = len(s.Entities)
 		}
@@ -579,6 +584,13 @@ func (g *guest) handle(d datagram) (sessionResult, bool) {
 	return sessionResult{}, false
 }
 
+// messageFromHost : --strict-timeout, un message lisible de l'hôte repousse le timeout.
+func (g *guest) messageFromHost() {
+	if g.st == inSession && g.cfg.StrictTimeout {
+		g.lastPeer = time.Now()
+	}
+}
+
 // acceptSegment : datagramme de canal 0 venu de l'hôte et portant le conv de la session.
 func (g *guest) acceptSegment(d datagram) bool {
 	if d.from != g.cfg.Host {
@@ -594,6 +606,7 @@ func (g *guest) handleControl(b []byte) (sessionResult, bool) {
 		g.log.printf("<- contrôle illisible : %v", err)
 		return sessionResult{}, false
 	}
+	g.messageFromHost()
 	switch m := m.(type) {
 	case protocol.Welcome:
 		g.log.printf("<- Welcome conv=0x%08x pos=(%g, %g, %g) lacet=%g", m.Conv, m.X, m.Y, m.Z, m.Yaw)
@@ -685,6 +698,7 @@ func (g *guest) drain() (sessionResult, bool) {
 			g.log.printf("<- message fiable illisible : %v", err)
 			continue
 		}
+		g.messageFromHost()
 		switch m := m.(type) {
 		case protocol.Heartbeat:
 			g.res.HeartbeatsRx++

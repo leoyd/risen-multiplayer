@@ -55,6 +55,12 @@ bool g_armor_known = false;  // story 3.2c : armure portée par le héros, comme
 std::string g_armor;
 bool g_armor_error_logged = false;
 
+// Story 3.4a : héros de la frame précédente (fin de monde : PNJ oubliés avant tout appel au jeu),
+// et compteurs du heartbeat de secours déjà journalisés.
+std::uintptr_t g_last_world_player = 0;
+std::uint64_t g_keepalives_seen = 0;
+std::uint64_t g_keepalive_capped_seen = 0;
+
 std::uint64_t now_ms() {
     LARGE_INTEGER t{};
     QueryPerformanceCounter(&t);
@@ -152,7 +158,9 @@ void execute(cs::Output out) {
                 if (g_transport == nullptr) g_transport = new (std::nothrow) net::Transport();
                 if (g_transport == nullptr) {
                     error = "allocation du transport impossible";
-                } else if (g_transport->start(s->port, error)) {
+                } else if (g_transport->start(s->port, s->options, error)) {
+                    g_keepalives_seen = 0;  // story 3.4a : compteurs du nouveau transport
+                    g_keepalive_capped_seen = 0;
                     log::info("[sync] transport démarré sur le port UDP " + std::to_string(g_transport->local_port()));
                     continue;
                 }
@@ -335,10 +343,31 @@ void local_captures(const cs::World& world) {
     }
 }
 
+// Story 3.4a : à la reprise de la frame, une ligne si le thread réseau a envoyé des heartbeats
+// de secours pendant la pause, une autre s'il a dû se taire (borne atteinte).
+void log_keepalives() {
+    const net::Stats st = g_transport->stats();
+    if (st.keepalives_sent > g_keepalives_seen) {
+        log::info("[sync] jeu en pause : " + std::to_string(st.keepalives_sent - g_keepalives_seen) +
+                  " heartbeat(s) envoyé(s) par le thread réseau");
+        g_keepalives_seen = st.keepalives_sent;
+    }
+    if (st.keepalive_capped > g_keepalive_capped_seen) {
+        log::warn("[sync] jeu en pause plus de " + std::to_string(cs::kKeepaliveMaxPauseMs / 1000) +
+                  " s : le thread réseau a cessé ses heartbeats de secours (timeout probable chez le pair)");
+        g_keepalive_capped_seen = st.keepalive_capped;
+    }
+}
+
 void frame() {
     const cs::State state = g_session->state();
     cs::World world = read_world(state);
     const std::uint64_t now = now_ms();
+    // Story 3.4a : monde changé (non chargé, ou autre héros) : répliques et PNJ capturés oubliés
+    // avant tout appel au jeu (validate, lecture des PNJ, session), sans appel au jeu. Les
+    // ReleaseNpc et UncaptureNpc émis ensuite par la fin de session sont alors sans effet.
+    if (!world.loaded() || world.player != g_last_world_player) npc::release_all("fin de monde");
+    g_last_world_player = world.player;
     // Hôte : PNJ lus seulement au tick qui enverra un snapshot (story 3.3).
     if (g_session->wants_npcs(now)) npc::read_host(world);
     g_inputs.clear();
@@ -353,6 +382,7 @@ void frame() {
                 g_inputs.push_back(cs::SnapshotIn{std::move(std::get<net::SnapshotReceived>(ev).bytes)});
             }
         }
+        log_keepalives();
     }
     local_captures(world);
     // Story 3.3 : répliques (et, story 3.4, PNJ animés de l'hôte) revérifiées une fois par frame,
@@ -362,7 +392,7 @@ void frame() {
     execute(g_session->tick(now, world, g_inputs));
     // Filet de sécurité : hors session, aucune réplique ne reste au registre (ReleaseNpc déjà
     // exécutés à Ended).
-    if (g_session->state() != cs::State::InSession) npc::release_all();
+    if (g_session->state() != cs::State::InSession) npc::release_all("hors session");
 }
 
 }  // namespace

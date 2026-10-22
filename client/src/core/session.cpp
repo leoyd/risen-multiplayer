@@ -248,6 +248,8 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         end(now, "mort de l'hôte", static_cast<std::uint8_t>(proto::EndReason::HostDied), false, Level::Info, out);
         return out;
     }
+    // Story 3.4a : entrées de PNJ en avance trop vieilles, avant les Spawn de ce tick.
+    if (state_ == State::InSession) expire_early_npcs(now);
     for (const Input& in : inputs) {
         if (state_ == State::Ended) break;
         if (const auto* c = std::get_if<ControlIn>(&in)) {
@@ -294,7 +296,7 @@ void Session::arm(std::uint64_t now, const World& world, Output& out) {
     foreign_warned_ = false;
     avatar_present_ = false;  // déjà retiré par end() ; par sûreté
     if (settings_.role == Role::Host) {
-        out.commands.push_back(Start{settings_.port});
+        out.commands.push_back(make_start(settings_.port));
         transition(State::Hosting,
                    "monde chargé, en attente d'un invité sur le port " + std::to_string(settings_.port), out);
         return;
@@ -321,10 +323,21 @@ void Session::arm(std::uint64_t now, const World& world, Output& out) {
         return;
     }
     host_ = Endpoint{ip, settings_.port};
-    out.commands.push_back(Start{0});
+    out.commands.push_back(make_start(0));
     transition(State::Connecting, "monde chargé, connexion à " + net::to_string(host_), out);
     connect_deadline_ = now + kConnectTimeoutMs;
     next_hello_ = now;  // premier Hello dans ce tick (timers)
+}
+
+Start Session::make_start(std::uint16_t port) const {
+    Start start;
+    start.port = port;
+    // Story 3.4a : la session fournit les octets ; le thread réseau ne connaît pas le protocole.
+    if (!proto::encode_reliable(proto::Heartbeat{}, start.options.keepalive)) start.options.keepalive.clear();
+    start.options.keepalive_interval_ms = static_cast<std::uint32_t>(kHeartbeatIntervalMs);
+    start.options.keepalive_after_ms = kKeepaliveAfterMs;
+    start.options.keepalive_max_pause_ms = kKeepaliveMaxPauseMs;
+    return start;
 }
 
 void Session::on_control(std::uint64_t now, const ControlIn& in, Output& out) {
@@ -669,6 +682,7 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     npc_absent_ticks_.clear();
     next_npc_id_ = proto::kFirstNpcNetId;
     replicas_.clear();  // vide en pratique : libérées à Ended
+    early_npcs_.clear();  // story 3.4a
     npc_ = NpcCounters{};
     npc_animated_.clear();  // story 3.4 : vide en pratique (UncaptureNpc à Ended)
     npc_last_params_.clear();
@@ -712,7 +726,7 @@ void Session::on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& /*out
             interp_.push(decoded.message.tick, Pose{e.x, e.y, e.z, e.yaw});
             continue;
         }
-        if (!on_npc_entity(decoded.message.tick, e)) ++snap_.ignored;
+        if (!on_npc_entity(now, decoded.message.tick, e)) ++snap_.ignored;
     }
 }
 
@@ -880,9 +894,16 @@ void Session::on_npc_spawn(const proto::Spawn& sp, Output& out) {
         out.logs.push_back({Level::Warn, what + " : ignoré (" + refusal + ")"});
         return;
     }
-    replicas_.emplace(sp.net_id, Replica{});  // interpolation neuve (AD-7)
+    Replica& replica = replicas_.emplace(sp.net_id, Replica{}).first->second;  // interpolation neuve (AD-7)
     out.commands.push_back(SpawnNpc{sp.net_id, sp.guid, Pose{sp.x, sp.y, sp.z, sp.yaw}});
     out.logs.push_back({Level::Info, what + " : réplique"});
+    // Story 3.4a : entrée de snapshot arrivée avant ce Spawn (déjà passée par expire_early_npcs).
+    auto early = early_npcs_.find(sp.net_id);
+    if (early != early_npcs_.end()) {
+        push_npc_entity(replica, early->second.tick, early->second.entity);
+        early_npcs_.erase(early);
+        ++npc_.early;
+    }
 }
 
 void Session::on_npc_despawn(std::uint32_t net_id, Output& out) {
@@ -899,13 +920,37 @@ void Session::on_npc_despawn(std::uint32_t net_id, Output& out) {
     out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(net_id) + " : Despawn reçu : réplique libérée"});
 }
 
-bool Session::on_npc_entity(std::uint32_t tick, const proto::SnapshotEntity& e) {
-    auto it = settings_.role == Role::Guest ? replicas_.find(e.net_id) : replicas_.end();
-    if (it == replicas_.end()) {
+bool Session::on_npc_entity(std::uint64_t now, std::uint32_t tick, const proto::SnapshotEntity& e) {
+    if (settings_.role != Role::Guest) {
         ++npc_.unknown;
         return false;
     }
-    Replica& r = it->second;
+    auto it = replicas_.find(e.net_id);
+    if (it != replicas_.end()) {
+        push_npc_entity(it->second, tick, e);
+        return true;
+    }
+    // Story 3.4a : PNJ en avance sur son Spawn (canal fiable plus lent que les snapshots) : la
+    // plus récente entrée est gardée jusqu'au Spawn, kEarlyNpcHoldMs au plus.
+    if (e.net_id >= proto::kFirstNpcNetId) {
+        auto early = early_npcs_.find(e.net_id);
+        if (early != early_npcs_.end()) {
+            if (tick > early->second.tick) {
+                early->second.tick = tick;
+                early->second.entity = e;
+            }
+            return true;
+        }
+        if (early_npcs_.size() < kMaxEarlyNpcs) {
+            early_npcs_.emplace(e.net_id, EarlyNpc{now, tick, e});
+            return true;
+        }
+    }
+    ++npc_.unknown;
+    return false;
+}
+
+void Session::push_npc_entity(Replica& r, std::uint32_t tick, const proto::SnapshotEntity& e) {
     r.interp.push(tick, Pose{e.x, e.y, e.z, e.yaw});
     if (!r.hp_received || e.hp != r.last_hp) {
         r.hp_received = true;
@@ -913,7 +958,18 @@ bool Session::on_npc_entity(std::uint32_t tick, const proto::SnapshotEntity& e) 
         if (r.hp_changes.size() >= kMaxNpcHpChanges) r.hp_changes.pop_front();
         r.hp_changes.emplace_back(static_cast<double>(tick) * core::kTickMs, e.hp);
     }
-    return true;
+}
+
+void Session::expire_early_npcs(std::uint64_t now) {
+    for (auto it = early_npcs_.begin(); it != early_npcs_.end();) {
+        if (now - it->second.received_at <= kEarlyNpcHoldMs) {
+            ++it;
+            continue;
+        }
+        ++npc_.unknown;  // une fois par entrée gardée, comme une entrée inconnue ignorée
+        ++snap_.ignored;
+        it = early_npcs_.erase(it);
+    }
 }
 
 void Session::place_npcs(std::uint64_t now, Output& out) {
@@ -946,6 +1002,7 @@ void Session::release_npcs(const std::string& why, Output& out) {
                                              " réplique(s) libérée(s) : " + why});
         replicas_.clear();
     }
+    early_npcs_.clear();         // story 3.4a : entrées en avance sans objet
     set_animated_npcs({}, out);  // hôte (story 3.4) : plus aucun PNJ capturé
     npc_param_batch_.clear();
     npc_ids_.clear();
@@ -1422,14 +1479,16 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   "PNJ : suivis %zu, annoncés %u, retirés %u, plafond %u, liste illisible %u, entités inconnues %u, "
                   "OnProcess de routine bloqués %u ; "
                   "animations des PNJ : animés %zu, Motion envoyés %u, rejoués %u, écrasés %u, ignorés %u, "
-                  "file pleine %u, MotionParam envoyés %u, regroupés %u, rejoués %u, ignorés %u, %llu o/s",
+                  "file pleine %u, MotionParam envoyés %u, regroupés %u, rejoués %u, ignorés %u, %llu o/s ; "
+                  "PNJ reçus avant leur Spawn %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
                   anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
                   npc_count(), npc_.spawned, npc_.despawned, npc_.capped, npc_.unreadable, npc_.unknown,
                   npc_.routine_blocked, npc_animated_.size(), npc_anim_.sent, npc_anim_.played,
                   npc_anim_.superseded, npc_anim_.ignored, npc_anim_.dropped, npc_anim_.params_sent,
-                  npc_anim_.params_grouped, npc_anim_.params_played, npc_anim_.params_ignored, npc_rate);
+                  npc_anim_.params_grouped, npc_anim_.params_played, npc_anim_.params_ignored, npc_rate,
+                  npc_.early);
     out.logs.push_back({Level::Debug, buf});
     // Story 3.4 (Q12) : budget des animations des PNJ, une ligne par bilan au plus.
     if (npc_rate > kNpcAnimBudgetBytesPerSec) {

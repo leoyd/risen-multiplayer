@@ -60,6 +60,10 @@
 // MotionParam sont regroupés, un par frame et par (PNJ, type, nature), et filtrés par PNJ. Chez
 // l'invité, chaque réplique a sa file d'animations, rejouée avec les règles de l'avatar
 // (PlayNpcMotion, PlayNpcParam), vidée à sa libération.
+//
+// Robustesse (story 3.4a) : Start porte le Heartbeat encodé et ses délais, que le transport envoie
+// depuis son thread quand la frame ne le lit plus (pause du jeu). Chez l'invité, l'entrée de
+// snapshot d'un PNJ pas encore annoncé est gardée kEarlyNpcHoldMs puis appliquée à son Spawn.
 #pragma once
 
 #include <array>
@@ -78,6 +82,7 @@
 #include "core/pose.h"
 #include "core/protocol.h"
 #include "core/version.h"
+#include "net/transport.h"   // net::Options (story 3.4a : porté par Start, aucun transport utilisé ici)
 #include "net/udp_socket.h"  // Endpoint, parse_ipv4 (en-tête seul, aucun socket utilisé ici)
 
 namespace mp::core::session {
@@ -91,6 +96,12 @@ inline constexpr std::uint64_t kConnectTimeoutMs = 10000;
 inline constexpr std::uint64_t kHeartbeatIntervalMs = 1000;
 inline constexpr std::uint64_t kPeerTimeoutMs = 5000;
 inline constexpr std::uint64_t kLingerMs = 1000;  // maintien du KCP après Ended (SessionEnd)
+// Heartbeat de secours (story 3.4a, PROTOCOL.md §8) : envoyé par le thread réseau quand la frame
+// ne lit plus le transport depuis kKeepaliveAfterMs (cinématique, chargement), toutes les
+// kHeartbeatIntervalMs, pendant kKeepaliveMaxPauseMs au plus (un jeu figé pour de bon finit
+// ainsi par être détecté par le pair, kPeerTimeoutMs plus tard).
+inline constexpr std::uint32_t kKeepaliveAfterMs = 1500;
+inline constexpr std::uint32_t kKeepaliveMaxPauseMs = 60000;
 inline constexpr float kGuestSpawnDistance = 200.0f;  // invité placé à 2 m devant l'hôte (cm)
 
 enum class State { Inactive, Hosting, Connecting, InSession, Ended };
@@ -147,6 +158,11 @@ inline constexpr std::uint32_t kNpcAbsentGraceTicks = 40;
 // Le snapshot porte au plus 54 entités, héros de l'hôte compris (AD-7).
 inline constexpr std::size_t kMaxSnapshotNpcs = protocol::kMaxSnapshotEntities - 1;
 inline constexpr std::size_t kMaxNpcHpChanges = 16;  // PV d'une réplique en attente d'affichage
+// Story 3.4a, invité : une entrée de snapshot d'un PNJ dont le Spawn (canal fiable) n'est pas encore
+// arrivé est gardée (la plus récente par NetId) kEarlyNpcHoldMs au plus, pour kMaxEarlyNpcs NetId
+// au plus, puis appliquée à l'arrivée du Spawn.
+inline constexpr std::uint64_t kEarlyNpcHoldMs = 500;
+inline constexpr std::size_t kMaxEarlyNpcs = 64;
 
 // Entrées : ce que le transport a rendu depuis le tick précédent.
 struct ControlIn {
@@ -196,6 +212,9 @@ Pose guest_pose_near(const Pose& host);
 // Commandes, à exécuter dans l'ordre.
 struct Start {
     std::uint16_t port = 0;  // 0 = port éphémère (invité)
+    // Story 3.4a : options du transport, passées telles quelles à net::Transport::start : Heartbeat
+    // encodé ([MsgType][charge]) et délais du heartbeat de secours.
+    net::Options options;
 };
 struct Send {
     Endpoint destination;
@@ -388,7 +407,11 @@ private:
     // Invité : Spawn{1}, Despawn d'un PNJ, entité de snapshot, placement et PV à chaque tick.
     void on_npc_spawn(const protocol::Spawn& sp, Output& out);
     void on_npc_despawn(std::uint32_t net_id, Output& out);
-    bool on_npc_entity(std::uint32_t tick, const protocol::SnapshotEntity& e);
+    bool on_npc_entity(std::uint64_t now, std::uint32_t tick, const protocol::SnapshotEntity& e);
+    struct Replica;
+    void push_npc_entity(Replica& r, std::uint32_t tick, const protocol::SnapshotEntity& e);
+    // Story 3.4a : entrées gardées depuis plus de kEarlyNpcHoldMs sans Spawn, comptées inconnues.
+    void expire_early_npcs(std::uint64_t now);
     void place_npcs(std::uint64_t now, Output& out);
     void release_npcs(const std::string& why, Output& out);  // invité : toutes ; hôte : oubli des NetId
     void place_avatar(std::uint64_t now, Output& out);
@@ -414,6 +437,7 @@ private:
     void transition(State next, const std::string& detail, Output& out, Level level = Level::Info);
     void send_reject(const Endpoint& to, std::uint8_t reason, Output& out);
     void send_hello(Output& out);
+    Start make_start(std::uint16_t port) const;  // Start avec le heartbeat de secours
     std::uint32_t draw_conv();
 
     Settings settings_;
@@ -525,7 +549,16 @@ private:
     std::map<std::uint32_t, Replica> replicas_;
     struct NpcCounters {
         unsigned spawned = 0, despawned = 0, unreadable = 0, unknown = 0, capped = 0, routine_blocked = 0;
+        unsigned early = 0;  // story 3.4a : entrées reçues avant leur Spawn, appliquées à son arrivée
     } npc_;
+    // Story 3.4a, invité : NetId ≥ 1000 non annoncé → dernière entrée de snapshot (plus grand tick),
+    // reçue à `received_at` (première réception pour ce NetId). Vidé à l'entrée en session et à Ended.
+    struct EarlyNpc {
+        std::uint64_t received_at = 0;
+        std::uint32_t tick = 0;
+        protocol::SnapshotEntity entity;
+    };
+    std::map<std::uint32_t, EarlyNpc> early_npcs_;
     // Animations des PNJ (story 3.4). Hôte : NetId animés, filtre des réglages par PNJ, réglages de
     // la frame en attente (ordre de leur dernière mise à jour).
     std::set<std::uint32_t> npc_animated_;

@@ -336,7 +336,7 @@ void uncapture(std::uint32_t net_id) {
     if (it == g_captured.end()) return;
     anim_filter().untrack(it->second.entity.ptr);  // AD-12 : le registre d'abord
     g_captured.erase(it);
-    log::debug(who(net_id) + " : plus animé");
+    log::debug(who(net_id) + " : retiré du registre des captures");
 }
 
 void move(std::uint32_t net_id, const Pose& pose) {
@@ -406,7 +406,7 @@ void release(std::uint32_t net_id) {
     log::debug(who(net_id) + " libéré : IA rendue");
 }
 
-void release_all() {
+void release_all(const std::string& cause) {
     if (g_replicas.empty() && g_missing.empty() && g_captured.empty() && g_capture_failed.empty() &&
         g_wanted.empty() && g_capture_lost.empty() &&
         g_resources.empty() && g_failed_names.empty()) {
@@ -415,10 +415,10 @@ void release_all() {
     for (const auto& entry : g_replicas) anim_filter().untrack(entry.second.entity.ptr);
     for (const auto& entry : g_captured) anim_filter().untrack(entry.second.entity.ptr);
     if (!g_replicas.empty()) {
-        log::info("[sync] PNJ : " + std::to_string(g_replicas.size()) + " réplique(s) oubliée(s) hors session");
+        log::info("[sync] PNJ : " + std::to_string(g_replicas.size()) + " réplique(s) oubliée(s) : " + cause);
     }
     if (!g_captured.empty()) {
-        log::info("[sync] PNJ : " + std::to_string(g_captured.size()) + " PNJ animé(s) retiré(s) hors session");
+        log::info("[sync] PNJ : " + std::to_string(g_captured.size()) + " PNJ animé(s) retiré(s) : " + cause);
     }
     g_replicas.clear();
     g_missing.clear();
