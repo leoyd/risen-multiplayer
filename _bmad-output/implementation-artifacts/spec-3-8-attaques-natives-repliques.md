@@ -108,6 +108,12 @@ Décisions (prises sans l’utilisateur, modifiables) :
 - Banc : `session_host --hit-guest-ms` injecte aussi un `LocalNpcAttack{1000, 11, 2}` avant chaque
   coup (scénario `coups_subis` de `session_fake_guest.sh`).
 
+- Tests en jeu du 2026-10-24 (après revue) : H3 confirmée (détection par LastAttackMove). H1 a échoué
+  deux fois puis a été levée : arme naturelle `It_Fist_Monster` créée et tenue par la réplique avant
+  `StartMove` (55f0387, 57aac32), et cible `PSNpc` fixée en plus de celle de `PSCombatSystem`
+  (5928bbf), sans quoi `CanDoMeleeDamage` refuse le coup local. H2 confirmée : 20 coups cosmétiques
+  `DoDamage -> 1`, sang, recul et flash vus chez l'invité. Détail : `docs/re/degats-hote.md`.
+
 ## Spec Change Log
 
 - 2026-10-23 (dev) : Code Map, type du message 26 → 29 (26 = `MotionParam`).

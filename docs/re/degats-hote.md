@@ -94,3 +94,19 @@ Hypothèses à trancher en jeu (journal debug) : H1, `StartMove` sur une répliq
 figée fait progresser le mouvement jusqu'à `HitTargets` ; H2, la détection de coup ne dépend pas de
 l'animation locale (bloquée par le registre) ; H3, `GetLastAttackMove` change à chaque attaque
 (sinon seule la transition de `GetCurrentMove` compte).
+
+## Attaques natives des répliques (story 3.8, tests du 2026-10-24)
+
+Trois conditions, trouvées en jeu une à une, pour qu'une réplique (IA figée) frappe nativement :
+1. **Arme naturelle en main.** `gCCombatSystem_PS::StartMove(move)` (Game.dll, `0x1807f6f00`) cherche
+   l'objet mouvement dans le style de l'arme tenue (`0x1807f8b30`), puis dans l'espèce
+   (`0x1807ec610`) ; introuvable → faux. Chez l'hôte, un monstre en combat tient `It_Fist_Monster`
+   (pile 0) ; la réplique ne l'a pas même dans son inventaire (créé par l'IA à l'entrée en combat).
+   L'invité le crée (`PSCombatSystem::GetRightFistItem` → `FindStackIndex`, sinon `CreateItems`) et
+   le tient (`HoldRightStack`), puis relance `StartMove`.
+2. **Cible du système de combat** : `PSCombatSystem::SetCurrentTarget`.
+3. **Cible PNJ** : `PSNpc::SetCurrentTarget`, distincte de la précédente. Sans elle,
+   `CanDoMeleeDamage` refuse le coup local (`DoDamage -> 0`) et `HitTargets` saute l'effet d'impact.
+
+Résultat : 20 coups locaux sur 24 attaques ont touché le héros invité, avec sang, recul et flash ; le
+coup local fait les mêmes dégâts que la mesure de l'hôte (10), PV rendus aussitôt.
