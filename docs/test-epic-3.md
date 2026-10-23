@@ -38,10 +38,10 @@ Attendu : `ctest` passe à 6/6. Noter l’empreinte `sha256` de la DLL.
   cp client/build/Script_Multiplayer.dll ~/.local/share/Steam/steamapps/common/Risen/bin/scripts/
   ```
 - **Stone** : envoyer **le même fichier** `Script_Multiplayer.dll` à Stone. Il le copie dans
-  `C:\Program Files (x86)\Steam\steamapps\common\Risen\bin\scripts\` (ou le dossier `bin\scripts\`
+  `D:\SteamLibrary\steamapps\common\Risen\bin\scripts\` (ou le dossier `bin\scripts\`
   de son install Steam). Il vérifie l’empreinte :
   ```powershell
-  Get-FileHash "C:\Program Files (x86)\Steam\steamapps\common\Risen\bin\scripts\Script_Multiplayer.dll"
+  Get-FileHash "D:\SteamLibrary\steamapps\common\Risen\bin\scripts\Script_Multiplayer.dll"
   ```
   Le résultat doit être identique à celui de Léo (même valeur, en majuscules).
 
@@ -99,15 +99,17 @@ Laisser vide si Stone a déjà une arme de mêlée.
 - **Même sauvegarde des deux côtés.** Léo prépare une sauvegarde en zone neutre : hors trame
   principale, loin des templiers et de l’Inquisition, près d’un camp de monstres faciles (loups,
   par exemple), avec quelques PV de marge. Il l’envoie à Stone, qui la copie dans son dossier de
-  sauvegardes de Risen. Sous Proton, ce dossier est dans le préfixe
-  `~/.local/share/Steam/steamapps/compatdata/40300/pfx/` (le retrouver par le nom du fichier).
+  sauvegardes de Risen :
+  - Léo (Proton) : `~/.local/share/Steam/steamapps/compatdata/40300/pfx/drive_c/users/steamuser/AppData/Local/Risen/SaveGames/` ;
+  - Stone (Windows) : `%LOCALAPPDATA%\Risen\SaveGames\`.
+  Le fichier s’appelle `Risen_Save_XXXX.save` : Stone le copie sous un numéro libre.
 - Garder aussi une **sauvegarde rapide** de ce point : elle sert à revenir en arrière.
 
 ### 1.6 Où sont les logs
 
 - DLL : `bin/scripts/Script_Multiplayer.log`.
   - Léo : `~/.local/share/Steam/steamapps/common/Risen/bin/scripts/Script_Multiplayer.log`
-  - Stone : `C:\Program Files (x86)\Steam\steamapps\common\Risen\bin\scripts\Script_Multiplayer.log`
+  - Stone : `D:\SteamLibrary\steamapps\common\Risen\bin\scripts\Script_Multiplayer.log`
 - **Le log est réécrit à chaque lancement de Risen.** Le copier avant de relancer le jeu.
 - Faux invité : il écrit dans le terminal. Le garder avec `tee` (commandes de la partie A).
 - En `log_level = debug`, le bilan `[sync] snapshots (5 s) : …` est écrit toutes les 5 s. Ses
@@ -681,7 +683,7 @@ seulement la partie autour de l’étape en échec (`grep -n` donne les numéros
 ### Stone (Windows, PowerShell)
 
 ```powershell
-$log = "C:\Program Files (x86)\Steam\steamapps\common\Risen\bin\scripts\Script_Multiplayer.log"
+$log = "D:\SteamLibrary\steamapps\common\Risen\bin\scripts\Script_Multiplayer.log"
 Copy-Item $log "$HOME\Desktop\stone-complet.log"     # avant de relancer Risen
 # Erreurs, avertissements, hooks et transitions
 Select-String -Path $log -Encoding UTF8 -Pattern 'ERROR|WARN|\[hooks\]|→' |
