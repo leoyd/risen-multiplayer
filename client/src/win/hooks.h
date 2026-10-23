@@ -14,8 +14,10 @@ bool install_probe();
 // Session : résout l'ABI des entités, de l'inventaire et des PNJ (story 3.3), puis installe les
 // hooks ; OnProcess appelle sync::session::on_frame(), PlayMotion, SetRagDollEnabled et les
 // réglages de locomotion bloquent le moteur sur les avatars, gCScriptRoutine_PS::OnProcess fige
-// l'IA des répliques de PNJ (registre). Même contrat d'échec que install_probe.
-bool install_session();
+// l'IA des répliques de PNJ (registre). Story 3.5 : `damage_hook` vrai pose en plus, si
+// resolve_damage réussit, le détour facultatif de gCDamage_PS::DoDamage (sync/hits) ; son échec
+// laisse la session sans dégâts synchronisés. Même contrat d'échec que install_probe.
+bool install_session(bool damage_hook);
 
 // Retire les hooks posés (sans effet s'il n'y en a aucun).
 void remove();

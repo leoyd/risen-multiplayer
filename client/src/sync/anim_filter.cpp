@@ -80,6 +80,18 @@ bool AnimFilter::find_by_wrapper(const void* ptr, TrackedEntity& out) const {
     return false;
 }
 
+bool AnimFilter::find_by_entity(const void* entity, TrackedEntity& out) const {
+    if (entity == nullptr) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const TrackedEntity& e : entities_) {
+        if (e.entity == entity) {
+            out = e;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool AnimFilter::blocks_locked(const void* ptr) const {
     for (const TrackedEntity& e : entities_) {
         if (e.role == EntityRole::LocalHero || e.role == EntityRole::NpcCapture) continue;

@@ -157,6 +157,14 @@ ConfigResult parse_config(std::string_view text) {
             } else {
                 return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
             }
+        } else if (key == "damage_hook") {
+            if (value.empty() || value == "1") {
+                r.config.damage_hook = true;  // `damage_hook =` : valeur par défaut
+            } else if (value == "0") {
+                r.config.damage_hook = false;
+            } else {
+                return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
+            }
         } else if (key == "log_level") {
             const std::string v = to_lower(value);
             if (v.empty() || v == "info") {

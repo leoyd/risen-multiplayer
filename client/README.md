@@ -89,6 +89,8 @@ ressort ; `--armor NOM` lui met une armure (story 3.2c), que ce même `SIGHUP` r
 `--npcs N` (story 3.3) simule N PNJ autour du héros de l'hôte (le PNJ i à 5 m + 50 cm × i, PV qui
 baissent ; de 1,5 à 2,5 s après l'entrée en session, les impairs sortent du rayon puis reviennent ;
 le PNJ 0 meurt à 2 s), lus seulement quand `Session::wants_npcs` le demande, comme dans la DLL.
+Chaque `ApplyHit` (story 3.5) est journalisé `[test] ApplyHit NetId N` et retire 10 PV simulés
+au PNJ visé.
 `--pause-at MS --pause-ms MS` (story 3.4a) fige une fois sa boucle (ni `poll` ni tick), `MS` ms
 après l'entrée en session, comme une cinématique ou un chargement ; à la reprise, il journalise la
 même ligne que la DLL (`[sync] jeu en pause : N heartbeat(s) envoyé(s) par le thread réseau`).
@@ -115,7 +117,11 @@ snapshot (`Spawn{1}`, NetId dès 1000), les autres attendent, sorties du rayon, 
 (`Despawn`), réannonce sous le même NetId, PV suivis par le faux invité, au plus 54 entités par
 snapshot et aucun message de PNJ ignoré ; (story 3.4a) l'hôte en pause 7 s face au faux invité
 `--strict-timeout` (timeout compté sur les seuls messages, pas sur les acquittements KCP) : aucun
-timeout des deux côtés, au moins 4 heartbeats de secours journalisés à la reprise. Le test CTest
+timeout des deux côtés, au moins 4 heartbeats de secours journalisés à la reprise ; (story 3.5)
+`--npcs 3` face au faux invité `--hit-interval 500ms` : `ApplyHit` pour 1000 chez l'hôte
+(`[test] ApplyHit NetId 1000`, 10 PV simulés en moins, vus par le faux invité dans les
+snapshots), puis `--hit-target 1500` : `HitRequest PNJ 1500 ignoré : NetId inconnu`, aucune
+commande. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
 90 s. Lancement à la main :
 
@@ -599,6 +605,69 @@ Prérequis : recompiler, copier `client/build/Script_Multiplayer.dll` dans `bin/
    noter pour la story 3.5 (hypothèse D4 de la spec invalidée).
 6. **Deux machines, humain à terre** : la réplique d'un humain à terre chez l'hôte garde au moins
    1 PV chez l'invité (`[sync] PNJ N : PV = 1` en debug), sans mort locale.
+
+### Dégâts de l'invité sur les monstres (story 3.5, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité ; banc Wine : détour posé sur la vraie
+Game.dll) seulement. Protocole **v12**.
+- **Point d'accroche** (Q8) : un détour sur `gCDamage_PS::DoDamage(eCEntity*)` (Game.dll), posé
+  avec les hooks de session : `[hooks] point d'accroche des dégâts posé (gCDamage_PS::DoDamage)`.
+  Clé `damage_hook` (défaut `1`) : à `0`, pas de détour
+  (`[hooks] point d'accroche des dégâts désactivé (damage_hook = 0)`), mais l'hôte applique
+  toujours les `HitRequest` reçus. **`damage_hook = 0` est un interrupteur de diagnostic** (crash
+  au chargement), à éviter chez l'invité : sans détour, les coups natifs de son héros sur une
+  réplique passent, ses PV baissent localement et elle peut mourir nativement (`Kill`, XP,
+  scripts), ce que la 3.4b interdit. Symboles introuvables : `[hooks] dégâts inactifs : …`, la
+  session continue sans dégâts synchronisés.
+- **Invité** : un coup natif de son héros sur une réplique vivante est bloqué
+  (`[sync] coup natif bloqué : héros -> PNJ N (HitRequest)`) et part en `HitRequest`
+  (`[sync] coup sur PNJ N : HitRequest envoyé`) ; la jauge locale ne baisse pas d'elle-même, elle
+  suit les snapshots de l'hôte. Tout autre coup natif sur une réplique est bloqué sans rien émettre.
+- **Hôte** : un `HitRequest` d'un PNJ annoncé et vivant s'applique par
+  `PSDamage::DoDamage(arme en main de l'avatar, PNJ, avatar)` :
+  `[sync] HitRequest PNJ N appliqué : DoDamage -> 0|1, PV a -> b`. Refus (Warn) :
+  `HitRequest PNJ N ignoré : NetId inconnu | PNJ mort | NetId < 1000 | PNJ introuvable | pas
+  d'avatar | avatar sans arme en main`. Tout coup natif de l'avatar est bloqué
+  (`coup natif bloqué : avatar invité -> … (seuls les HitRequest blessent)`). Les PV d'un PNJ ne
+  sont jamais écrits directement.
+- Diagnostic : `[sync] dégâts : 1er passage au point d'accroche (thread T, thread OnProcess T0)`
+  une fois par session (T doit égaler T0) ; en debug, chaque passage qui implique le registre ou
+  le héros : `[sync] dégâts : agresseur P (rôle) cible Q (rôle) -> bloqué|laissé`. Bilan
+  `[sync] snapshots (5 s)` : en fin de ligne, `coups : envoyés …, appliqués …, ignorés …,
+  bloqués …`.
+
+Prérequis : recompiler, copier `client/build/Script_Multiplayer.dll` dans `bin/scripts/`,
+**`log_level = debug`**, `damage_hook = 1`, overlay Steam désactivé ; reconstruire le faux invité
+(`cd tools/fake-guest && go build`). Log : `bin/scripts/Script_Multiplayer.log`.
+
+1. **Installation (hôte)** : `[hooks] point d'accroche des dégâts posé (gCDamage_PS::DoDamage)`.
+   `dégâts inactifs` ou crash au chargement : remettre `damage_hook = 0` et rapporter la ligne.
+2. **Une machine, Risen hôte + faux invité**
+   (`fake-guest --host 127.0.0.1 --duration 180s --echo --weapon It_1H_Sword --hit-interval 1s`),
+   près d'un camp de monstres. Attendu chez l'hôte : `HitRequest PNJ N appliqué : DoDamage -> 1,
+   PV a -> b` avec b < a, jauge du monstre qui baisse, monstre hostile envers l'avatar ; jusqu'à
+   la mort : `PNJ N mort (Death)`, puis `HitRequest PNJ N ignoré : PNJ mort`. Chez le faux invité :
+   `PNJ netid=N PV a -> b`. `1er passage au point d'accroche` : T = T0.
+3. **Une machine, NetId inconnu** (`--hit-target 1500 --hit-interval 1s`) :
+   `HitRequest PNJ 1500 ignoré : NetId inconnu` (Warn), aucun crash.
+4. **Une machine, coups du héros de l'hôte** : dégâts normaux, aucune ligne `coup natif bloqué`.
+5. **Une machine, avatar qui attaque** (`--echo`, le héros de l'hôte attaque près d'un monstre) :
+   une ligne `coup natif bloqué : avatar invité -> …` montre que l'avatar déclenche des coups
+   natifs, bloqués ; son absence n'est pas une erreur (hypothèse D5 de la spec), la noter.
+6. **Deux machines** : l'invité frappe une réplique. Chez l'invité : `coup natif bloqué : héros ->
+   PNJ N (HitRequest)` et `coup sur PNJ N : HitRequest envoyé` ; chez l'hôte : `HitRequest PNJ N
+   appliqué`. Tuer le monstre à deux : il meurt chez les deux (`Death`, 3.4b). Bilan : `coups :
+   envoyés X, … bloqués Y` côté invité, `appliqués X` côté hôte.
+7. **Deux machines, arme rangée** : frapper à mains nues ; chez l'hôte : `HitRequest PNJ N ignoré :
+   avatar sans arme en main`.
+8. **Facultatif, deux machines, arc ou sort** : l'invité tire sur une réplique. Hypothèse non
+   vérifiée : pour un projectile ou un sort, l'agresseur lu au proxy `+0x30` pourrait être le
+   projectile et non le héros ; le coup serait alors bloqué sans `HitRequest`
+   (`coup natif bloqué : … -> PNJ N (autre agresseur, sans HitRequest)`), dégâts à distance perdus
+   en silence (hors périmètre de l'epic, mêlée seulement). Noter la ligne observée.
+9. Si l'agresseur n'est jamais reconnu (aucune ligne `bloqué` alors que l'invité frappe),
+   rapporter les lignes debug `dégâts : agresseur … cible …` : l'hypothèse « proxy `+0x30` =
+   personnage » est alors fausse (repli : `DoMeleeDamage`, Script_Game).
 
 ### Fin de session en jeu (story 1.5, une machine)
 

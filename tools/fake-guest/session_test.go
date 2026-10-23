@@ -497,7 +497,7 @@ func TestParseConfig(t *testing.T) {
 	if cfg.Host != netip.MustParseAddrPort("10.0.0.7:27960") || cfg.Hello.Nickname != "Invite" ||
 		cfg.Hello.ModVersion != "0.1.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != protocol.ProtocolVersion ||
 		cfg.Duration != 0 || cfg.Kill || cfg.Drop != 0 || cfg.Seed != 1 || cfg.DupHello || cfg.BadVersion ||
-		cfg.Weapon != "It_1H_Sword" || cfg.Armor != nil || cfg.StrictTimeout {
+		cfg.Weapon != "It_1H_Sword" || cfg.Armor != nil || cfg.StrictTimeout || cfg.HitInterval != 0 || cfg.HitTarget != 0 {
 		t.Errorf("config par défaut : %+v", cfg)
 	}
 
@@ -521,6 +521,8 @@ func TestParseConfig(t *testing.T) {
 		{[]string{"--armor", "It_Armor_Inquisitor"}, func(c sessionConfig) bool { return c.Armor != nil && *c.Armor == "It_Armor_Inquisitor" }},
 		{[]string{"--armor", "-"}, func(c sessionConfig) bool { return c.Armor != nil && *c.Armor == "" }},
 		{[]string{"--strict-timeout"}, func(c sessionConfig) bool { return c.StrictTimeout }},
+		{[]string{"--hit-interval", "500ms"}, func(c sessionConfig) bool { return c.HitInterval == 500*time.Millisecond }},
+		{[]string{"--hit-target", "1500"}, func(c sessionConfig) bool { return c.HitTarget == 1500 }},
 	}
 	for _, c := range cases {
 		cfg, code := parseConfig(append(append([]string{}, base...), c.args...), &errOut)
@@ -654,4 +656,52 @@ func TestNpcDeath(t *testing.T) {
 	expectLog(t, r, "<- Death PNJ netid=1000 (poses reçues=", "<- Death PNJ netid=1000 : ignoré",
 		"<- Death PNJ netid=1006 : ignoré", "<- Spawn PNJ netid=1000 guid=c3624668", "ignoré (NetId mort)",
 		"<- Despawn PNJ netid=1000 (mort, libéré)", "Bilan PNJ : 2 vus, Spawn=3 Despawn=2 Death=1", " mort")
+}
+
+// Story 3.5 : HitRequest (v12) à la cadence de --hit-interval, sur le premier PNJ présent et vivant,
+// ou sur --hit-target sans vérification (NetId inconnu compris).
+func TestHitRequest(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		target uint32
+		want   uint32
+	}{{0, 1000}, {1500, 1500}} {
+		hc := defaultHost()
+		hc.SendNpcs = true
+		host := startHost(t, hc)
+		cfg := guestConfig(host.addr())
+		cfg.Duration = 1200 * time.Millisecond
+		cfg.HitInterval = 200 * time.Millisecond
+		cfg.HitTarget = c.target
+		r := runGuest(t, context.Background(), cfg)
+		expectCode(t, r, exitOK)
+		if r.res.HitsTx < 3 {
+			t.Errorf("cible %d : HitRequest envoyés %d, attendu au moins 3", c.target, r.res.HitsTx)
+		}
+		rec := host.record()
+		if len(rec.hits) != r.res.HitsTx {
+			t.Errorf("cible %d : HitRequest reçus par l'hôte %d, envoyés %d", c.target, len(rec.hits), r.res.HitsTx)
+		}
+		for _, id := range rec.hits {
+			if id != c.want {
+				t.Errorf("cible %d : HitRequest sur %d, attendu %d", c.target, id, c.want)
+			}
+		}
+		expectLog(t, r, fmt.Sprintf("-> HitRequest PNJ netid=%d", c.want), "Bilan coups : HitRequest envoyés=")
+	}
+}
+
+// Sans --hit-interval, aucun HitRequest.
+func TestNoHitRequestByDefault(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.SendNpcs = true
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 600 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	if r.res.HitsTx != 0 || len(host.record().hits) != 0 {
+		t.Errorf("HitRequest envoyés %d, reçus %d, attendu 0", r.res.HitsTx, len(host.record().hits))
+	}
 }

@@ -72,6 +72,8 @@ if(WIN32)
         src/sync/probe.cpp
         src/sync/probe_j2.cpp
         src/sync/npc.cpp
+        src/sync/hits.cpp
+        src/sync/hit_rules.cpp
         src/sync/session.cpp
         src/win/watchdog.cpp
         ${MINHOOK_SOURCES})
@@ -116,6 +118,7 @@ else()
         tests/test_anim_filter.cpp
         tests/test_config.cpp
         tests/test_equipment.cpp
+        tests/test_hit_rules.cpp
         tests/test_interpolation.cpp
         tests/test_local_capture.cpp
         tests/test_motion_desc.cpp
@@ -126,6 +129,7 @@ else()
         # Code portable de game/ et sync/ (sans appel au jeu), compilé aussi dans la DLL.
         src/game/motion_desc.cpp
         src/sync/anim_filter.cpp
+        src/sync/hit_rules.cpp
         src/sync/local_capture.cpp)
     target_link_libraries(client_tests PRIVATE mp_core mp_net)
     # Vecteurs binaires de référence partagés C++/Go (protocol/vectors/).

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -22,7 +23,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v11, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v12, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte (--strict-timeout : sans message).
 
@@ -38,6 +39,8 @@ Arme : --weapon <nom> part en Weapon juste après le Spawn (« - » : arme rang�
 scénario « weapon [instant s] <nom|-> ».
 Armure : --armor <nom> part en Armor juste après le Weapon (« - » : sans armure ; vide : pas
 d'Armor) ; directive de scénario « armor [instant s] <nom|-> ».
+Coups (v12) : --hit-interval <durée> envoie un HitRequest à cette cadence, sur --hit-target <NetId>
+(0 : premier PNJ présent et vivant ; NetId non vérifié, pour tester le refus de l'hôte).
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :
@@ -93,6 +96,8 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	equipment := fs.String("equipment", "", "équipement de l'invité envoyé dans Hello : templates séparés par des virgules (vide : aucun)")
 	weapon := fs.String("weapon", "It_1H_Sword", "arme en main de l'invité, envoyée en Weapon après le Spawn (« - » : arme rangée)")
 	armor := fs.String("armor", "", "armure de l'invité, envoyée en Armor après le Weapon (« - » : sans armure ; vide : pas d'Armor)")
+	hitInterval := fs.Duration("hit-interval", 0, "cadence des HitRequest sur un PNJ, ex. 1s (0 = aucun)")
+	hitTarget := fs.Uint("hit-target", 0, "NetId visé par les HitRequest (0 = premier PNJ présent et vivant)")
 	strictTimeout := fs.Bool("strict-timeout", false, "timeout compté sur les seuls messages de l'hôte (contrôle, messages fiables rendus par KCP, snapshots), pas sur les acquittements KCP")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
@@ -135,6 +140,12 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	}
 	if *delay < 0 || *jitter < 0 {
 		return usageError("--delay et --jitter doivent être positifs")
+	}
+	if *hitInterval < 0 {
+		return usageError("--hit-interval négative")
+	}
+	if *hitTarget > math.MaxUint32 {
+		return usageError("--hit-target hors bornes (%d)", *hitTarget)
 	}
 	if *echo && *scenarioPath != "" {
 		return usageError("--echo et --scenario sont exclusifs")
@@ -194,6 +205,9 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 		Echo:       *echo,
 		Weapon:     weaponName,
 		Armor:      armorName,
+
+		HitInterval: *hitInterval,
+		HitTarget:   uint32(*hitTarget),
 
 		StrictTimeout: *strictTimeout,
 	}

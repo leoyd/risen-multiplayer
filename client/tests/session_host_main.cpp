@@ -27,6 +27,8 @@
 // l'entrée en InSession, pendant --pause-ms (ni poll ni tick : sleep), comme une cinématique ou un
 // chargement. Le heartbeat de secours du transport doit maintenir la session ; à la reprise, la
 // même ligne de log que la DLL compte les heartbeats envoyés par le thread réseau.
+// Coups de l'invité (story 3.5) : chaque ApplyHit est journalisé « [test] ApplyHit NetId N » et
+// retire 10 PV simulés au PNJ visé (octet 0 du GUID), visibles dans les snapshots suivants.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -146,6 +148,8 @@ int main(int argc, char** argv) {
     // Story 3.3 : PNJ simulés (pose et PV en fonction du temps depuis l'entrée en session).
     std::uint64_t session_start = 0;
     bool in_session = false;
+    // Story 3.5 : dégâts simulés par PNJ (index = octet 0 du GUID), 10 PV par ApplyHit.
+    std::map<long, int> npc_damage;
     auto fill_npcs = [&](std::uint64_t now) {
         world.npcs.clear();
         world.npcs_ok = true;
@@ -163,7 +167,7 @@ int main(int argc, char** argv) {
             n.pose.y = world.y;
             n.pose.z = world.z + static_cast<float>(radius * std::cos(angle));
             n.pose.yaw = static_cast<float>(angle);
-            n.hp = 100 + static_cast<int>(i) - static_cast<int>(t * 4.0);
+            n.hp = 100 + static_cast<int>(i) - static_cast<int>(t * 4.0) - npc_damage[i];
             // Le PNJ 0 meurt à 2 s (Death), puis « revit » à 6 s (story 3.4b : jamais réannoncé).
             n.alive = !(i == 0 && t > 2.0 && t <= 6.0);
             world.npcs.push_back(n);
@@ -279,7 +283,10 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        if (session.state() == State::InSession && !in_session) session_start = now;
+        if (session.state() == State::InSession && !in_session) {
+            session_start = now;
+            npc_damage.clear();  // story 3.5 : nouvelle session, PNJ intacts
+        }
         in_session = session.state() == State::InSession;
         world.npcs.clear();
         world.npcs_ok = false;
@@ -357,6 +364,12 @@ int main(int argc, char** argv) {
                     print(captured.size() > kMaxAnimatedNpcs ? "ERROR" : "INFO",
                           "[test] CaptureNpc NetId " + std::to_string(cn->net_id) +
                               " : PNJ animés=" + std::to_string(captured.size()));
+                } else if (const auto* ah = std::get_if<ApplyHit>(&cmd)) {  // story 3.5
+                    const long index = ah->guid[0];
+                    npc_damage[index] += 10;
+                    print("INFO", "[test] ApplyHit NetId " + std::to_string(ah->net_id) + " : PNJ simulé " +
+                                      std::to_string(index) + ", PV −10 (dégâts cumulés " +
+                                      std::to_string(npc_damage[index]) + ")");
                 } else if (const auto* un = std::get_if<UncaptureNpc>(&cmd)) {
                     captured.erase(un->net_id);
                     print("INFO", "[test] UncaptureNpc NetId " + std::to_string(un->net_id) +

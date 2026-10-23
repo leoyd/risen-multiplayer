@@ -57,6 +57,19 @@ Méthode : exports décorés et désassemblage (`llvm-objdump -d --disassemble-s
 ### AD-2
 Tous les appels au jeu se font depuis `OnProcess`, avec une seule exception : le détour de `Kill` appelle `Defeat` avec les mêmes arguments, sur le même thread. Le log indique le thread du détour. Le détour de `gCScriptRoutine_PS::OnProcess` ne fait que comparer un pointeur atomique.
 
+### Q8 — point d’accroche des dégâts (story 3.5, 2026-10-23)
+
+Rétro-ingénierie statique de Game.dll x64 (même build) :
+
+- `gCCombatMoveMelee::HitTargets` (`0x1807d5650`) : pour chaque cible touchée, `SetEntity(ps+0x30, agresseur)` sur le `gCDamage_PS` de l’arme, puis `call gCDamage_PS::DoDamage(ps, cible)` (`0x1807d5c5a` et `0x1807d5ea3`). Si le retour est faux, l’effet d’impact est sauté.
+- `?DoDamage@gCDamage_PS@@QEAA_NPEAVeCEntity@@@Z` (1 argument, `0x1808081b0`) : appelle `cible->OnDamage`, puis le `DamageScript` de l’arme (`DoSwordDamage`/`DoFistDamage` → `DoMeleeDamage` → script `DoDamage` → `SetHitPoints(-dmg, ajout)` → `DownOrDeadByMeleeWeapon` → `DoMeleeStumble`). **Les PV n’ont pas encore baissé à l’entrée.**
+- `PSDamage::DoDamage` (Script.dll) fait `jmp` vers `gCDamage_PS::DoDamage` à 2 arguments (`0x1808091c0`), qui fait `SetEntity(+0x30, agresseur)` puis `jmp` vers la version à 1 argument : le chemin du mod (`HitRequest` appliqué chez l’hôte) traverse donc le détour, d’où une garde de réentrance propre au thread.
+- `?GetAgressor@gCDamage_PS@@QEBAAEBVeCEntityProxy@@XZ` = `lea rax, [rcx+0x30]` ; `?GetEntity@eCEntityProxy@@QEAAPEAVeCEntity@@XZ` (Engine.dll) rend l’`eCEntity*` du proxy.
+- Le prologue de la version à 1 argument (`push rbp; push rsi; push r14; sub rsp,30h`) n’a pas d’adressage relatif à RIP : MinHook s’y pose (vérifié sur le banc Wine).
+- **Correction** : dans `DownOrDeadBy*`, `self` est **l’arme** qui frappe (le PS de dégâts de l’objet), pas le personnage.
+
+Décision : un seul détour, sur la version à 1 argument. C’est le seul maillon qui voit cible et agresseur avant la baisse des PV et qui sait rendre « rien fait » ; il couvre mêlée, projectiles et magie. Écartés : la version à 2 arguments (jamais appelée par la mêlée native), `OnDamage` (diffuse aux PS, ne bloque rien), `DoMeleeDamage`/`DoSwordDamage` (plusieurs détours, `Script_Game.dll` absente du banc). Ce dernier reste le repli si, en jeu, l’agresseur lu au proxy `+0x30` n’est pas le personnage.
+
 ## Protocole de test en jeu
 
 Prérequis : `probe = 1` dans `multiplayer.ini`, overlay Steam désactivé, **Verr. Num actif**. Charger une partie près de quelques PNJ, de préférence un camp de monstres de la zone de départ. Les touches ne réagissent que si le jeu a le focus.

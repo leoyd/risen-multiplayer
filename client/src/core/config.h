@@ -31,6 +31,9 @@ struct Config {
     std::string guest_equipment;
     bool probe = false;           // mode sonde du spike J1 (hooks + journaux de rétro-ingénierie)
     LogLevel log_level = LogLevel::Info;  // debug : lignes supplémentaires (par frame comprises)
+    // Story 3.5 : détour des dégâts (gCDamage_PS::DoDamage) posé en session. 0 = pas de détour
+    // (repli si le test en jeu crashe) ; les HitRequest reçus par l'hôte restent appliqués.
+    bool damage_hook = true;
 };
 
 struct ConfigResult {
@@ -49,7 +52,7 @@ struct ConfigResult {
 // BOM UTF-8 et fins de ligne CRLF tolérés, clés insensibles à la casse.
 // Champs : role (host|guest, obligatoire), host_ip (validé en invité seulement),
 // port (vide = défaut), nickname, guest_equipment (liste de templates, core/equipment.h), probe (0|1, vide = défaut 0),
-// log_level (debug|info, insensible à la casse, vide = défaut info).
+// log_level (debug|info, insensible à la casse, vide = défaut info), damage_hook (0|1, vide = défaut 1).
 ConfigResult parse_config(std::string_view text);
 
 }  // namespace mp

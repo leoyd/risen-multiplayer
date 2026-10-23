@@ -57,7 +57,8 @@ graph TD
   - Tout appel à une fonction du jeu se fait **uniquement** depuis le hook de `eCApplication::OnProcess`. Exceptions :
     - le hook `PlayMotion` (AD-8), qui ne fait que copier des octets ou bloquer l’appel ;
     - le hook de `gCScriptRoutine_PS::OnProcess` (AD-9), qui ne fait que comparer le PS reçu à l’ensemble des répliques ;
-    - les détours de fonctions de script de `Script_Game.dll` (`DownOrDeadBy*`, AD-11). Ils tournent sur le thread d’`OnProcess` (vérifié en jeu) et peuvent appeler le jeu de façon synchrone : `SetHitPoints`, ou les accesseurs de l’unité de script (`GetOtherEntity`).
+    - les détours de fonctions de script de `Script_Game.dll` (`DownOrDeadBy*`, AD-11). Ils tournent sur le thread d’`OnProcess` (vérifié en jeu) et peuvent appeler le jeu de façon synchrone : `SetHitPoints`, ou les accesseurs de l’unité de script (`GetOtherEntity`) ;
+    - le détour du point d’accroche des dégâts (AD-12, story 3.5), qui lit l’agresseur par deux accesseurs sans effet de bord (`gCDamage_PS::GetAgressor`, `eCEntityProxy::GetEntity`), compare au registre, met au plus un `NetId` en file pour la frame (verrou court, sans appel réseau) et journalise hors frame : une ligne Info au premier passage de la session, une ligne Info par coup bloqué, et en debug une ligne par passage qui implique le registre ou le héros.
   - Le thread réseau ne fait qu’envoyer et recevoir. Il échange avec la frame par deux files (entrante et sortante) protégées par un verrou ; aucune autre donnée n’est partagée.
   - **Hooks ↔ frame.** Leur seul état partagé est un objet unique, `sync::AnimFilter`, protégé par un verrou ; en J2 il devient le registre d’AD-12. Il contient :
     - le PS d’animation du héros local, dont les appels sont capturés ;
@@ -150,7 +151,7 @@ graph TD
     - **Invité, une réplique frappe son héros** → bloqué ; les dégâts n’arrivent que par `HitOnGuest`.
     - **Hôte, l’avatar invité frappe un PNJ** → bloqué ; les dégâts n’arrivent que par `HitRequest`.
     - **Hôte, un PNJ frappe l’avatar invité** → bloqué (l’avatar est **invulnérable**), émet `HitOnGuest{NetId source, dégâts bruts}` (avant la protection de l’invité).
-  - **Application chez l’hôte.** `HitRequest` s’applique par `PSDamage::DoDamage(arme en main de l’avatar invité, cible, agresseur = avatar invité)` : les dégâts sont ceux de l’arme. Chez l’hôte, ne jamais écrire directement les PV d’un PNJ.
+  - **Application chez l’hôte.** `HitRequest` s’applique par `PSDamage::DoDamage(arme en main de l’avatar invité, cible, agresseur = avatar invité)` : les dégâts sont ceux de l’arme. Chez l’hôte, ne jamais écrire directement les PV d’un PNJ. Cet appel traverse lui-même le point d’accroche (`PSDamage::DoDamage` → `gCDamage_PS::DoDamage` à 2 arguments → `jmp` vers la version à 1 argument) : il se fait sous une **garde de réentrance** propre au thread (story 3.5), sans quoi l’hôte bloquerait son propre coup (agresseur = avatar). Sans arme en main de l’avatar, le `HitRequest` est ignoré (journalisé).
   - **Application chez l’invité.** `HitOnGuest` passe par le seul chemin de PV du héros invité (AD-11).
   - **PV de l’avatar invité chez l’hôte** : affichage seulement (recopiés du snapshot), jamais utilisés pour détecter un coup.
   - **Arme de l’avatar.** Créée dans son inventaire (`PSInventory::CreateItems(template)`), tenue par `HoldRightStack`, rangée par `EquipStack`. Il n’y a pas de mode de combat à transmettre : la posture est dans le nom des animations rejouées (AD-8).
@@ -178,7 +179,7 @@ graph TD
   - **La mort du héros de l’hôte reste native** et finit la session.
   - **Le héros de l’invité ne meurt jamais nativement (FR-12).** Ses PV n’ont qu’**un** chemin d’écriture, dans `sync/` :
     - `HitOnGuest` retire ses dégâts ; un résultat ≤ 0 met le héros **à terre**.
-    - Un coup natif restant (source non répliquée) est intercepté dans les détours `DownOrDeadByMeleeWeapon`, `DownOrDeadByProjectile` et `DownOrDeadByInferno` (`self` = ce qui frappe, `other` = la victime). Si la victime est le héros invité **et** que ses PV sont ≤ 0, le détour le remet à 1 PV, le met à terre et rend 0 sans appeler l’original. Sinon il appelle l’original.
+    - Un coup natif restant (source non répliquée) est intercepté dans les détours `DownOrDeadByMeleeWeapon`, `DownOrDeadByProjectile` et `DownOrDeadByInferno` (`self` = **l’arme** qui frappe, pas le personnage : corrigé en story 3.5 ; `other` = la victime). Si la victime est le héros invité **et** que ses PV sont ≤ 0, le détour le remet à 1 PV, le met à terre et rend 0 sans appeler l’original. Sinon il appelle l’original.
     - **À terre** : 1 PV, `Death{2}` émis **une seule fois** (verrou jusqu’au `Respawn`). L’hôte répond `Respawn{2, pose}` près de son avatar ; l’invité y place son héros, PV pleins, et réinitialise l’interpolation.
   - Écartés au spike : `Kill → Defeat` (mène au menu de chargement), état `ZS_Unconscious` forcé, relève d’un mort.
 
@@ -193,7 +194,7 @@ graph TD
     - les quatre réglages de locomotion EMotionFX (story 2.4b) ;
     - `gCScriptRoutine_PS::OnProcess` ;
     - les trois `DownOrDeadBy*` ;
-    - le point d’accroche des dégâts (question 8).
+    - le point d’accroche des dégâts : `gCDamage_PS::DoDamage(eCEntity*)` (Game.dll, version à 1 argument ; question 8 tranchée en 3.5). Seul passage commun de tout coup natif (mêlée, projectiles, magie) avant la baisse des PV ; agresseur = `eCEntityProxy::GetEntity(GetAgressor())` (proxy à `+0x30`), cible = l’argument ; bloquer = rendre `false` sans appeler l’original. Facultatif : un échec de résolution, ou `damage_hook = 0`, laisse la session sans dégâts synchronisés (dérogation à AD-3 pour ce seul bloc).
 
     Un seul détour par fonction. Il délègue à `sync/` et choisit son comportement selon le **rôle** de l’entité. Ajouter un hook exige de mettre à jour cette liste.
   - **Registre unique** (extension de `sync::AnimFilter`, AD-2, même verrou) : pour chaque entité suivie, `{entité, PS d’animation, PS de routine, rôle}`. Rôles : héros local, avatar, réplique de PNJ.
@@ -298,7 +299,7 @@ graph LR
 5. ~~Arme dégainée et mode de combat de l’avatar~~ : **résolu** (inventaire + `HoldRightStack`, pas de mode de combat, AD-9).
 6. ~~Collisions entre PNJ et avatar~~ : **tranché** : l’avatar reste traversable (la recette solide décroche son modèle, AD-8). Les PNJ le ciblent et le frappent quand même (vérifié). Un avatar solide sans ce défaut reste possible après J2, en cherchant le réglage fautif.
 7. ~~Mort native de l’invité~~ : **résolu** (coup mortel intercepté dans `DownOrDeadBy*`, AD-11).
-8. **Point d’accroche des dégâts** (AD-9, AD-12) : il doit voir chaque coup avec son agresseur et sa cible, et pouvoir le bloquer. Candidats : `gCDamage_PS::DoDamage` (une arme frappe) ou le virtuel `OnDamage` de la cible. À trancher dans la **story 3.5**, avant 3.6.
+8. ~~Point d’accroche des dégâts (AD-9, AD-12)~~ : **tranché** en story 3.5 : `gCDamage_PS::DoDamage(eCEntity*)` (Game.dll, 1 argument), qui voit agresseur et cible avant la baisse des PV et sait rendre « rien fait ». Écartés : la version à 2 arguments (jamais appelée par la mêlée native), `OnDamage` (diffuse seulement), `DoMeleeDamage`/`DoSwordDamage` (repli si l’hypothèse « proxy `+0x30` = personnage » tombe en jeu). Détails : `docs/re/spike-j2.md`, « Q8 ».
 9. **Morts hors `DownOrDeadBy*`** (chute, noyade) et message de perte d’XP (vu seulement avec `Kill → Defeat`) : story 3.7. Seule la mêlée a été testée en jeu ; `Projectile` et `Inferno` ne sont vérifiés qu’au désassemblage.
 10. **PNJ créés en cours de partie** (réapparition de monstres) : leur GUID est-il le même chez les deux pairs ? Sinon, repli à fixer dans la spine avant la **story 3.3**.
 11. **Mort d’une réplique chez l’invité** : comment `Death` la tue (sans `Kill` natif ?) et ce qu’il advient du butin et de l’XP de l’invité. **Story 3.4**.

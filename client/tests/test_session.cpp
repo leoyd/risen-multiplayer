@@ -3346,7 +3346,7 @@ TEST("mort PNJ 3.4b hôte : PNJ annoncé mort → Death (pas de Despawn) avant l
     CHECK(sent_of<proto::Death>(again).empty());
     const std::string line = host_stats_line(s, 1200);
     const std::string tail = "morts de PNJ : envoyées 1, appliquées 0, ignorées 0";
-    CHECK(line.size() >= tail.size() && line.compare(line.size() - tail.size(), tail.size(), tail) == 0);
+    CHECK(line.find(tail + " ; coups : ") != std::string::npos);  // story 3.5 : coups en fin
     CHECK(line.find("retirés 0") != std::string::npos);  // pas compté comme un Despawn
 }
 
@@ -3414,7 +3414,7 @@ TEST("mort PNJ 3.4b invité : Death après le snapshot tick 3 → NpcDeath à l'
     }
     const std::string line = guest_stats_line(g, 800);
     const std::string tail = "morts de PNJ : envoyées 0, appliquées 1, ignorées 0";
-    CHECK(line.size() >= tail.size() && line.compare(line.size() - tail.size(), tail.size(), tail) == 0);
+    CHECK(line.find(tail + " ; coups : ") != std::string::npos);  // story 3.5 : coups en fin
 }
 
 TEST("mort PNJ 3.4b invité : Death sans snapshot (horloge pas prête) → NpcDeath aussitôt") {
@@ -3548,4 +3548,125 @@ TEST("mort PNJ 3.4b invité : snapshot plus récent reçu après le Death → mo
     const Output out = g.tick(600, loaded_world(), {});
     CHECK_EQ(count_for<NpcDeath>(out, 1000), 1u);
     CHECK(index_for<MoveNpc>(out, 1000) < index_for<NpcDeath>(out, 1000));
+}
+
+// --- Coups de l'invité (story 3.5) --------------------------------------------------
+
+namespace {
+
+bool has_log_at(const Output& out, Level level, const std::string& needle) {
+    for (const auto& l : out.logs) {
+        if (l.level == level && l.text.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
+std::string tail_of(const std::string& line, std::size_t n) {
+    return line.size() >= n ? line.substr(line.size() - n) : line;
+}
+
+}  // namespace
+
+TEST("coups 3.5 invité : LocalHit sur une réplique vivante → HitRequest fiable, Info, compté envoyé") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), {LocalHit{1000}});
+    const auto hits = sent_of<proto::HitRequest>(out);
+    CHECK(hits.size() == 1 && hits[0].net_id == 1000u);
+    CHECK(has_log_at(out, Level::Info, "[sync] coup sur PNJ 1000 : HitRequest envoyé"));
+    const std::string line = guest_stats_line(g, 500);
+    const std::string tail = "coups : envoyés 1, appliqués 0, ignorés 0, bloqués 0";
+    CHECK_EQ(tail_of(line, tail.size()), tail);
+}
+
+TEST("coups 3.5 invité : réplique morte ou en attente de mort → rien envoyé, Debug, compté ignoré") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), reliable(encode_r(proto::Death{1000})));  // en attente
+    Output out = g.tick(410, loaded_world(), {LocalHit{1000}});
+    CHECK(sent_of<proto::HitRequest>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "[sync] coup sur PNJ 1000 : ignoré (réplique morte)"));
+    g.tick(500, loaded_world(), {});  // morte
+    out = g.tick(510, loaded_world(), {LocalHit{1000}});
+    CHECK(sent_of<proto::HitRequest>(out).empty());
+    const std::string line = guest_stats_line(g, 600);
+    CHECK(line.find("coups : envoyés 0, appliqués 0, ignorés 2, bloqués 0") != std::string::npos);
+}
+
+TEST("coups 3.5 invité : NetId non annoncé → rien envoyé, Debug, compté ignoré") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), {LocalHit{1500}});
+    CHECK(sent_of<proto::HitRequest>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "[sync] coup sur PNJ 1500 : ignoré (réplique non annoncée)"));
+    const std::string line = guest_stats_line(g, 500);
+    CHECK(line.find("coups : envoyés 0, appliqués 0, ignorés 1, bloqués 0") != std::string::npos);
+}
+
+TEST("coups 3.5 invité : LocalHit hors session (Connecting) → ignoré, rien envoyé") {
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), {});
+    CHECK(g.state() == State::Connecting);
+    const Output out = g.tick(10, loaded_world(), {LocalHit{1000}});
+    CHECK(sent_of<proto::HitRequest>(out).empty());
+    CHECK(commands_of<SendReliable>(out).empty());
+}
+
+TEST("coups 3.5 : coups bloqués par le détour → comptés en fin de bilan") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), {LocalHitsBlocked{3}, LocalHit{1000}});
+    g.tick(450, loaded_world(), {LocalHitsBlocked{2}});
+    const std::string line = guest_stats_line(g, 500);
+    CHECK(line.find("coups : envoyés 1, appliqués 0, ignorés 0, bloqués 5") != std::string::npos);
+}
+
+TEST("coups 3.5 hôte : HitRequest d'un PNJ annoncé et vivant → ApplyHit{NetId, GUID}, compté appliqué") {
+    Session s = host_in_session();
+    s.tick(1050, host_world(npcs_in_line(2)), {});  // 1000 = GUID 1, 1001 = GUID 2
+    const Output out = s.tick(1060, host_world({}, false), reliable(encode_r(proto::HitRequest{1001})));
+    const auto apply = commands_of<ApplyHit>(out);
+    CHECK(apply.size() == 1 && apply[0]->net_id == 1001u && apply[0]->guid == guid_of(2));
+    const std::string line = host_stats_line(s, 1100);
+    const std::string tail = "coups : envoyés 0, appliqués 1, ignorés 0, bloqués 0";
+    CHECK_EQ(tail_of(line, tail.size()), tail);
+}
+
+TEST("coups 3.5 hôte : HitRequest d'un NetId inconnu → pas de commande, Warn « NetId inconnu », compté") {
+    Session s = host_in_session();
+    s.tick(1050, host_world(npcs_in_line(1)), {});
+    const Output out = s.tick(1060, host_world({}, false), reliable(encode_r(proto::HitRequest{1500})));
+    CHECK(commands_of<ApplyHit>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "[sync] HitRequest PNJ 1500 ignoré : NetId inconnu"));
+    const std::string line = host_stats_line(s, 1100);
+    CHECK(line.find("coups : envoyés 0, appliqués 0, ignorés 1, bloqués 0") != std::string::npos);
+}
+
+TEST("coups 3.5 hôte : HitRequest d'un PNJ mort → pas de commande, Warn « PNJ mort »") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 100.0f)}), {});
+    s.tick(1100, host_world({npc_at(1, 100.0f, 0, false)}), {});  // Death{1000}
+    const Output out = s.tick(1110, host_world({}, false), reliable(encode_r(proto::HitRequest{1000})));
+    CHECK(commands_of<ApplyHit>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "[sync] HitRequest PNJ 1000 ignoré : PNJ mort"));
+}
+
+TEST("coups 3.5 hôte : HitRequest d'un NetId < 1000 → pas de commande, Warn") {
+    Session s = host_with_avatar();
+    const Output out = s.tick(1300, loaded_world(), reliable(encode_r(proto::HitRequest{2})));
+    CHECK(commands_of<ApplyHit>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "[sync] HitRequest PNJ 2 ignoré : NetId < 1000"));
+    CHECK(s.state() == State::InSession);
+}
+
+TEST("coups 3.5 invité : HitRequest reçu → ignoré (Warn), aucune commande") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::HitRequest{1000})));
+    CHECK(commands_of<ApplyHit>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "[sync] HitRequest PNJ 1000 ignoré"));
+    CHECK(g.state() == State::InSession);
+}
+
+TEST("coups 3.5 hôte : LocalHit chez l'hôte → ignoré, rien envoyé") {
+    Session s = host_in_session();
+    s.tick(1050, host_world(npcs_in_line(1)), {});
+    const Output out = s.tick(1060, host_world({}, false), {LocalHit{1000}});
+    CHECK(sent_of<proto::HitRequest>(out).empty());
+    CHECK(commands_of<ApplyHit>(out).empty());
 }

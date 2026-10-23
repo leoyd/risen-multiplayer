@@ -67,6 +67,11 @@ type sessionConfig struct {
 	// message fiable rendu par KCP, snapshot décodé), pas par chaque datagramme : les seuls
 	// acquittements KCP d'un hôte au jeu figé ne maintiennent plus la session.
 	StrictTimeout bool
+	// Story 3.5 : HitRequest envoyé toutes les HitInterval (0 = aucun), sur HitTarget (0 = premier
+	// PNJ présent et vivant, par NetId croissant). Le NetId n'est pas vérifié : un NetId inconnu
+	// teste le refus de l'hôte.
+	HitInterval time.Duration
+	HitTarget   uint32
 
 	HelloInterval     time.Duration
 	ConnectTimeout    time.Duration
@@ -121,7 +126,9 @@ type sessionResult struct {
 	MaxAnimatedNpcs int // plus grand nombre de PNJ distincts animés en 1 s (8 au plus attendus)
 	// Mort des répliques (v11, story 3.4b).
 	NpcDeathsRx int // Death de PNJ annoncés et vivants
-	EndReason       string
+	// Coups de l'invité (v12, story 3.5).
+	HitsTx    int // HitRequest envoyés
+	EndReason string
 }
 
 // npcStats : bilan d'un PNJ annoncé par l'hôte (v9) : annonces, poses reçues, PV.
@@ -135,8 +142,8 @@ type npcStats struct {
 	FirstHP   uint16
 	LastHP    uint16
 	HPChanges int
-	Motions   int // v10 : Motion reçus pour ce PNJ
-	Params    int // v10 : MotionParam reçus pour ce PNJ
+	Motions   int  // v10 : Motion reçus pour ce PNJ
+	Params    int  // v10 : MotionParam reçus pour ce PNJ
 	Dead      bool // v11 : Death reçu ; jamais réannoncé de la session
 	Released  bool // v11 : PNJ mort puis libéré par Despawn
 }
@@ -201,6 +208,7 @@ type guest struct {
 	npcAnimWarned  map[uint32]bool // v10 : NetId ignorés déjà journalisés
 	endAt          time.Time       // fin de --duration (zéro = aucune)
 	extraHello     bool            // --dup-hello : Hello supplémentaire encore à envoyer
+	nextHit        time.Time       // v12 : prochain HitRequest (--hit-interval)
 	incoming       chan datagram
 }
 
@@ -264,6 +272,10 @@ func (g *guest) run(ctx context.Context) sessionResult {
 			}
 			g.sendSnapshot(now)
 			g.playEvents(now)
+			if g.cfg.HitInterval > 0 && !now.Before(g.nextHit) {
+				g.sendHit()
+				g.nextHit = now.Add(g.cfg.HitInterval)
+			}
 			if !now.Before(g.nextHBLog) {
 				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d ; MotionParam reçus=%d ; PNJ suivis=%d poses=%d inattendues=%d animés=%d",
 					g.hbTxPeriod, g.hbRxPeriod, g.res.HeartbeatsTx, g.res.HeartbeatsRx, g.snapTxPeriod, g.snapRxPeriod,
@@ -518,6 +530,9 @@ func (g *guest) sendReliable(m protocol.Message) {
 		g.log.printf("-> AniName id=%d nom=%s", m.AniId, m.Name)
 	case protocol.Death:
 		g.log.printf("-> Death netid=%d", m.NetId)
+	case protocol.HitRequest:
+		g.res.HitsTx++
+		g.log.printf("-> HitRequest PNJ netid=%d", m.NetId)
 	case protocol.Weapon:
 		g.res.WeaponsTx++
 		g.log.printf("-> Weapon netid=%d nom=%q", m.NetId, m.Name)
@@ -681,7 +696,8 @@ func (g *guest) enterSession(w protocol.Welcome) {
 	g.hostNames = map[uint16]string{}
 	g.lastEventMs = -1
 	g.deathSent = false
-	g.sendReliable(g.spawn) // avatar de l'invité chez l'hôte (v3) ; le scénario part de cette pose
+	g.nextHit = now.Add(g.cfg.HitInterval) // premier coup une période après l'entrée en session
+	g.sendReliable(g.spawn)                // avatar de l'invité chez l'hôte (v3) ; le scénario part de cette pose
 	// Arme en main (v7), juste après le Spawn : l'avatar apparaît armé.
 	g.sendReliable(protocol.Weapon{NetId: protocol.GuestNetId, Name: g.cfg.Weapon})
 	// Armure (v8), après le Weapon, seulement si --armor est donné.
@@ -943,6 +959,23 @@ func (g *guest) npcAnimation(netID uint32, motion bool, aniID uint16) {
 	g.res.NpcParamsRx++
 }
 
+// sendHit envoie un HitRequest (v12) sur --hit-target, ou sur le premier PNJ présent et vivant
+// (NetId croissant) ; rien s'il n'y en a pas.
+func (g *guest) sendHit() {
+	target := g.cfg.HitTarget
+	if target == 0 {
+		for id, s := range g.res.Npcs {
+			if s.Present && !s.Dead && (target == 0 || id < target) {
+				target = id
+			}
+		}
+		if target == 0 {
+			return
+		}
+	}
+	g.sendReliable(protocol.HitRequest{NetId: target})
+}
+
 // npcSummary : une ligne de bilan par PNJ vu, par NetId croissant.
 func (g *guest) npcSummary() {
 	if len(g.res.Npcs) == 0 {
@@ -974,6 +1007,9 @@ func (g *guest) npcSummary() {
 
 func (g *guest) end(code int, reason string) sessionResult {
 	g.npcSummary()
+	if g.cfg.HitInterval > 0 {
+		g.log.printf("Bilan coups : HitRequest envoyés=%d", g.res.HitsTx)
+	}
 	g.res.Code = code
 	g.res.EndReason = reason
 	g.log.printf("Ended raison=%s (Hello envoyés=%d, heartbeats envoyés=%d reçus=%d, jetés=%d) sortie=%d",

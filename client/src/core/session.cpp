@@ -264,6 +264,10 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_local_carried(Carried::Weapon, out);
         } else if (std::holds_alternative<LocalArmor>(in)) {
             on_local_carried(Carried::Armor, out);
+        } else if (const auto* lh = std::get_if<LocalHit>(&in)) {  // story 3.5
+            on_local_hit(*lh, out);
+        } else if (const auto* lb = std::get_if<LocalHitsBlocked>(&in)) {
+            hits_.blocked += lb->count;
         } else {
             on_local_param(now, std::get<LocalParam>(in), out);
         }
@@ -647,6 +651,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         remove_avatar("Despawn reçu", out);
         return;
     }
+    if (const auto* hr = std::get_if<proto::HitRequest>(&decoded.message)) {  // story 3.5
+        on_hit_request(hr->net_id, out);
+        return;
+    }
     const auto& e = std::get<proto::SessionEnd>(decoded.message);
     out.logs.push_back({Level::Info, "[sync] SessionEnd reçu : " + end_text(e.reason)});
     // L'hôte dont l'invité part se réarme aussitôt ; l'invité attend le monde suivant.
@@ -693,6 +701,7 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     npc_last_params_.clear();
     npc_param_batch_.clear();
     npc_anim_ = NpcAnimCounters{};
+    hits_ = HitCounters{};  // story 3.5
     avatar_pose_ok_ = false;
     proto::Spawn spawn;
     spawn.net_id = own_net_id();
@@ -959,6 +968,59 @@ void Session::on_npc_death(std::uint32_t net_id, Output& out) {
     r.death_pending = true;
     r.death_at = r.interp.empty() ? 0.0 : r.interp.last_time();
     out.logs.push_back({Level::Info, what + " : mort à l'instant d'affichage"});
+}
+
+void Session::on_local_hit(const LocalHit& in, Output& out) {
+    if (state_ != State::InSession) return;  // hors session : rien à demander à l'hôte
+    const std::string what = "[sync] coup sur PNJ " + std::to_string(in.net_id);
+    const char* why = nullptr;
+    if (settings_.role != Role::Guest) {
+        why = "pas invité";
+    } else {
+        auto it = replicas_.find(in.net_id);
+        if (it == replicas_.end()) {
+            why = "réplique non annoncée";
+        } else if (it->second.dead || it->second.death_pending) {
+            why = "réplique morte";
+        }
+    }
+    if (why != nullptr) {
+        ++hits_.ignored;
+        out.logs.push_back({Level::Debug, what + " : ignoré (" + why + ")"});
+        return;
+    }
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::HitRequest{in.net_id}, bytes)) return;
+    ++hits_.sent;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    out.logs.push_back({Level::Info, what + " : HitRequest envoyé"});
+}
+
+void Session::on_hit_request(std::uint32_t net_id, Output& out) {
+    const std::string what = "[sync] HitRequest PNJ " + std::to_string(net_id) + " ignoré : ";
+    if (settings_.role != Role::Host) {
+        ++hits_.ignored;
+        out.logs.push_back({Level::Warn, what + "l'invité n'applique pas de coups"});
+        return;
+    }
+    const char* why = nullptr;
+    if (net_id < proto::kFirstNpcNetId) {
+        why = "NetId < 1000";
+    } else if (npc_dead_.count(net_id) != 0) {
+        why = "PNJ mort";
+    } else if (npc_active_.count(net_id) == 0) {
+        why = "NetId inconnu";
+    }
+    auto g = npc_guids_.find(net_id);
+    if (why == nullptr && g == npc_guids_.end()) why = "NetId inconnu";  // impossible : annoncé = GUID connu
+    if (why != nullptr) {
+        ++hits_.ignored;
+        out.logs.push_back({Level::Warn, what + why});
+        return;
+    }
+    ++hits_.applied;
+    out.commands.push_back(ApplyHit{net_id, g->second});
+    out.logs.push_back({Level::Debug, "[sync] HitRequest PNJ " + std::to_string(net_id) + " reçu : ApplyHit"});
 }
 
 bool Session::on_npc_entity(std::uint64_t now, std::uint32_t tick, const proto::SnapshotEntity& e) {
@@ -1547,7 +1609,8 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   "OnProcess de routine bloqués %u ; "
                   "animations des PNJ : animés %zu, Motion envoyés %u, rejoués %u, écrasés %u, ignorés %u, "
                   "file pleine %u, MotionParam envoyés %u, regroupés %u, rejoués %u, ignorés %u, %llu o/s ; "
-                  "PNJ reçus avant leur Spawn %u ; morts de PNJ : envoyées %u, appliquées %u, ignorées %u",
+                  "PNJ reçus avant leur Spawn %u ; morts de PNJ : envoyées %u, appliquées %u, ignorées %u ; "
+                  "coups : envoyés %u, appliqués %u, ignorés %u, bloqués %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
                   anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
@@ -1555,7 +1618,8 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   npc_.routine_blocked, npc_animated_.size(), npc_anim_.sent, npc_anim_.played,
                   npc_anim_.superseded, npc_anim_.ignored, npc_anim_.dropped, npc_anim_.params_sent,
                   npc_anim_.params_grouped, npc_anim_.params_played, npc_anim_.params_ignored, npc_rate,
-                  npc_.early, npc_.deaths_sent, npc_.deaths_applied, npc_.deaths_ignored);
+                  npc_.early, npc_.deaths_sent, npc_.deaths_applied, npc_.deaths_ignored, hits_.sent,
+                  hits_.applied, hits_.ignored, hits_.blocked);
     out.logs.push_back({Level::Debug, buf});
     // Story 3.4 (Q12) : budget des animations des PNJ, une ligne par bilan au plus.
     if (npc_rate > kNpcAnimBudgetBytesPerSec) {
@@ -1568,6 +1632,7 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
     snap_ = zero;
     anim_ = MotionCounters{};
     npc_ = NpcCounters{};
+    hits_ = HitCounters{};
 }
 
 void Session::send_hello(Output& out) {

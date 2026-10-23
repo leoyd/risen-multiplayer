@@ -204,3 +204,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-4b-mort-repliques-pnj.md`
   summary: Le PNJ natif de l'invité reste mort (AIMode 12, 0 PV) sans ses scripts de mort, sauvegarde comprise : une quête de l'invité liée à ce PNJ pourrait rester bloquée.
   evidence: maybe-false, medium si vrai ; conséquence de Q11 (pas de `Kill` natif) ; à revoir avec la persistance du profil invité (J4).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-5-degats-invite.md`
+  summary: Chemin DLL des coups (`sync/hits` : lecture de l'agresseur et du registre, file des `HitRequest`, garde de réentrance, `apply` chez l'hôte) sans test automatique (les règles 1 à 5 elles-mêmes sont testées : `sync/hit_rules`, `test_hit_rules.cpp`) ; seul le placement du détour sur la vraie Game.dll est vérifié (banc Wine).
+  evidence: Même couture `game::` que 3.3 à 3.4b (`sync/` non compilé dans `client_tests`, le banc Wine n'appelle pas `OnProcess`) ; couvert par les étapes 1 à 8 du « Test en jeu à faire » de la spec 3.5.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-5-degats-invite.md`
+  summary: Hypothèses non vérifiées en jeu : agresseur lu au proxy `+0x30` du `gCDamage_PS` = le personnage (D1), l'avatar animé par rejeu déclenche-t-il des coups natifs (D5), dégâts calculés avec les compétences de l'avatar et non du héros invité (D7).
+  evidence: Rétro-ingénierie statique seulement ; repli documenté (`DoMeleeDamage`, Script_Game) si l'agresseur n'est jamais reconnu (étape 8).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-5-degats-invite.md`
+  summary: Pour un projectile ou un sort, l'agresseur lu au proxy `+0x30` du `gCDamage_PS` pourrait être le projectile et non le héros : chez l'invité, un tel coup sur une réplique serait bloqué « autre agresseur » sans `HitRequest` (dégâts à distance perdus en silence).
+  evidence: Hypothèse non vérifiée (rétro-ingénierie de la mêlée seulement ; périmètre de l'epic = mêlée) ; à observer en jeu en tirant à l'arc sur une réplique : ligne « coup natif bloqué : … (autre agresseur, sans HitRequest) » (étape 8 facultative de la procédure 3.5 de `client/README.md`).

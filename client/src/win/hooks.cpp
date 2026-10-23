@@ -5,6 +5,7 @@
 #include "game/entity.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/hits.h"
 #include "sync/probe.h"
 #include "sync/probe_j2.h"
 #include "sync/session.h"
@@ -28,6 +29,8 @@ game::WrapperStopMotionFn g_original_wrapper_stop_motion = nullptr;
 game::RoutineOnProcessFn g_original_routine_on_process = nullptr;  // spike J2 (Num4)
 game::ScriptFn g_original_kill = nullptr;                           // spike J2 (Num6)
 game::ScriptFn g_original_down_or_dead[3] = {};                     // spike J2 (Num6, 5ᵉ test)
+using DamageDoDamageFn = bool (*)(void* damage_ps, void* target);
+DamageDoDamageFn g_original_damage = nullptr;                       // story 3.5 (Q8)
 bool g_initialized = false;
 
 void detour_on_process(void* application) {
@@ -64,6 +67,14 @@ void detour_routine_on_process(void* routine_ps) {
 // (comparaison sous le verrou de l'AnimFilter, AD-2) ; sync/npc seul y inscrit les répliques.
 void detour_routine_on_process_session(void* routine_ps) {
     if (!sync::anim_filter().blocks_routine(routine_ps)) g_original_routine_on_process(routine_ps);
+}
+
+// Story 3.5 (Q8) : point d'accroche des dégâts, gCDamage_PS::DoDamage(eCEntity*). Bloquer = rendre
+// false sans appeler l'original (HitTargets saute alors l'effet d'impact) ; en cas de doute,
+// sync/hits laisse passer.
+bool detour_damage(void* damage_ps, void* target) {
+    if (sync::hits::on_damage(damage_ps, target)) return false;
+    return g_original_damage(damage_ps, target);
 }
 
 // Spike J2, Num6 : un Kill du héros devient Defeat (même thread, mêmes arguments). Seule
@@ -221,7 +232,7 @@ bool install_probe() {
     return true;
 }
 
-bool install_session() {
+bool install_session(bool damage_hook) {
     const char* missing = nullptr;
     if (!game::resolve_entities(missing)) {
         log::error(std::string("[hooks] session inactive : symbole introuvable : ") + missing);
@@ -265,6 +276,20 @@ bool install_session() {
         log::error("[hooks] session inactive");
         return false;
     }
+    // Story 3.5 (Q8) : point d'accroche des dégâts, facultatif (D3) : un échec laisse la session
+    // sans dégâts synchronisés. Résolu même avec damage_hook = 0 : l'hôte applique les HitRequest.
+    bool damage = false;
+    if (!game::resolve_damage(missing)) {
+        log::warn(std::string("[hooks] dégâts inactifs : symbole introuvable : ") + missing +
+                  " (pas de point d'accroche, HitRequest ignorés)");
+    } else if (!damage_hook) {
+        log::info("[hooks] point d'accroche des dégâts désactivé (damage_hook = 0)");
+    } else if (create(game::damage_hook_address(), reinterpret_cast<void*>(&detour_damage),
+                      reinterpret_cast<void**>(&g_original_damage), "gCDamage_PS::DoDamage")) {
+        damage = true;
+    } else {
+        log::warn("[hooks] dégâts inactifs : point d'accroche impossible (gCDamage_PS::DoDamage)");
+    }
     s = MH_EnableHook(MH_ALL_HOOKS);
     if (s != MH_OK) {
         log::error(std::string("[hooks] session inactive : MH_EnableHook : ") + MH_StatusToString(s));
@@ -273,6 +298,7 @@ bool install_session() {
     }
     log::info("[hooks] hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, "
               "gCScriptRoutine_PS::OnProcess)");
+    if (damage) log::info("[hooks] point d'accroche des dégâts posé (gCDamage_PS::DoDamage)");
     watchdog::start();
     return true;
 }

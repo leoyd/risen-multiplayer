@@ -6,6 +6,7 @@
 #include "game/motion_desc.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/hits.h"
 
 #include <chrono>
 #include <cmath>
@@ -19,6 +20,12 @@
 #include <vector>
 
 namespace mp::sync::npc {
+
+bool find_entity(const protocol::Guid& guid, void*& out) {
+    std::uint8_t id[game::kPropertyIdSize] = {};
+    std::memcpy(id, guid.data(), guid.size());
+    return game::runtime_entity_by_id(id, out);
+}
 
 namespace {
 
@@ -94,13 +101,6 @@ Pose pose_of(const game::Matrix& m) {
 float distance(const Pose& a, const Pose& b) {
     const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
     return std::sqrt(dx * dx + dy * dy + dz * dz);
-}
-
-// GetEntity(GUID + 4 octets nuls) : entité native, nul si introuvable. False sur SEH.
-bool find_entity(const protocol::Guid& guid, void*& out) {
-    std::uint8_t id[game::kPropertyIdSize] = {};
-    std::memcpy(id, guid.data(), guid.size());
-    return game::runtime_entity_by_id(id, out);
 }
 
 // Sort la réplique du registre (IA rendue) et de la table, journalisé une fois par NetId et par
@@ -380,6 +380,7 @@ void die(std::uint32_t net_id) {
     // Morte quoi qu'il arrive (D6) : figée debout plutôt que reprendre vie. Pas de Kill natif (ni
     // XP, ni script, ni quête) : PV 0, AIMode 12 (Entity::IsDead), puis ragdoll.
     r.dead = true;
+    hits::mark_dead(net_id);  // story 3.5 : plus aucun HitRequest pour elle
     std::string failed;
     if (!game::set_hit_points(r.entity, 0, game::kSkillModifierSet)) {
         log::warn(who(net_id) + " mort : SetHitPoints(0) a levé une exception (SEH)");

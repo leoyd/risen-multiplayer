@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 11 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 12 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 11;
+inline constexpr std::uint16_t kProtocolVersion = 12;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -37,8 +37,8 @@ enum class Channel : std::uint8_t {
     Control = 2,   // hors KCP : Hello, Welcome, Reject
 };
 
-// 22, 23 et 25 sont réservés (HitRequest, HitOnGuest, Respawn) et ne sont pas encore
-// définis : ils se décodent en `UnknownType`.
+// 23 et 25 sont réservés (HitOnGuest, Respawn) et ne sont pas encore définis : ils se
+// décodent en `UnknownType`.
 enum class MsgType : std::uint8_t {
     Hello = 1,
     Welcome = 2,
@@ -49,6 +49,7 @@ enum class MsgType : std::uint8_t {
     Motion = 19,   // v2 (story 2.1)
     Spawn = 20,    // v3 (story 2.2)
     Despawn = 21,  // v3 (story 2.2)
+    HitRequest = 22,  // v12 (story 3.5)
     Death = 24,    // v5 (story 2.4)
     MotionParam = 26,  // v6 (story 2.4b)
     Weapon = 27,       // v7 (story 3.2)
@@ -180,6 +181,12 @@ struct Death {
     std::uint32_t net_id = 0;
 };
 
+// Coup du héros de l'invité sur une réplique de PNJ (v12, story 3.5) : invité → hôte, fiable.
+// L'hôte l'applique par PSDamage::DoDamage(arme en main de l'avatar, cible, avatar).
+struct HitRequest {
+    std::uint32_t net_id = 0;  // NetId de la cible (≥ kFirstNpcNetId)
+};
+
 // Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,
 // valeur, durée) ou SetPlaySpeed(type, valeur). Daté comme Motion, rejoué au même instant.
 enum class MotionParamKind : std::uint8_t {
@@ -219,7 +226,8 @@ struct Armor {
 
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
 using ReliableMessage =
-    std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon, Armor>;
+    std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon, Armor,
+                 HitRequest>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,

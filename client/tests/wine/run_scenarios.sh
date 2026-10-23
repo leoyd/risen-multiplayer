@@ -70,6 +70,9 @@ expect_no_log "nominal : aucun symbole d'inventaire manquant" "$d" "symbole d'in
 expect_log "nominal : PNJ de session résolus" "$d" "\[hooks\] PNJ de session résolus (répliques)"
 expect_no_log "nominal : aucun symbole des PNJ manquant" "$d" "symbole des PNJ introuvable"
 expect_no_log "nominal : log_level=info, aucune ligne DEBUG" "$d" "DEBUG"
+# Story 3.5 (Q8) : point d'accroche des dégâts posé par défaut (damage_hook = 1), symboles résolus.
+expect_log "nominal : point d'accroche des dégâts posé" "$d" "\[hooks\] point d'accroche des dégâts posé (gCDamage_PS::DoDamage)"
+expect_no_log "nominal : dégâts actifs" "$d" "dégâts inactifs"
 
 # Spike J1 : sonde explicitement désactivée (hooks de session), puis activée (hooks posés sur les vraies
 # DLL du jeu ; le banc n'appelle jamais OnProcess, donc aucun tick).
@@ -82,6 +85,13 @@ expect_no_log "probe = 0 : pas de hooks de la sonde" "$d" "hooks installés (OnP
 expect_log "probe = 0 : session prête" "$d" "\[sync\] session prête (rôle hôte)"
 expect_no_log "probe = 0 : aucun hook J2" "$d" "\[hooks\] J2"
 expect_log "log_level = DEBUG : lignes DEBUG écrites" "$d" "DEBUG .*\[sync\] empreinte locale SharedBase.dll"
+
+# Story 3.5 : damage_hook = 0 : pas de détour des dégâts, la session est installée quand même.
+d=$(setup sans_degats $'role = host\ndamage_hook = 0')
+run "damage_hook = 0" "$d"
+expect_log "damage_hook = 0 : détour non posé" "$d" "\[hooks\] point d'accroche des dégâts désactivé (damage_hook = 0)"
+expect_no_log "damage_hook = 0 : pas de détour" "$d" "point d'accroche des dégâts posé"
+expect_log "damage_hook = 0 : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, gCScriptRoutine_PS::OnProcess)"
 
 d=$(setup sonde_on $'role = host\nprobe = 1')
 run "sonde on" "$d"
@@ -121,7 +131,7 @@ for sym in '?GetRightHoldStack@PSInventory@@QEBAHXZ' '?GetRightHoldItem@PSInvent
 done
 
 # Story 3.3 : symboles de resolve_npc présents dans les DLL du jeu (Script, Engine, Game) ;
-# story 3.4b : PSRoutine::PropertyAIMode (lecture et operator=).
+# story 3.4b : PSRoutine::PropertyAIMode (lecture et operator=) ; story 3.5 : resolve_damage.
 for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Script.dll|?UpdateEntityLists@Entity@@KAXXZ' \
     'Script.dll|?IsPlayer@Entity@@QEBA_NXZ' 'Script.dll|?GetHitPoints@PSSkills@@QEBAHXZ' \
     'Script.dll|?SetHitPoints@PSSkills@@QEAAXHW4gESkillModifier@@@Z' 'Script.dll|?IsDead@Entity@@QEBA_NXZ' \
@@ -130,7 +140,11 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Game.dll|?GetEntity@gCRuntimeInfo@@QEAAPEAVeCEntity@@AEBVbCPropertyID@@@Z' \
     'Game.dll|?OnProcess@gCScriptRoutine_PS@@UEAAXXZ' \
     'Script.dll|??BPropertyAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ' \
-    'Script.dll|??4PropertyAIMode@PSRoutine@@QEAAAEAV01@AEBW4gEAIMode@@@Z'; do
+    'Script.dll|??4PropertyAIMode@PSRoutine@@QEAAAEAV01@AEBW4gEAIMode@@@Z' \
+    'Game.dll|?DoDamage@gCDamage_PS@@QEAA_NPEAVeCEntity@@@Z' \
+    'Game.dll|?GetAgressor@gCDamage_PS@@QEBAAEBVeCEntityProxy@@XZ' \
+    'Engine.dll|?GetEntity@eCEntityProxy@@QEAAPEAVeCEntity@@XZ' \
+    'Script.dll|?DoDamage@PSDamage@@QEAA_NAEAVEntity@@0@Z'; do
     dll=${entry%%|*}
     sym=${entry#*|}
     if grep -qaF -- "$sym" "$risen_bin/$dll"; then

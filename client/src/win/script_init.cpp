@@ -242,7 +242,7 @@ bool load_config(const std::wstring& dir) {
 // PlayMotion et SetRagDollEnabled pour les avatars), puis empreintes des 4 modules
 // (Script.dll est chargée par la résolution des entités). Un échec laisse le jeu en solo.
 void start_session() {
-    if (!mp::win::hooks::install_session()) {
+    if (!mp::win::hooks::install_session(g_config.damage_hook)) {  // story 3.5 : damage_hook
         mp::log::error("[sync] session impossible : le jeu reste en solo");
         return;
     }

@@ -100,8 +100,9 @@ constexpr const char* kNpcArray = "?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@
 constexpr const char* kUpdateEntityLists = "?UpdateEntityLists@Entity@@KAXXZ";
 constexpr const char* kIsPlayer = "?IsPlayer@Entity@@QEBA_NXZ";
 using VoidStaticFn = void (*)();
-// Décision « à terre ou mort » sur un coup (self = ce qui frappe, other = la victime ; rend 0
-// sans rien faire si la victime a encore des PV). 5ᵉ test : point d'interception de la mort.
+// Décision « à terre ou mort » sur un coup (self = l'arme qui frappe, pas le personnage :
+// correction de la story 3.5 ; other = la victime ; rend 0 sans rien faire si la victime a encore
+// des PV). 5ᵉ test : point d'interception de la mort.
 constexpr const char* kDownOrDead[3] = {
     "?DownOrDeadByMeleeWeapon@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z",
     "?DownOrDeadByProjectile@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z",
@@ -111,6 +112,15 @@ constexpr const char* kDefeat = "?Defeat@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_
 // Game.dll : `this + 0x150` (proxy) → eCEntityProxy::GetEntity. Accesseur, sans effet de bord.
 constexpr const char* kSpuGetOther = "?GetOtherEntity@gCScriptProcessingUnit@@QEAAPEAVeCGeometryEntity@@XZ";
 using SpuGetEntityFn = void* (*)(void* spu);
+// Story 3.5 : point d'accroche des dégâts (Q8). gCDamage_PS::DoDamage(eCEntity*) (Game.dll, version
+// à 1 argument) : seul passage commun de tout coup natif, avant la baisse des PV ; l'agresseur est
+// le proxy à +0x30 du PS (GetAgressor), renseigné juste avant par HitTargets ou par la version à
+// 2 arguments (où aboutit PSDamage::DoDamage, par jmp).
+constexpr const char* kDamagePsDoDamage = "?DoDamage@gCDamage_PS@@QEAA_NPEAVeCEntity@@@Z";
+constexpr const char* kGetAgressor = "?GetAgressor@gCDamage_PS@@QEBAAEBVeCEntityProxy@@XZ";
+constexpr const char* kProxyGetEntity = "?GetEntity@eCEntityProxy@@QEAAPEAVeCEntity@@XZ";  // Engine.dll
+using GetAgressorFn = const void* (*)(const void* damage_ps);
+using ProxyGetEntityFn = void* (*)(const void* proxy);
 
 struct CombatAbi {
     IntGetterFn get_right_hold_stack = nullptr;
@@ -211,6 +221,16 @@ template <typename Fn>
 Fn pick_npc(Fn npc, Fn combat) {
     return g_npc_resolved ? npc : (g_resolved ? combat : nullptr);
 }
+
+// Dégâts de la session (story 3.5) : bloc facultatif, résolu en tout ou rien par resolve_damage.
+struct DamageAbi {
+    void* damage_ps_do_damage = nullptr;  // gCDamage_PS::DoDamage(eCEntity*) : cible du détour
+    GetAgressorFn get_agressor = nullptr;
+    ProxyGetEntityFn proxy_get_entity = nullptr;
+    DoDamageFn do_damage = nullptr;       // PSDamage::DoDamage(Entity&, Entity&)
+};
+DamageAbi g_dmg;
+bool g_dmg_resolved = false;
 
 ScriptFn g_kill = nullptr;
 ScriptFn g_defeat = nullptr;
@@ -338,6 +358,42 @@ bool resolve_npc(const char*& missing) {
     g_npc = a;
     g_npc_resolved = true;
     return true;
+}
+
+bool resolve_damage(const char*& missing) {
+    HMODULE script = GetModuleHandleW(L"Script.dll");
+    HMODULE engine = GetModuleHandleW(L"Engine.dll");
+    HMODULE game = GetModuleHandleW(L"Game.dll");
+    if (script == nullptr || engine == nullptr || game == nullptr) {
+        missing = script == nullptr ? "Script.dll" : (engine == nullptr ? "Engine.dll" : "Game.dll");
+        return false;
+    }
+    DamageAbi a;
+    const bool ok = lookup(game, kDamagePsDoDamage, a.damage_ps_do_damage, missing) &&
+                    lookup(game, kGetAgressor, a.get_agressor, missing) &&
+                    lookup(engine, kProxyGetEntity, a.proxy_get_entity, missing) &&
+                    lookup(script, kDoDamage, a.do_damage, missing);
+    if (!ok) return false;
+    g_dmg = a;
+    g_dmg_resolved = true;
+    return true;
+}
+
+bool damage_resolved() { return g_dmg_resolved; }
+void* damage_hook_address() { return g_dmg_resolved ? g_dmg.damage_ps_do_damage : nullptr; }
+
+bool damage_aggressor(const void* damage_ps, void*& out) {
+    out = nullptr;
+    if (!g_dmg_resolved || damage_ps == nullptr) return false;
+    __try {
+        const void* proxy = g_dmg.get_agressor(damage_ps);
+        if (proxy == nullptr) return false;
+        out = g_dmg.proxy_get_entity(proxy);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
 }
 
 bool resolve_script_game(const char*& missing) {
@@ -807,9 +863,11 @@ bool set_damage_amount(const Entity& weapon, long amount) {
 
 bool do_damage(const Entity& weapon, const Entity& target, const Entity& attacker, bool& out) {
     out = false;
-    if (!g_resolved || weapon.ptr == nullptr || target.ptr == nullptr) return false;
+    // Story 3.5 : table de session (resolve_damage), sinon celle de la sonde.
+    const DoDamageFn fn = g_dmg_resolved ? g_dmg.do_damage : (g_resolved ? g_abi.do_damage : nullptr);
+    if (fn == nullptr || weapon.ptr == nullptr || target.ptr == nullptr) return false;
     __try {
-        out = g_abi.do_damage(&weapon, &target, &attacker);
+        out = fn(&weapon, &target, &attacker);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = false;

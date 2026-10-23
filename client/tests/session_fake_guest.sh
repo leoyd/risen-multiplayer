@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c, 3.3, 3.4 et 3.4a : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c, 3.3, 3.4, 3.4a et 3.5 : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -464,6 +464,36 @@ if start_host_npcs pnj $p 30000 80; then
     fi
     with_params=$(grep -cE "^.*  PNJ netid=[0-9]+ .* Motion=[1-9][0-9]* MotionParam=[1-9]" "$g")
     if [[ $with_params -ge 8 ]]; then ok "animations PNJ : $with_params PNJ avec Motion et MotionParam au bilan"; else ko "animations PNJ : ${with_params:-0} PNJ animés au bilan (8 au moins attendus)"; fi
+fi
+
+# --- Story 3.5 : HitRequest du faux invité (v12) → ApplyHit chez l'hôte ; NetId inconnu refusé ------
+# 3 PNJ simulés : 1000 (le plus proche) reçoit les coups jusqu'à sa mort (2 s), puis le suivant.
+p=$((base_port + 19))
+if start_host_npcs coups $p 30000 3; then
+    h=$work/coups.host.log
+    g=$work/coups.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 4s --quit --hit-interval 500ms > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "coups : invité" 0 $rc "$g"
+    expect_log "coups : HitRequest envoyés par l'invité" "$g" "-> HitRequest PNJ netid=1000"
+    expect_log "coups : ApplyHit chez l'hôte" "$h" "\[test\] ApplyHit NetId 1000 "
+    # Un HitRequest croisé avec le Death de 1000 peut être refusé « PNJ mort » : seul « NetId » est exclu.
+    expect_count "coups : aucun HitRequest d'un NetId inconnu" "$h" "HitRequest PNJ [0-9]* ignoré : NetId" 0
+    # Un coup = 10 PV d'un snapshot à l'autre (l'usure simulée ne fait que 4 PV/s).
+    drop=$(sed -nE 's/.*PNJ netid=1000 PV ([0-9]+) -> ([0-9]+).*/\1 \2/p' "$g" | awk '$1 - $2 >= 10 { n++ } END { print n + 0 }')
+    if [[ $drop -ge 1 ]]; then ok "coups : PV de 1000 en baisse de 10 dans les snapshots ($drop fois)"; else ko "coups : aucune baisse de 10 PV de 1000 vue par l'invité"; grep "netid=1000 PV" "$g"; fi
+    expect_log "coups : bilan de l'invité" "$g" "Bilan coups : HitRequest envoyés=[1-9]"
+fi
+p=$((base_port + 20))
+if start_host_npcs coups_inconnu $p 30000 3; then
+    h=$work/coups_inconnu.host.log
+    g=$work/coups_inconnu.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 2s --quit --hit-interval 500ms --hit-target 1500 > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "coups NetId inconnu : invité" 0 $rc "$g"
+    expect_log "coups NetId inconnu : HitRequest envoyé" "$g" "-> HitRequest PNJ netid=1500"
+    expect_log "coups NetId inconnu : refusé par l'hôte" "$h" "HitRequest PNJ 1500 ignoré : NetId inconnu"
+    expect_count "coups NetId inconnu : aucune commande" "$h" "ApplyHit" 0
 fi
 
 # --- Story 3.4a : jeu de l'hôte en pause 7 s (cinématique, chargement) : pas de timeout ------

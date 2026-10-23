@@ -81,6 +81,7 @@ type hostRecord struct {
 	motions      []protocol.Motion
 	params       []protocol.MotionParam
 	deaths       []uint32
+	hits         []uint32 // NetId des HitRequest reçus (v12)
 	weapons      []protocol.Weapon // reçus de l'invité (v7)
 	armors       []protocol.Armor  // reçus de l'invité (v8)
 	snapshotAt   []time.Time       // heure de réception de chacun
@@ -151,6 +152,7 @@ func (h *simHost) record() hostRecord {
 	defer h.mu.Unlock()
 	r := h.rec
 	r.hellos = append([]helloRecord(nil), r.hellos...)
+	r.hits = append([]uint32(nil), r.hits...)
 	r.welcomes = append([]uint32(nil), r.welcomes...)
 	r.welcomesTo = append([]netip.AddrPort(nil), r.welcomesTo...)
 	r.rejects = append([]uint8(nil), r.rejects...)
@@ -391,6 +393,10 @@ func (h *simHost) drain() {
 		case protocol.Death:
 			h.mu.Lock()
 			h.rec.deaths = append(h.rec.deaths, m.NetId)
+			h.mu.Unlock()
+		case protocol.HitRequest:
+			h.mu.Lock()
+			h.rec.hits = append(h.rec.hits, m.NetId)
 			h.mu.Unlock()
 		case protocol.Weapon:
 			h.mu.Lock()

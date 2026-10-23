@@ -7,6 +7,7 @@
 #include "net/transport.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/hits.h"
 #include "sync/local_capture.h"
 #include "sync/npc.h"
 
@@ -60,6 +61,7 @@ bool g_armor_error_logged = false;
 std::uintptr_t g_last_world_player = 0;
 std::uint64_t g_keepalives_seen = 0;
 std::uint64_t g_keepalive_capped_seen = 0;
+Role g_role = Role::Host;  // story 3.5 : rôle publié au détour des dégâts
 
 std::uint64_t now_ms() {
     LARGE_INTEGER t{};
@@ -250,6 +252,10 @@ void execute(cs::Output out) {
                 npc::play_param(pq->net_id, pq->param);
                 continue;
             }
+            if (const auto* ah = std::get_if<cs::ApplyHit>(&cmd)) {  // story 3.5 : coup de l'invité, chez l'hôte
+                hits::apply(ah->net_id, ah->guid);
+                continue;
+            }
             if (g_transport == nullptr) continue;
             bool posted = true;
             if (auto* s = std::get_if<cs::Send>(&cmd)) {
@@ -370,7 +376,12 @@ void frame() {
     // Story 3.4a : monde changé (non chargé, ou autre héros) : répliques et PNJ capturés oubliés
     // avant tout appel au jeu (validate, lecture des PNJ, session), sans appel au jeu. Les
     // ReleaseNpc et UncaptureNpc émis ensuite par la fin de session sont alors sans effet.
-    if (!world.loaded() || world.player != g_last_world_player) npc::release_all("fin de monde");
+    const std::uint32_t thread = GetCurrentThreadId();
+    if (!world.loaded() || world.player != g_last_world_player) {
+        // Story 3.5 : le détour des dégâts repasse « hors session » avant tout oubli.
+        hits::publish(nullptr, g_role, false, thread);
+        npc::release_all("fin de monde");
+    }
     g_last_world_player = world.player;
     // Hôte : PNJ lus seulement au tick qui enverra un snapshot (story 3.3).
     if (g_session->wants_npcs(now)) npc::read_host(world);
@@ -389,11 +400,15 @@ void frame() {
         log_keepalives();
     }
     local_captures(world);
+    hits::drain(g_inputs);  // story 3.5 : coups du héros sur des répliques, coups natifs bloqués
     // Story 3.3 : répliques (et, story 3.4, PNJ animés de l'hôte) revérifiées une fois par frame,
     // avant leurs commandes ; appels de routine bloqués (IA figée), pour le bilan debug.
     if (npc::count() != 0) npc::validate();
     world.routine_blocked = sync::anim_filter().take_routine_blocked();
     execute(g_session->tick(now, world, g_inputs));
+    // Story 3.5 : héros, rôle et état vus par le détour des dégâts (hors session dès Ended).
+    hits::publish(world.loaded() ? reinterpret_cast<void*>(world.player) : nullptr, g_role,
+                  g_session->state() == cs::State::InSession, thread);
     // Filet de sécurité : hors session, aucune réplique ne reste au registre (ReleaseNpc déjà
     // exécutés à Ended).
     if (g_session->state() != cs::State::InSession) npc::release_all("hors session");
@@ -409,6 +424,7 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
         log::error("[sync] QueryPerformanceFrequency indisponible : pas de session");
         return;
     }
+    g_role = config.role;
     cs::Settings s;
     s.role = config.role;
     s.host_ip = config.host_ip;

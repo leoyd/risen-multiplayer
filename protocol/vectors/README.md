@@ -1,4 +1,4 @@
-# Vecteurs de référence du protocole v11
+# Vecteurs de référence du protocole v12
 
 Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) et Go
 (faux invité, story 1.3). Ils sont la référence **indépendante de l'encodeur** : chaque
@@ -9,7 +9,7 @@ Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) 
 
 | Fichier | Message | Attendu |
 |---|---|---|
-| `hello.bin` | `Hello` v11, `"0.1.0"`, empreintes Steam x64 2023, `"Leo"`, `"It_Sword_01"` | décodé, réencodé à l'octet près |
+| `hello.bin` | `Hello` v12, `"0.1.0"`, empreintes Steam x64 2023, `"Leo"`, `"It_Sword_01"` | décodé, réencodé à l'octet près |
 | `welcome.bin` | `Welcome` `conv=0x12345678`, `(100.0, -50.5, 2000.0)`, lacet `1.5` | décodé, réencodé à l'octet près |
 | `reject.bin` | `Reject` raison 2 | décodé, réencodé à l'octet près |
 | `heartbeat.bin` | `Heartbeat` (fiable, sans canal) | décodé, réencodé à l'octet près |
@@ -22,6 +22,7 @@ Tampons binaires partagés par les tests C++ (`client/tests/test_protocol.cpp`) 
 | `aniname.bin` | `AniName` v5 (fiable, sans canal), `ani_id=7`, nom de course relevé par la sonde | décodé, réencodé à l'octet près |
 | `death.bin` | `Death` v5 (fiable, sans canal), `net_id=2` | décodé, réencodé à l'octet près |
 | `death_npc.bin` | `Death` v11 d'un PNJ, `net_id=1000` | décodé, réencodé à l'octet près |
+| `hit_request.bin` | `HitRequest` v12, `net_id=1000` | décodé, réencodé à l'octet près |
 | `motion_param.bin` | `MotionParam` v6, `net_id=2`, `ms=1234`, poids cible 1.0 en 0,25 s sur le type 0 | décodé, réencodé à l'octet près |
 | `weapon.bin` | `Weapon` v7, `net_id=2`, `"It_1H_Sword"` | décodé, réencodé à l'octet près |
 | `weapon_sheathed.bin` | `Weapon` v7, `net_id=2`, nom vide (arme rangée) | décodé, réencodé à l'octet près |

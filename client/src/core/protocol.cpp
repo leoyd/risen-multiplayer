@@ -158,6 +158,11 @@ void write(Writer& w, const Death& m) {
     w.u32(m.net_id);
 }
 
+void write(Writer& w, const HitRequest& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::HitRequest));
+    w.u32(m.net_id);
+}
+
 void write(Writer& w, const Weapon& m) {
     w.u8(static_cast<std::uint8_t>(MsgType::Weapon));
     w.u32(m.net_id);
@@ -338,6 +343,11 @@ DecodeError read(Reader& r, Death& m) {
     return r.finish();
 }
 
+DecodeError read(Reader& r, HitRequest& m) {
+    m.net_id = r.u32();
+    return r.finish();
+}
+
 DecodeError read(Reader& r, Weapon& m) {
     m.net_id = r.u32();
     r.str8(m.name, 0, kMaxWeaponName);
@@ -426,6 +436,7 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
         case MsgType::Despawn: return decode_as<Despawn, ReliableMessage>(r);
         case MsgType::AniName: return decode_as<AniName, ReliableMessage>(r);
         case MsgType::Death: return decode_as<Death, ReliableMessage>(r);
+        case MsgType::HitRequest: return decode_as<HitRequest, ReliableMessage>(r);
         case MsgType::MotionParam: return decode_as<MotionParam, ReliableMessage>(r);
         case MsgType::Weapon: return decode_as<Weapon, ReliableMessage>(r);
         case MsgType::Armor: return decode_as<Armor, ReliableMessage>(r);

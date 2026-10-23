@@ -229,3 +229,25 @@ TEST("config : guest_equipment invalide -> erreur nommant le champ") {
     CHECK(!long_name.ok);
     CHECK_EQ(long_name.error_field, std::string("guest_equipment"));
 }
+
+TEST("config : damage_hook absent -> 1 par défaut ; 0, 1, vide") {
+    CHECK(parse_config("role=host\n").config.damage_hook);
+    const auto zero = parse_config("role=host\ndamage_hook = 0\n");
+    CHECK(zero.ok);
+    CHECK(!zero.config.damage_hook);
+    const auto one = parse_config("role=guest\nhost_ip=1.2.3.4\ndamage_hook = 1\n");
+    CHECK(one.ok);
+    CHECK(one.config.damage_hook);
+    const auto empty = parse_config("role=host\ndamage_hook =\n");
+    CHECK(empty.ok);
+    CHECK(empty.config.damage_hook);
+    CHECK(empty.warnings.empty());
+}
+
+TEST("config : damage_hook invalide -> erreur nommant le champ") {
+    for (const char* v : {"2", "oui", "true", "-1"}) {
+        const auto r = parse_config(std::string("role=host\ndamage_hook=") + v + "\n");
+        CHECK(!r.ok);
+        CHECK_EQ(r.error_field, std::string("damage_hook"));
+    }
+}

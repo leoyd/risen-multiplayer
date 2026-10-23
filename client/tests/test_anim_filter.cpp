@@ -395,3 +395,23 @@ TEST("filtre : captures d'un PNJ et du héros partagent l'anneau, NetId conserv�
     CHECK(out[0].net_id == 1002u && out[0].type == 3);
     CHECK(out[1].net_id == 0u && out[1].type == 1);
 }
+
+TEST("registre : find_by_entity (story 3.5) — entrée de l'entité, rôle et NetId ; nul ou inconnu → faux") {
+    AnimFilter f;
+    TrackedEntity e;
+    e.entity = &g_entity_b;
+    e.animation_ps = kReplica;
+    e.role = EntityRole::NpcReplica;
+    e.net_id = 1000;
+    f.track(e);
+    track_avatar(f, kOther, &g_entity_a);
+    TrackedEntity out;
+    CHECK(f.find_by_entity(&g_entity_b, out));
+    CHECK(out.role == EntityRole::NpcReplica && out.net_id == 1000u && out.animation_ps == kReplica);
+    CHECK(f.find_by_entity(&g_entity_a, out));
+    CHECK(out.role == EntityRole::Avatar);
+    CHECK(!f.find_by_entity(kReplica, out));  // un PS n'est pas une entité
+    CHECK(!f.find_by_entity(nullptr, out));
+    f.untrack(&g_entity_b);
+    CHECK(!f.find_by_entity(&g_entity_b, out));
+}

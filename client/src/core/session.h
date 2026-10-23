@@ -67,6 +67,11 @@
 // dernier snapshot reçu de la réplique ; elle n'est ensuite plus déplacée, animée ni ses PV écrits,
 // et reste dans la table jusqu'à Ended. Une réplique vivante n'a jamais moins de 1 PV écrit.
 //
+// Coups de l'invité (story 3.5, protocole v12) : chez l'invité, un coup natif de son héros sur une
+// réplique vivante, bloqué par le détour des dégâts, arrive en LocalHit et part en HitRequest{NetId}.
+// Chez l'hôte, un HitRequest d'un NetId annoncé et vivant donne ApplyHit{NetId, GUID}, appliqué par
+// sync/hits (PSDamage::DoDamage avec l'arme de l'avatar) ; l'hôte n'écrit jamais les PV d'un PNJ.
+//
 // Robustesse (story 3.4a) : Start porte le Heartbeat encodé et ses délais, que le transport envoie
 // depuis son thread quand la frame ne le lit plus (pause du jeu). Chez l'invité, l'entrée de
 // snapshot d'un PNJ pas encore annoncé est gardée kEarlyNpcHoldMs puis appliquée à son Spawn.
@@ -209,7 +214,17 @@ struct LocalWeapon {
 struct LocalArmor {
     std::string name;
 };
-using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor>;
+// Story 3.5, invité : coup natif de son héros sur la réplique `net_id`, bloqué par le détour des
+// dégâts (sync/hits) ; devient HitRequest en session si la réplique est annoncée et vivante.
+struct LocalHit {
+    std::uint32_t net_id = 0;
+};
+// Story 3.5 : coups natifs bloqués par le détour des dégâts depuis la frame précédente (bilan).
+struct LocalHitsBlocked {
+    unsigned count = 0;
+};
+using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor,
+                           LocalHit, LocalHitsBlocked>;
 
 // Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
 // (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
@@ -310,6 +325,12 @@ struct CaptureNpc {
 struct UncaptureNpc {
     std::uint32_t net_id = 0;
 };
+// Story 3.5, hôte : appliquer un HitRequest de l'invité au PNJ de ce GUID (sync/hits::apply :
+// PSDamage::DoDamage(arme en main de l'avatar, PNJ, avatar)).
+struct ApplyHit {
+    std::uint32_t net_id = 0;
+    protocol::Guid guid{};
+};
 // Invité : rejouer un Motion ou un réglage de l'hôte sur la réplique, sous ReplayGuard.
 struct PlayNpcMotion {
     std::uint32_t net_id = 0;
@@ -323,7 +344,7 @@ struct PlayNpcParam {
 using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseReliable, Stop, Teleport, SpawnAvatar,
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
-                             ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath>;
+                             ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath, ApplyHit>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -420,6 +441,9 @@ private:
     void on_npc_despawn(std::uint32_t net_id, Output& out);
     // Story 3.4b : Death{NetId ≥ 1000} reçu (hôte : ignoré).
     void on_npc_death(std::uint32_t net_id, Output& out);
+    // Story 3.5. Invité : coup de son héros (HitRequest). Hôte : HitRequest reçu (ApplyHit).
+    void on_local_hit(const LocalHit& in, Output& out);
+    void on_hit_request(std::uint32_t net_id, Output& out);
     bool on_npc_entity(std::uint64_t now, std::uint32_t tick, const protocol::SnapshotEntity& e);
     struct Replica;
     void push_npc_entity(Replica& r, std::uint32_t tick, const protocol::SnapshotEntity& e);
@@ -582,6 +606,11 @@ private:
         protocol::SnapshotEntity entity;
     };
     std::map<std::uint32_t, EarlyNpc> early_npcs_;
+    // Story 3.5 : coups de l'invité. Invité : HitRequest envoyés ; hôte : ApplyHit émis ; les deux :
+    // coups ignorés (LocalHit ou HitRequest refusés) et coups natifs bloqués par le détour.
+    struct HitCounters {
+        unsigned sent = 0, applied = 0, ignored = 0, blocked = 0;
+    } hits_;
     // Animations des PNJ (story 3.4). Hôte : NetId animés, filtre des réglages par PNJ, réglages de
     // la frame en attente (ordre de leur dernière mise à jour).
     std::set<std::uint32_t> npc_animated_;

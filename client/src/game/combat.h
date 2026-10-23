@@ -12,8 +12,9 @@
 //   l'appelé (PSRoutine::SetState appelle ~bCString).
 //
 // Toutes les fonctions sont protégées par SEH et retournent false en cas d'échec. Thread
-// principal uniquement (hook OnProcess, AD-2), sauf `read_entity_ptr` (lecture mémoire seule)
-// et `defeat` (exception documentée : appelée depuis le détour de Kill, même thread).
+// principal uniquement (hook OnProcess, AD-2), sauf `read_entity_ptr` (lecture mémoire seule),
+// `defeat` (exception documentée : appelée depuis le détour de Kill, même thread) et
+// `damage_aggressor` (accesseurs appelés depuis le détour des dégâts, story 3.5).
 #pragma once
 
 #include "game/entity.h"
@@ -70,6 +71,16 @@ bool resolve_inventory(const char*& missing);
 // get_hit_points, set_hit_points, get_ai_mode et set_ai_mode marchent après l'une ou l'autre. False et `missing` au premier
 // échec.
 bool resolve_npc(const char*& missing);
+// Story 3.5 (Q8) : dégâts de la session, bloc facultatif en tout ou rien : gCDamage_PS::DoDamage
+// (1 argument, cible du détour) et GetAgressor (Game.dll), eCEntityProxy::GetEntity (Engine.dll),
+// PSDamage::DoDamage (Script.dll). Un échec laisse la session sans dégâts synchronisés (déroge à
+// AD-3 pour ce seul bloc). False et `missing` au premier échec.
+bool resolve_damage(const char*& missing);
+bool damage_resolved();
+void* damage_hook_address();  // gCDamage_PS::DoDamage(eCEntity*), après resolve_damage (sinon nul)
+// Agresseur d'un coup : eCEntityProxy::GetEntity(gCDamage_PS::GetAgressor(damage_ps)), sous SEH.
+// Appelé depuis le détour des dégâts (accesseurs sans effet de bord). `out` peut être nul.
+bool damage_aggressor(const void* damage_ps, void*& out);
 // Kill et Defeat (Script_Game.dll), facultatifs : module déjà chargé par le jeu, jamais par
 // nous. False et `missing` (module ou symbole) en cas d'échec.
 bool resolve_script_game(const char*& missing);
@@ -148,6 +159,8 @@ bool get_hit_points_max(const Entity& e, int& out);
 bool set_hit_points(const Entity& e, int value, int modifier);
 bool get_damage_amount(const Entity& weapon, long& out);     // gCDamage_PS de l'arme
 bool set_damage_amount(const Entity& weapon, long amount);
+// PSDamage::DoDamage(cible, agresseur), this = l'arme : après resolve_damage (session, story 3.5)
+// ou resolve_combat (sonde). Traverse le détour des dégâts (garde de réentrance de sync/hits).
 bool do_damage(const Entity& weapon, const Entity& target, const Entity& attacker, bool& out);
 
 // --- Q7 : mort et relève ---------------------------------------------------------------

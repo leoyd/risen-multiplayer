@@ -92,6 +92,8 @@ public:
     // Recherches (frame ou hook) : entrée dont le PS d'animation, ou l'enveloppe, vaut `ptr`.
     bool find_by_animation_ps(const void* ptr, TrackedEntity& out) const;
     bool find_by_wrapper(const void* ptr, TrackedEntity& out) const;
+    // Story 3.5 (détour des dégâts) : entrée dont l'entité vaut `entity`.
+    bool find_by_entity(const void* entity, TrackedEntity& out) const;
     // Retire au plus `cap` captures (les plus anciennes d'abord). `dropped` reçoit le nombre
     // de captures perdues (anneau plein) depuis le dernier appel.
     std::size_t drain(Capture* out, std::size_t cap, unsigned& dropped);

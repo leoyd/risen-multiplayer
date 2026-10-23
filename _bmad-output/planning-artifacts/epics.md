@@ -135,7 +135,7 @@ Exigences de la spine (AD-8 à AD-12) et des conclusions du spike J2 qui touchen
   | Q10 : PNJ créés en cours de partie | 3.3 |
   | Q11 : mort d’une réplique chez l’invité (butin, XP) | 3.4 |
   | Q12 : budget de `Motion`/`MotionParam` des PNJ | 3.4 |
-  | Q8 : point d’accroche des dégâts | 3.5 |
+  | Q8 : point d’accroche des dégâts — **tranchée** : `gCDamage_PS::DoDamage(eCEntity*)` (Game.dll) | 3.5 |
   | Q9 : chute, noyade, message d’XP | 3.7 |
   | Q13 : snapshots après `Respawn` | 3.7 |
 - **Report hérité de J1** : la locomotion de l’avatar reste à affiner (deferred-work, story 2.4b). Ce n’est pas un objectif de l’Epic 3.
@@ -555,7 +555,7 @@ So that nous puissions les tuer à deux (FR-10).
 
 **Acceptance Criteria:**
 
-**Given** le point d’accroche des dégâts (question ouverte 8, tranché par cette story et ajouté à la liste d’AD-12)
+**Given** le point d’accroche des dégâts (question ouverte 8, tranchée par cette story : `gCDamage_PS::DoDamage(eCEntity*)`, Game.dll, ajouté à la liste d’AD-12)
 **When** le héros de l’invité frappe une réplique
 **Then** le coup natif est bloqué chez l’invité, qui envoie `HitRequest{NetId cible}`
 **And** l’hôte applique `PSDamage::DoDamage(arme en main de l’avatar invité, cible, avatar invité)`.

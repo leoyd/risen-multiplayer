@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 11
+# Protocole Risen Multiplayer — version 12
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -9,8 +9,9 @@ La v1 couvrait **uniquement la session** (poignée de main, présence, fin de se
 snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) `MotionParam`, la v7 (story 3.2) `Weapon`, la v8 (story 3.2c) `Armor`, la v9 (story 3.3) les répliques de PNJ
 (`Spawn` de type 1 avec GUID, PV dans le snapshot), la v10 (story 3.4) leurs animations (`Motion` et
 `MotionParam` de PNJ, sans changement de format), la v11 (story 3.4b) la mort des répliques de PNJ
-(`Death` d'un PNJ à la place du `Despawn` de mort, sans changement de format). Les combats arrivent avec les stories
-suivantes et incrémenteront la version.
+(`Death` d'un PNJ à la place du `Despawn` de mort, sans changement de format), la v12 (story 3.5)
+`HitRequest` (coup du héros de l'invité sur une réplique de PNJ). Les dégâts subis par l'invité
+arrivent avec les stories suivantes et incrémenteront la version.
 
 ## 1. Règles générales
 
@@ -54,7 +55,8 @@ suivantes et incrémenteront la version.
 | 26 | `MotionParam` | fiable | les deux sens : réglage de locomotion (poids cible, vitesse de lecture) d'une entité animée (v6) ; PNJ répliqué, hôte → invité (v10) |
 | 27 | `Weapon` | fiable | les deux sens : arme en main d'une entité dont l'émetteur a l'autorité, vide si rangée (v7) |
 | 28 | `Armor` | fiable | les deux sens : armure portée par une entité dont l'émetteur a l'autorité, vide si aucune (v8) |
-| 22, 23, 25 | *réservés* | fiable | `HitRequest`, `HitOnGuest`, `Respawn` — **non définis en v11** |
+| 22 | `HitRequest` | fiable | invité → hôte : coup du héros de l'invité sur une réplique de PNJ, appliqué par l'hôte (v12) |
+| 23, 25 | *réservés* | fiable | `HitOnGuest`, `Respawn` — **non définis en v12** |
 
 Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -66,7 +68,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `11` en v11 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `12` en v12 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -204,6 +206,16 @@ Taille : 5 octets. Le récepteur met la réplique en ragdoll (`SetRagDollEnabled
 v11 (story 3.4b) : même format ; un `net_id` ≥ 1000 est la mort d'une réplique de PNJ, émise par
 l'hôte seul (§8, « Mort des répliques »).
 
+### `HitRequest` (22) — fiable — v12
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `net_id` | `u32` | réplique de PNJ frappée (≥ 1000, annoncée par l'hôte) |
+
+Taille : 5 octets. Invité → hôte seulement : le héros de l'invité a touché la réplique `net_id`.
+L'hôte, qui fait autorité, applique le coup lui-même (§8, « Coups de l'invité ») ; un invité qui
+en reçoit un l'ignore.
+
 ### `MotionParam` (26) — fiable — v6
 
 Un réglage de l'enveloppe EMotionFX (`eCWrapper_emfx3ActorInstance`) que Risen applique chaque
@@ -280,13 +292,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide), ou que les `nombre` entités d'un snapshot |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle, ≠ 1 pour un snapshot |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 11 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 12 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) ; l'encodeur refuse aussi un nom de `Weapon` ou d'`Armor` de plus de 255 octets |
 | `TrailingBytes` | octets restants après la fin du message |
 | `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; `Spawn` : `type` autre que 0 ou 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 11, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 12, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -318,13 +330,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=11`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=12`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0b00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0c00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -334,7 +346,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `0b 00` | `version_protocole` = 11 |
+| 0x02 | `0c 00` | `version_protocole` = 12 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -452,6 +464,20 @@ v10 (story 3.4) : même format, `net_id` d'un PNJ annoncé par l'hôte. `net_id=
 | 0x0a | `03 00` | `ani_id` = 3 |
 | 0x0c | `01` | `flags` = flag seul |
 | 0x0d | 28 × `00` | `d00` à `d18` = 0 |
+
+#### `hit_request.bin` — `HitRequest` (fiable, sans octet de canal), 5 octets
+
+v12 (story 3.5) : coup de l'invité sur la réplique `net_id=1000`.
+
+<!-- vector: hit_request.bin -->
+```text
+00000000: 16e8 0300 00                             .....
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `16` | `MsgType` HitRequest (22) |
+| 0x01 | `e8 03 00 00` | `net_id` = 1000 (PNJ) |
 
 #### `spawn.bin` — `Spawn` (fiable, sans octet de canal), 22 octets
 
@@ -691,11 +717,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 11.
+`Truncated` ; `peek_hello_version` → 12.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0b00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0c00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -705,7 +731,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0b00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0c00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -775,7 +801,7 @@ type ; un type inconnu n'est pas lisible).
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -1018,6 +1044,21 @@ d'appels.
     son propre PNJ natif.
   - **PV d'une réplique vivante** : une valeur affichée de 0 (humain à terre chez l'hôte) est
     écrite **1** ; seule la mort met 0 PV.
+- **Coups de l'invité** (v12, story 3.5) : l'hôte fait autorité sur les PV des PNJ ; un coup de
+  l'invité n'est qu'une demande.
+  - **Invité** : un coup natif de son héros sur une réplique de PNJ annoncée, vivante et sans mort
+    en attente est bloqué localement (la réplique ne perd aucun PV de son fait) et devient
+    `HitRequest{NetId}`, une fois par coup et par cible. Tout autre coup natif sur une réplique est
+    bloqué sans rien émettre. Hors `InSession`, rien n'est émis. Les PV de la réplique suivent
+    ensuite les snapshots de l'hôte, et sa mort le `Death` de l'hôte.
+  - **Hôte** : `HitRequest{NetId}` n'est accepté que d'un `NetId` ≥ 1000, annoncé et pas mort ;
+    sinon il est ignoré et journalisé (`NetId` inconnu, PNJ mort, `NetId` < 1000). Il est appliqué
+    par le jeu de l'hôte : `PSDamage::DoDamage(arme en main de l'avatar de l'invité, PNJ, avatar)`,
+    dégâts calculés par les scripts de l'hôte. Sans avatar, sans arme en main ou sans PNJ trouvé,
+    le coup est ignoré (journalisé) ; l'hôte n'écrit jamais directement les PV d'un PNJ. Tout coup
+    natif dont l'agresseur est l'avatar de l'invité est bloqué chez l'hôte : seuls les
+    `HitRequest` blessent. La mort éventuelle suit la règle « Mort des répliques ».
+  - Un invité qui reçoit `HitRequest` l'ignore. Pas de limite de cadence.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -1032,4 +1073,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v11).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v12).
