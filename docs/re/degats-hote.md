@@ -58,11 +58,12 @@ n'est pas appliquée (limite : sans effet au réglage par défaut).
 
 - Chez l'hôte, la main de l'avatar s'est vidée sans `Weapon` de l'invité (entre 22:49:34 et
   22:49:39, peu après la mort d'un PNJ) : 11 `HitRequest` ignorés (« avatar sans arme en main »).
-  Cause non identifiée (événement d'animation rejouée, ou le jeu qui range l'arme). L'avatar retient
+  Cause probable (test de 23:02) : le recul natif de l'avatar pendant un coup mesuré (règle 4b)
+  range son arme, la main se vide 60 ms après le coup. L'avatar retient
   l'arme du dernier `Weapon` et la reprend (`HoldRightStack`) deux fois par seconde et avant chaque
   `HitRequest`.
 - Recul : les coups natifs sur le héros invité étant bloqués, le jeu ne joue pas sa réaction.
-  L'invité appelle `PSCombatSystem::StartStumble(gECombatMove_Stumble = 0x19, Entity attaquant)` (Script.dll ;
-  la variante sans mouvement rend faux : elle interroge le mouvement en cours de l’attaquant, que
-  la réplique n’a pas) sur son héros à
-  chaque `HitOnGuest` non mortel, attaquant = réplique du PNJ source.
+  L'invité appelle `PSCombatSystem::StartStumble(gECombatMove_Stumble = 0x19, Entity attaquant)`
+  (Script.dll) sur son héros à chaque `HitOnGuest` non mortel, attaquant = réplique du PNJ source.
+  La variante sans mouvement rendait faux : elle interroge le mouvement de combat en cours de
+  l'attaquant (`gCCombatSystem_PS+0x90`), qu'une réplique (IA figée) n'a pas.
