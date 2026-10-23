@@ -127,7 +127,7 @@
   summary: Scénario Wine du repli « ABI du combat introuvable, sonde J1 toujours active » (`install_probe_j2`, `resolve_combat` seul en échec).
   evidence: Revue de la story 3.0 : aucun banc ne fait échouer `resolve_combat` sans `resolve_entities` ; il faudrait une Script.dll aux exports trafiqués.
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-1-avatar-solide.md`
-  summary: L'avatar invité, désormais ciblé par les PNJ de l'hôte, peut mourir chez l'hôte et reste figé debout (ragdoll bloqué) : invulnérabilité à faire en story 3.6.
+  summary: L'avatar invité, désormais ciblé par les PNJ de l'hôte, peut mourir chez l'hôte et reste figé debout (ragdoll bloqué) : invulnérabilité à faire en story 3.6. **Résolue par la règle 4b (story 3.6), à confirmer en jeu.**
   evidence: Revue de la story 3.1 ; déjà observé au spike J2 (copie tuée par un Vulture).
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-1-avatar-solide.md`
   summary: Couture de test pour les appels ABI de l'avatar (placement cinématique, release_body, make_solid) : aujourd'hui vérifiés seulement en jeu.
@@ -213,3 +213,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-5-degats-invite.md`
   summary: Pour un projectile ou un sort, l'agresseur lu au proxy `+0x30` du `gCDamage_PS` pourrait être le projectile et non le héros : chez l'invité, un tel coup sur une réplique serait bloqué « autre agresseur » sans `HitRequest` (dégâts à distance perdus en silence).
   evidence: Hypothèse non vérifiée (rétro-ingénierie de la mêlée seulement ; périmètre de l'epic = mêlée) ; à observer en jeu en tirant à l'arc sur une réplique : ligne « coup natif bloqué : … (autre agresseur, sans HitRequest) » (étape 8 facultative de la procédure 3.5 de `client/README.md`).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-6-degats-subis-invite.md`
+  summary: Chemin DLL des coups subis (`sync/hits` : lecture des dégâts bruts sous SEH, file des `HitOnGuest` ; `sync/guest_health::apply_hit` : lecture et écriture des PV du héros invité) sans test automatique ; seules les règles (3b, 4b, `raw_damage`, `guest_hp_after`) sont testées sous Linux, et les getters `GetDamage*` vérifiés par symbole au banc Wine.
+  evidence: Même couture `game::` que 3.3 à 3.5 (`sync/` hors `client_tests`, le banc Wine n'appelle pas `OnProcess`) ; couvert par les étapes du « Test en jeu à faire » de la spec 3.6. Résout l'entrée 3.1 « l'avatar invité peut mourir chez l'hôte » (invulnérabilité par la règle 4b), à confirmer en jeu.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-6-degats-subis-invite.md`
+  summary: Hypothèses non vérifiées en jeu : dégâts bruts lisibles sur le PS d'un monstre (H1), ordre de grandeur face aux dégâts natifs, sans force ni armure (H2), agresseur d'un monstre = entité du PNJ capturé (H3, sinon source 0), les répliques déclenchent-elles des coups natifs chez l'invité (H4), `SetHitPoints` met-il à jour la jauge du héros invité (H6).
+  evidence: Rétro-ingénierie statique seulement (getters `lea rax, [rcx+0x44|0x40|0x48]`) ; étapes 1 à 7 du « Test en jeu à faire » de la spec 3.6.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-6-degats-subis-invite.md`
+  summary: Protection (armure) du héros invité non appliquée aux `HitOnGuest` (J2) ; aucun recul ni effet d'impact chez l'invité ; un PNJ non apparié (hors registre de l'invité) ne blesse plus le héros invité, et un coup d'un agresseur que l'hôte ne voit pas est perdu.
+  evidence: Décisions D1, D2 et D6 de la spec 3.6 ; à revoir après mesure en jeu (H2) ou avec la persistance du profil invité (J4).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-6-degats-subis-invite.md`
+  summary: Garde de réentrance inchangée : un coup natif imbriqué sur l'avatar pendant l'application d'un `HitRequest` (riposte) passerait et blesserait l'avatar chez l'hôte.
+  evidence: D7/H5 de la spec 3.6 ; aucun cas connu. À revoir si une ligne « coup natif bloqué » manque alors que l'avatar perd des PV.

@@ -496,6 +496,28 @@ if start_host_npcs coups_inconnu $p 30000 3; then
     expect_count "coups NetId inconnu : aucune commande" "$h" "ApplyHit" 0
 fi
 
+# --- Story 3.6 : coups d'un monstre sur l'avatar (simulés par --hit-guest-ms) → HitOnGuest (v13) ------
+# Port base + 21 : base + 20 est déjà pris par le scénario « coups NetId inconnu ».
+p=$((base_port + 21))
+if start_host coups_subis $p 30000 1 --npcs 1 --hit-guest-ms 500; then
+    h=$work/coups_subis.host.log
+    g=$work/coups_subis.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 3s --quit > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "coups subis : invité" 0 $rc "$g"
+    expect_log "coups subis : HitOnGuest envoyé par l'hôte" "$h" "HitOnGuest envoyé, dégâts bruts 18"
+    expect_log "coups subis : HitOnGuest reçu par l'invité" "$g" "<- HitOnGuest source=1000 dégâts=18"
+    # Un HitOnGuest reçu par coup injecté (au plus un en vol au départ de l'invité).
+    sent=$(grep -c "HitOnGuest envoyé, dégâts bruts 18" "$h")
+    received=$(grep -c "<- HitOnGuest source=1000 dégâts=18" "$g")
+    if [[ $received -ge 4 && $received -le $sent && $((sent - received)) -le 1 ]]; then
+        ok "coups subis : $received HitOnGuest reçus pour $sent envoyés"
+    else
+        ko "coups subis : $received HitOnGuest reçus pour $sent envoyés (4 au moins, écart ≤ 1 attendu)"
+    fi
+    expect_log "coups subis : bilan de l'invité" "$g" "HitOnGuest reçus=[1-9]"
+fi
+
 # --- Story 3.4a : jeu de l'hôte en pause 7 s (cinématique, chargement) : pas de timeout ------
 # Le faux invité --strict-timeout ne compte que les messages de l'hôte : seuls les heartbeats de
 # secours du thread réseau de l'hôte maintiennent la session pendant la pause.

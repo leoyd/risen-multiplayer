@@ -43,6 +43,8 @@ type hostConfig struct {
 	// Story 3.4a : jeu de l'hôte figé. Après l'entrée en session (Welcome, Spawn), plus aucun
 	// message (ni heartbeat ni snapshot), mais le KCP continue d'acquitter les segments reçus.
 	AcksOnly bool
+	// Story 3.6 : > 0 : HitOnGuest{1000, 18} tous les N ticks de snapshot (50 ms), à partir du tick N.
+	HitOnGuestEvery int64
 }
 
 var (
@@ -81,7 +83,8 @@ type hostRecord struct {
 	motions      []protocol.Motion
 	params       []protocol.MotionParam
 	deaths       []uint32
-	hits         []uint32 // NetId des HitRequest reçus (v12)
+	hits         []uint32          // NetId des HitRequest reçus (v12)
+	hitsOnGuest  int               // HitOnGuest envoyés à l'invité (v13)
 	weapons      []protocol.Weapon // reçus de l'invité (v7)
 	armors       []protocol.Armor  // reçus de l'invité (v8)
 	snapshotAt   []time.Time       // heure de réception de chacun
@@ -471,6 +474,12 @@ func (h *simHost) tick() {
 	// Snapshot de l'hôte à 20 Hz (pose du Welcome, x croissant de 1 cm par tick).
 	if tick := int64(now.Sub(h.sessionStart) / (50 * time.Millisecond)); tick != h.lastSnapTick {
 		h.lastSnapTick = tick
+		if h.cfg.HitOnGuestEvery > 0 && tick > 0 && tick%h.cfg.HitOnGuestEvery == 0 {
+			h.sendReliable(protocol.HitOnGuest{Source: protocol.FirstNpcNetId, Damage: 18})
+			h.mu.Lock()
+			h.rec.hitsOnGuest++
+			h.mu.Unlock()
+		}
 		entities := []protocol.SnapshotEntity{{NetId: protocol.HostNetId, X: 1 + float32(tick), Y: 2, Z: 3, Yaw: 0.5}}
 		if h.cfg.SendNpcs {
 			alive1000 := !h.cfg.NpcDeath || tick < 20

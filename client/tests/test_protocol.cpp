@@ -140,7 +140,7 @@ const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motio
                                       "despawn.bin",   "aniname.bin",     "death.bin",
                                       "motion_param.bin", "weapon.bin", "weapon_sheathed.bin",
                                       "armor.bin",     "armor_removed.bin", "spawn_npc.bin", "motion_npc.bin",
-                                      "death_npc.bin", "hit_request.bin"};
+                                      "death_npc.bin", "hit_request.bin", "hit_on_guest.bin"};
 
 }  // namespace
 
@@ -411,14 +411,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v12 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v13 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 12);
+    CHECK_EQ(version, 13);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 12);
+    CHECK_EQ(version, 13);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -429,12 +429,12 @@ TEST("protocole : peek_hello_version sur v12 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 12") {
+TEST("protocole : l'encodeur refuse une version autre que 13") {
     Hello h = sample_hello();
-    h.protocol_version = 11;
+    h.protocol_version = 12;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 13;
+    h.protocol_version = 14;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -495,14 +495,15 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(Bytes{0, 16}).error == DecodeError::UnknownChannel);  // segment KCP, pas du contrôle
     CHECK(dc(load_vector("unknown_type.bin")).error == DecodeError::UnknownType);
     CHECK(dr(Bytes{99}).error == DecodeError::UnknownType);
-    // Types réservés (23, 25) et types hors de leur canal.
-    for (std::uint8_t t : {std::uint8_t{23}, std::uint8_t{25}}) {
+    // Type réservé (25) et types hors de leur canal.
+    for (std::uint8_t t : {std::uint8_t{25}}) {
         CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
     }
     CHECK(dc(Bytes{2, 19}).error == DecodeError::UnknownType);  // Motion en contrôle
     CHECK(dc(Bytes{2, 20}).error == DecodeError::UnknownType);  // Spawn en contrôle
     CHECK(dc(Bytes{2, 16}).error == DecodeError::UnknownType);  // Heartbeat en contrôle
     CHECK(dc(Bytes{2, 22}).error == DecodeError::UnknownType);  // HitRequest en contrôle
+    CHECK(dc(Bytes{2, 23}).error == DecodeError::UnknownType);  // HitOnGuest en contrôle
     CHECK(dr(Bytes{1, 1, 0}).error == DecodeError::UnknownType);  // Hello en fiable
     CHECK(dr(Bytes{0}).error == DecodeError::UnknownType);
 }
@@ -561,7 +562,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 12);
+    CHECK_EQ(kProtocolVersion, 13);
     CHECK_EQ(static_cast<int>(kSpawnTypeHero), 0);
     CHECK_EQ(static_cast<int>(kSpawnTypeNpc), 1);
     CHECK_EQ(kFirstNpcNetId, 1000u);
@@ -579,6 +580,7 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::Spawn), 20);
     CHECK_EQ(static_cast<int>(MsgType::Despawn), 21);
     CHECK_EQ(static_cast<int>(MsgType::HitRequest), 22);
+    CHECK_EQ(static_cast<int>(MsgType::HitOnGuest), 23);
     CHECK_EQ(static_cast<int>(MsgType::AniName), 18);
     CHECK_EQ(static_cast<int>(MsgType::Death), 24);
     CHECK_EQ(static_cast<int>(MsgType::MotionParam), 26);
@@ -730,6 +732,23 @@ TEST("protocole : vecteur hit_request.bin (v12) : HitRequest d'un PNJ") {
     CHECK(enc(HitRequest{kFirstNpcNetId}) == b);
     CHECK(dr(Bytes{0x16, 0xe8, 0x03, 0x00}).error == DecodeError::Truncated);
     CHECK(dr(Bytes{0x16, 0xe8, 0x03, 0x00, 0x00, 0x00}).error == DecodeError::TrailingBytes);
+}
+
+// v13 (story 3.6) : coup d'un monstre sur l'avatar de l'invité, source 1000, 18 dégâts bruts.
+TEST("protocole : vecteur hit_on_guest.bin (v13) : HitOnGuest") {
+    const Bytes b = load_vector("hit_on_guest.bin");
+    CHECK(b == (Bytes{0x17, 0xe8, 0x03, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00}));
+    const auto d = dr(b);
+    const HitOnGuest* got = std::get_if<HitOnGuest>(&d.message);
+    CHECK(d.ok() && got != nullptr && got->source_net_id == kFirstNpcNetId && got->damage == 18);
+    CHECK(enc(HitOnGuest{kFirstNpcNetId, 18}) == b);
+    CHECK(dr(Bytes{0x17, 0xe8, 0x03, 0x00, 0x00, 0x12, 0x00, 0x00}).error == DecodeError::Truncated);
+    CHECK(dr(Bytes{0x17, 0xe8, 0x03, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00}).error ==
+          DecodeError::TrailingBytes);
+    // Source inconnue (0) : valide.
+    const auto u = dr(enc(HitOnGuest{0, 7}));
+    const HitOnGuest* g0 = std::get_if<HitOnGuest>(&u.message);
+    CHECK(u.ok() && g0 != nullptr && g0->source_net_id == 0 && g0->damage == 7);
 }
 
 TEST("protocole : AniName — 255 octets acceptés, vide ou 256 refusés à l'encodage") {

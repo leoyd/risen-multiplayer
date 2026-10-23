@@ -3574,8 +3574,7 @@ TEST("coups 3.5 invité : LocalHit sur une réplique vivante → HitRequest fiab
     CHECK(hits.size() == 1 && hits[0].net_id == 1000u);
     CHECK(has_log_at(out, Level::Info, "[sync] coup sur PNJ 1000 : HitRequest envoyé"));
     const std::string line = guest_stats_line(g, 500);
-    const std::string tail = "coups : envoyés 1, appliqués 0, ignorés 0, bloqués 0";
-    CHECK_EQ(tail_of(line, tail.size()), tail);
+    CHECK(line.find("coups : envoyés 1, appliqués 0, ignorés 0, bloqués 0 ; ") != std::string::npos);
 }
 
 TEST("coups 3.5 invité : réplique morte ou en attente de mort → rien envoyé, Debug, compté ignoré") {
@@ -3624,8 +3623,7 @@ TEST("coups 3.5 hôte : HitRequest d'un PNJ annoncé et vivant → ApplyHit{NetI
     const auto apply = commands_of<ApplyHit>(out);
     CHECK(apply.size() == 1 && apply[0]->net_id == 1001u && apply[0]->guid == guid_of(2));
     const std::string line = host_stats_line(s, 1100);
-    const std::string tail = "coups : envoyés 0, appliqués 1, ignorés 0, bloqués 0";
-    CHECK_EQ(tail_of(line, tail.size()), tail);
+    CHECK(line.find("coups : envoyés 0, appliqués 1, ignorés 0, bloqués 0 ; ") != std::string::npos);
 }
 
 TEST("coups 3.5 hôte : HitRequest d'un NetId inconnu → pas de commande, Warn « NetId inconnu », compté") {
@@ -3669,4 +3667,69 @@ TEST("coups 3.5 hôte : LocalHit chez l'hôte → ignoré, rien envoyé") {
     const Output out = s.tick(1060, host_world({}, false), {LocalHit{1000}});
     CHECK(sent_of<proto::HitRequest>(out).empty());
     CHECK(commands_of<ApplyHit>(out).empty());
+}
+
+// --- Story 3.6 : coups subis par l'invité ---------------------------------------------------------
+
+TEST("coups subis 3.6 hôte : LocalHitOnGuest en session → HitOnGuest fiable, Info, compté envoyé") {
+    Session s = host_in_session();
+    const Output out = s.tick(1060, host_world({}, false), {LocalHitOnGuest{1000, 18}});
+    const auto sent = sent_of<proto::HitOnGuest>(out);
+    CHECK(sent.size() == 1 && sent[0].source_net_id == 1000u && sent[0].damage == 18u);
+    CHECK(has_log_at(out, Level::Info,
+                     "[sync] coup sur l'avatar invité (source PNJ 1000) : HitOnGuest envoyé, dégâts bruts 18"));
+    const std::string line = host_stats_line(s, 1100);
+    const std::string tail = "coups subis : HitOnGuest envoyés 1, reçus 0, ignorés 0";
+    CHECK_EQ(tail_of(line, tail.size()), tail);
+}
+
+TEST("coups subis 3.6 hôte : source inconnue (0) → HitOnGuest{0, D}, journalisé « inconnue »") {
+    Session s = host_in_session();
+    const Output out = s.tick(1060, host_world({}, false), {LocalHitOnGuest{0, 7}});
+    const auto sent = sent_of<proto::HitOnGuest>(out);
+    CHECK(sent.size() == 1 && sent[0].source_net_id == 0u && sent[0].damage == 7u);
+    CHECK(has_log_at(out, Level::Info,
+                     "[sync] coup sur l'avatar invité (source inconnue) : HitOnGuest envoyé, dégâts bruts 7"));
+}
+
+TEST("coups subis 3.6 hôte : LocalHitOnGuest hors session → rien envoyé, Debug, compté ignoré") {
+    Session s(host_settings());
+    s.tick(0, loaded_world(), {});
+    CHECK(s.state() != State::InSession);
+    const Output out = s.tick(10, loaded_world(), {LocalHitOnGuest{1000, 18}});
+    CHECK(sent_of<proto::HitOnGuest>(out).empty());
+    CHECK(commands_of<SendReliable>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "[sync] coup sur l'avatar invité (source PNJ 1000) : ignoré (hors session)"));
+}
+
+TEST("coups subis 3.6 invité : LocalHitOnGuest chez l'invité → rien envoyé, Debug, compté ignoré") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), {LocalHitOnGuest{1000, 18}});
+    CHECK(sent_of<proto::HitOnGuest>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "[sync] coup sur l'avatar invité (source PNJ 1000) : ignoré (pas hôte)"));
+    const std::string line = guest_stats_line(g, 500);
+    const std::string tail = "coups subis : HitOnGuest envoyés 0, reçus 0, ignorés 1";
+    CHECK_EQ(tail_of(line, tail.size()), tail);
+}
+
+TEST("coups subis 3.6 invité : HitOnGuest reçu en session → ApplyHitOnGuest{1000, 18}, compté reçu") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::HitOnGuest{1000, 18})));
+    const auto apply = commands_of<ApplyHitOnGuest>(out);
+    CHECK(apply.size() == 1 && apply[0]->source == 1000u && apply[0]->damage == 18u);
+    CHECK(g.state() == State::InSession);
+    const std::string line = guest_stats_line(g, 500);
+    const std::string tail = "coups subis : HitOnGuest envoyés 0, reçus 1, ignorés 0";
+    CHECK_EQ(tail_of(line, tail.size()), tail);
+}
+
+TEST("coups subis 3.6 hôte : HitOnGuest reçu → aucune commande, Warn, compté ignoré") {
+    Session s = host_in_session();
+    const Output out = s.tick(1060, host_world({}, false), reliable(encode_r(proto::HitOnGuest{1000, 18})));
+    CHECK(commands_of<ApplyHitOnGuest>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "[sync] HitOnGuest ignoré : l'hôte ne subit pas de coups"));
+    CHECK(s.state() == State::InSession);
+    const std::string line = host_stats_line(s, 1100);
+    const std::string tail = "coups subis : HitOnGuest envoyés 0, reçus 0, ignorés 1";
+    CHECK_EQ(tail_of(line, tail.size()), tail);
 }

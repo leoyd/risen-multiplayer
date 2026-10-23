@@ -3,7 +3,7 @@
 // monde, vider poll(), tick, exécuter les commandes, écrire les logs.
 //
 // Usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N]
-//                     [--pause-at MS --pause-ms MS]
+//                     [--pause-at MS --pause-ms MS] [--hit-guest-ms N]
 // Sort après la E-ième fin de session (défaut 1), une fois le maintien terminé (Ended →
 // Inactive), ou après T ms (défaut 30000). Log sur stdout ; la dernière ligne est
 // « état final : <état> ». Code de sortie : 0, ou 1 sur erreur d'usage.
@@ -29,6 +29,9 @@
 // même ligne de log que la DLL compte les heartbeats envoyés par le thread réseau.
 // Coups de l'invité (story 3.5) : chaque ApplyHit est journalisé « [test] ApplyHit NetId N » et
 // retire 10 PV simulés au PNJ visé (octet 0 du GUID), visibles dans les snapshots suivants.
+// Coups subis par l'invité (story 3.6) : --hit-guest-ms N injecte en session, toutes les N ms, un
+// LocalHitOnGuest{1000 si --npcs ≥ 1, sinon 0, 18 dégâts bruts}, comme le détour des dégâts de la
+// DLL quand un monstre frappe l'avatar.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -95,7 +98,9 @@ int main(int argc, char** argv) {
     long npc_count = 0;
     long pause_at = -1;
     long pause_ms = 0;
+    long hit_guest_ms = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
+        if (std::strcmp(argv[i], "--hit-guest-ms") == 0) hit_guest_ms = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--pause-at") == 0) pause_at = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--pause-ms") == 0) pause_ms = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--npcs") == 0) npc_count = std::strtol(argv[i + 1], nullptr, 10);
@@ -106,10 +111,10 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--ends") == 0) max_ends = std::strtol(argv[i + 1], nullptr, 10);
     }
     if (port <= 0 || port > 65535 || max_ms <= 0 || max_ends <= 0 || npc_count < 0 || npc_count > 255 ||
-        pause_ms < 0 || (pause_ms > 0 && pause_at < 0) || argc % 2 == 0) {
+        pause_ms < 0 || (pause_ms > 0 && pause_at < 0) || hit_guest_ms < 0 || argc % 2 == 0) {
         std::fprintf(stderr,
                      "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N] "
-                     "[--pause-at MS --pause-ms MS]\n");
+                     "[--pause-at MS --pause-ms MS] [--hit-guest-ms N]\n");
         return 1;
     }
     std::signal(SIGUSR1, on_sigusr1);
@@ -201,6 +206,7 @@ int main(int argc, char** argv) {
     bool armor_worn = !armor.empty();
     bool armor_pushed = false;
     bool paused = false;  // story 3.4a : la pause n'a lieu qu'une fois
+    std::uint64_t next_guest_hit = 0;  // story 3.6 : prochain LocalHitOnGuest (ms)
     std::uint64_t keepalives_seen = 0, keepalive_capped_seen = 0;
     while (now_ms() < static_cast<std::uint64_t>(max_ms)) {
         if (!paused && pause_ms > 0 && in_session &&
@@ -286,6 +292,12 @@ int main(int argc, char** argv) {
         if (session.state() == State::InSession && !in_session) {
             session_start = now;
             npc_damage.clear();  // story 3.5 : nouvelle session, PNJ intacts
+            next_guest_hit = now + static_cast<std::uint64_t>(hit_guest_ms);
+        }
+        // Story 3.6 : coup d'un monstre sur l'avatar invité, bloqué par le détour (simulé).
+        if (hit_guest_ms > 0 && session.state() == State::InSession && in_session && now >= next_guest_hit) {
+            next_guest_hit = now + static_cast<std::uint64_t>(hit_guest_ms);
+            inputs.push_back(LocalHitOnGuest{npc_count >= 1 ? mp::protocol::kFirstNpcNetId : 0u, 18u});
         }
         in_session = session.state() == State::InSession;
         world.npcs.clear();

@@ -7,6 +7,7 @@
 #include "net/transport.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/guest_health.h"
 #include "sync/hits.h"
 #include "sync/local_capture.h"
 #include "sync/npc.h"
@@ -256,6 +257,10 @@ void execute(cs::Output out) {
                 hits::apply(ah->net_id, ah->guid);
                 continue;
             }
+            if (const auto* ag = std::get_if<cs::ApplyHitOnGuest>(&cmd)) {  // story 3.6 : chez l'invité
+                guest_health::apply_hit(ag->source, ag->damage);
+                continue;
+            }
             if (g_transport == nullptr) continue;
             bool posted = true;
             if (auto* s = std::get_if<cs::Send>(&cmd)) {
@@ -400,7 +405,7 @@ void frame() {
         log_keepalives();
     }
     local_captures(world);
-    hits::drain(g_inputs);  // story 3.5 : coups du héros sur des répliques, coups natifs bloqués
+    hits::drain(g_inputs);  // stories 3.5 et 3.6 : coups du héros, coups sur l'avatar, coups natifs bloqués
     // Story 3.3 : répliques (et, story 3.4, PNJ animés de l'hôte) revérifiées une fois par frame,
     // avant leurs commandes ; appels de routine bloqués (IA figée), pour le bilan debug.
     if (npc::count() != 0) npc::validate();

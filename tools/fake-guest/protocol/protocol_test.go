@@ -61,6 +61,8 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"death_npc.bin", true, Death{NetId: FirstNpcNetId}},
 		// v12 (story 3.5) : coup de l'invité sur une réplique.
 		{"hit_request.bin", true, HitRequest{NetId: FirstNpcNetId}},
+		// v13 (story 3.6) : coup d'un monstre sur l'avatar de l'invité.
+		{"hit_on_guest.bin", true, HitOnGuest{Source: FirstNpcNetId, Damage: 18}},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
@@ -132,7 +134,7 @@ func TestAllVectorsCovered(t *testing.T) {
 		"aniname_empty.bin": true, "motion_param.bin": true, "motion_param_bad.bin": true,
 		"weapon.bin": true, "weapon_sheathed.bin": true, "armor.bin": true, "armor_removed.bin": true,
 		"spawn_npc.bin": true, "spawn_bad_type.bin": true, "snapshot_multi.bin": true, "motion_npc.bin": true,
-		"death_npc.bin": true, "hit_request.bin": true}
+		"death_npc.bin": true, "hit_request.bin": true, "hit_on_guest.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -156,7 +158,9 @@ func TestDecodeErrors(t *testing.T) {
 		{"heartbeat en contrôle", []byte{2, 16}, false, ErrUnknownType},
 		{"hello en fiable", []byte{1, 1, 0}, true, ErrUnknownType},
 		{"réservé", []byte{25}, true, ErrUnknownType},
-		{"réservé 23", []byte{23}, true, ErrUnknownType},
+		{"hitonguest tronqué", []byte{23, 0xe8, 3, 0, 0, 0x12, 0, 0}, true, ErrTruncated},
+		{"hitonguest trop long", []byte{23, 0xe8, 3, 0, 0, 0x12, 0, 0, 0, 0}, true, ErrTrailingBytes},
+		{"hitonguest en contrôle", []byte{2, 23}, false, ErrUnknownType},
 		{"hitrequest tronqué", []byte{22, 0xe8, 3, 0}, true, ErrTruncated},
 		{"hitrequest trop long", []byte{22, 0xe8, 3, 0, 0, 0}, true, ErrTrailingBytes},
 		{"hitrequest en contrôle", []byte{2, 22}, false, ErrUnknownType},
@@ -333,7 +337,7 @@ func TestMotionAndAniNameErrors(t *testing.T) {
 	if _, err := EncodeReliable(AniName{Name: strings.Repeat("a", 256)}); err == nil {
 		t.Fatal("AniName de 256 octets encodé")
 	}
-	for _, typ := range []byte{23, 25} {
+	for _, typ := range []byte{25} {
 		if _, err := DecodeReliable([]byte{typ}); !errors.Is(err, ErrUnknownType) {
 			t.Fatalf("type réservé %d : %v", typ, err)
 		}

@@ -91,6 +91,8 @@ baissent ; de 1,5 à 2,5 s après l'entrée en session, les impairs sortent du r
 le PNJ 0 meurt à 2 s), lus seulement quand `Session::wants_npcs` le demande, comme dans la DLL.
 Chaque `ApplyHit` (story 3.5) est journalisé `[test] ApplyHit NetId N` et retire 10 PV simulés
 au PNJ visé.
+`--hit-guest-ms N` (story 3.6) injecte en session, toutes les N ms, un coup simulé sur l'avatar
+(`LocalHitOnGuest{1000 si --npcs ≥ 1, sinon 0, 18}`), comme le détour des dégâts de la DLL.
 `--pause-at MS --pause-ms MS` (story 3.4a) fige une fois sa boucle (ni `poll` ni tick), `MS` ms
 après l'entrée en session, comme une cinématique ou un chargement ; à la reprise, il journalise la
 même ligne que la DLL (`[sync] jeu en pause : N heartbeat(s) envoyé(s) par le thread réseau`).
@@ -121,7 +123,9 @@ timeout des deux côtés, au moins 4 heartbeats de secours journalisés à la re
 `--npcs 3` face au faux invité `--hit-interval 500ms` : `ApplyHit` pour 1000 chez l'hôte
 (`[test] ApplyHit NetId 1000`, 10 PV simulés en moins, vus par le faux invité dans les
 snapshots), puis `--hit-target 1500` : `HitRequest PNJ 1500 ignoré : NetId inconnu`, aucune
-commande. Le test CTest
+commande ; (story 3.6) `--npcs 1 --hit-guest-ms 500` face au faux invité : `HitOnGuest envoyé,
+dégâts bruts 18` chez l'hôte, un `<- HitOnGuest source=1000 dégâts=18` par coup chez le faux
+invité. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
 90 s. Lancement à la main :
 
@@ -672,6 +676,49 @@ Prérequis : recompiler, copier `client/build/Script_Multiplayer.dll` dans `bin/
 9. Si l'agresseur n'est jamais reconnu (aucune ligne `bloqué` alors que l'invité frappe),
    rapporter les lignes debug `dégâts : agresseur … cible …` : l'hypothèse « proxy `+0x30` =
    personnage » est alors fausse (repli : `DoMeleeDamage`, Script_Game).
+
+### Dégâts subis par l'invité (story 3.6, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité ; banc Wine : symboles des getters sur la
+vraie Game.dll) seulement. Protocole **v13** (`HitOnGuest`, type 23). Même détour que la 3.5
+(`damage_hook = 1`), aucun nouveau hook.
+- **Hôte** : l'avatar de l'invité est **invulnérable**. Tout coup natif sur lui est bloqué :
+  - d'un monstre : `[sync] coup natif bloqué : PNJ N -> avatar invité (HitOnGuest, dégâts bruts D)`,
+    puis `[sync] coup sur l'avatar invité (source PNJ N) : HitOnGuest envoyé, dégâts bruts D`. Un
+    agresseur hors registre (PNJ non animé, projectile) donne `source inconnue` (NetId 0) ;
+  - du héros de l'hôte : `… -> avatar invité (pas de tir ami)`, rien d'émis ;
+  - d'un agresseur nul : `… (agresseur nul, sans HitOnGuest)`, rien d'émis.
+
+  Dégâts bruts = `(GetDamageAmount + GetDamageBonus) × GetDamageMultiplier` du PS du coup, arrondis,
+  sans armure (J2). Illisibles (SEH) : Warn une fois par session `dégâts bruts illisibles (SEH) :
+  coup sur l'avatar bloqué sans HitOnGuest`. Les PV de l'avatar ne sont ni lus ni écrits.
+- **Invité** : tout coup natif sur son héros est bloqué, quel que soit l'agresseur
+  (`coup natif bloqué : PNJ N -> héros (seuls les HitOnGuest blessent)`). Un `HitOnGuest` reçu est
+  appliqué par `sync/guest_health`, seul écrivain des PV du héros (`SetHitPoints` fixé) :
+  `[sync] HitOnGuest (source PNJ N) appliqué : dégâts bruts D, PV a -> b`. **Jusqu'à la story 3.7**,
+  un coup mortel laisse le héros à 1 PV : `[sync] HitOnGuest mortel (source …) : héros maintenu à
+  1 PV (à terre : story 3.7)` (Warn). Pas de recul ni d'effet d'impact chez l'invité.
+- Bilan `[sync] snapshots (5 s)` : en fin de ligne, `coups subis : HitOnGuest envoyés …, reçus …,
+  ignorés …` (hôte : envoyés ; invité : reçus ; un `HitOnGuest` reçu par l'hôte est ignoré, Warn).
+
+Prérequis : comme la 3.5 (`log_level = debug`, `damage_hook = 1`, overlay Steam désactivé, faux
+invité reconstruit). Si `dégâts inactifs` nomme un des trois getters `GetDamage*`, rapporter la ligne.
+
+1. **Une machine, hôte + faux invité** (`fake-guest --host 127.0.0.1 --duration 180s --echo`), avatar
+   près d'un camp hostile. Attendu chez l'hôte : `coup natif bloqué : PNJ N -> avatar invité
+   (HitOnGuest, dégâts bruts D)` puis `HitOnGuest envoyé` ; l'avatar ne meurt jamais et ne tombe
+   pas. Chez le faux invité : `<- HitOnGuest source=N dégâts=D`, une ligne par coup. Noter D. Une
+   source `inconnue` : rapporter la ligne debug `dégâts : agresseur …`.
+2. **Comparaison** : se faire frapper par le même type de monstre avec le héros de l'hôte et noter
+   la perte de PV native ; la comparer à D (hypothèse H2 de la spec).
+3. **Tir ami** : frapper l'avatar avec le héros de l'hôte : `(pas de tir ami)`, aucun `HitOnGuest`.
+4. **Monstre sur le héros de l'hôte** : dégâts natifs normaux, aucune ligne `bloqué`.
+5. **Deux machines** : une réplique attaque le héros invité. Chez l'invité : éventuellement
+   `coup natif bloqué : PNJ N -> héros (seuls les HitOnGuest blessent)` (son absence tranche H4),
+   et à chaque coup `HitOnGuest (source PNJ N) appliqué : …, PV a -> b`, jauge qui baisse (H6).
+   Bilans : `HitOnGuest envoyés X` côté hôte, `reçus X` côté invité.
+6. **Deux machines, coup mortel** : laisser frapper l'invité jusqu'au bout : `HitOnGuest mortel (…) :
+   héros maintenu à 1 PV`, héros debout à 1 PV, ni menu de chargement ni fin de session.
 
 ### Fin de session en jeu (story 1.5, une machine)
 

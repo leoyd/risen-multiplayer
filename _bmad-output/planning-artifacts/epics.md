@@ -598,6 +598,8 @@ So that le combat soit risqué pour moi aussi (FR-11).
 **Then** le faux invité reçoit un `HitOnGuest` par coup, au log des deux côtés
 **And** le côté invité (application et blocage des coups natifs) est validé à deux machines.
 
+*Note (implémentation 3.6, protocole v13) :* `HitOnGuest` = type 23, `{source u32, dégâts u32}`. Dégâts bruts = `(Amount + Bonus) × Multiplier` du `gCDamage_PS` du coup, sans armure en J2. Source 0 = agresseur inconnu. Pas de tir ami du héros de l’hôte sur l’avatar. Chez l’invité, tout coup natif sur son héros est bloqué, et `sync/guest_health` est le seul écrivain de ses PV. En attendant la story 3.7, un coup mortel le maintient à 1 PV.
+
 ### Story 3.7 : À terre et réapparition de l’invité
 
 As a invité,

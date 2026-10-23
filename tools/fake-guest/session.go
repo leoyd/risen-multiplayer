@@ -127,8 +127,10 @@ type sessionResult struct {
 	// Mort des répliques (v11, story 3.4b).
 	NpcDeathsRx int // Death de PNJ annoncés et vivants
 	// Coups de l'invité (v12, story 3.5).
-	HitsTx    int // HitRequest envoyés
-	EndReason string
+	HitsTx int // HitRequest envoyés
+	// Coups subis par l'invité (v13, story 3.6) : journalisés, jamais appliqués.
+	HitsOnGuestRx int // HitOnGuest reçus
+	EndReason     string
 }
 
 // npcStats : bilan d'un PNJ annoncé par l'hôte (v9) : annonces, poses reçues, PV.
@@ -780,6 +782,9 @@ func (g *guest) drain() (sessionResult, bool) {
 			if g.cfg.Echo && m.NetId == protocol.HostNetId {
 				g.sendReliable(protocol.Armor{NetId: protocol.GuestNetId, Name: m.Name})
 			}
+		case protocol.HitOnGuest:
+			g.res.HitsOnGuestRx++
+			g.log.printf("<- HitOnGuest source=%d dégâts=%d", m.Source, m.Damage)
 		case protocol.SessionEnd:
 			g.log.printf("<- SessionEnd raison=%d (%s)", m.Reason, protocol.EndReasonName(m.Reason))
 			g.kcp.Flush() // acquitte le SessionEnd avant de fermer
@@ -1007,8 +1012,8 @@ func (g *guest) npcSummary() {
 
 func (g *guest) end(code int, reason string) sessionResult {
 	g.npcSummary()
-	if g.cfg.HitInterval > 0 {
-		g.log.printf("Bilan coups : HitRequest envoyés=%d", g.res.HitsTx)
+	if g.cfg.HitInterval > 0 || g.res.HitsOnGuestRx > 0 {
+		g.log.printf("Bilan coups : HitRequest envoyés=%d HitOnGuest reçus=%d", g.res.HitsTx, g.res.HitsOnGuestRx)
 	}
 	g.res.Code = code
 	g.res.EndReason = reason

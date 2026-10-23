@@ -38,11 +38,17 @@ std::atomic<std::uint32_t> g_frame_thread{0};
 // Diagnostic, remis à zéro à chaque entrée en session.
 std::atomic<bool> g_first_pass_logged{false};
 std::atomic<bool> g_aggressor_warned{false};
+std::atomic<bool> g_raw_warned{false};  // story 3.6 : dégâts bruts illisibles
 std::atomic<unsigned> g_blocked{0};
 
 // File des NetId frappés par le héros de l'invité, et répliques mortes : verrou court.
 std::mutex g_mutex;
 std::vector<std::uint32_t> g_queue;
+struct GuestHit {
+    std::uint32_t source = 0;
+    std::uint32_t damage = 0;
+};
+std::vector<GuestHit> g_guest_hits;  // story 3.6 : HitOnGuest à émettre (hôte), 64 au plus
 std::vector<std::uint32_t> g_dead;
 bool g_was_in_session = false;  // frame seulement
 
@@ -100,6 +106,11 @@ void queue_hit(std::uint32_t net_id) {
     if (g_queue.size() < kMaxQueued) g_queue.push_back(net_id);
 }
 
+void queue_guest_hit(std::uint32_t source, std::uint32_t damage) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_guest_hits.size() < kMaxQueued) g_guest_hits.push_back({source, damage});
+}
+
 bool decide(void* damage_ps, void* target) {
     const auto role = static_cast<HitRole>(g_role.load());
     const bool in_session = g_in_session.load();
@@ -110,11 +121,15 @@ bool decide(void* damage_ps, void* target) {
                   ", thread OnProcess " + std::to_string(g_frame_thread.load()) + ")");
     }
     void* aggressor = nullptr;
-    if (!game::damage_aggressor(damage_ps, aggressor)) {
+    // Agresseur illisible : on décide quand même avec un agresseur nul ; seules les règles qui ne
+    // dépendent que de la cible (3b, 4b « agresseur nul ») bloquent, le reste est laissé (3.5).
+    const bool aggressor_unreadable = !game::damage_aggressor(damage_ps, aggressor);
+    if (aggressor_unreadable) {
+        aggressor = nullptr;
         if (!g_aggressor_warned.exchange(true)) {
-            log::warn("[sync] dégâts : agresseur illisible (SEH) : coup laissé (une fois par session)");
+            log::warn("[sync] dégâts : agresseur illisible (SEH) : coup laissé, sauf sur le héros invité ou "
+                      "l'avatar invité (une fois par session)");
         }
-        return false;
     }
     void* hero = g_hero.load();
     AnimFilter& filter = anim_filter();
@@ -137,14 +152,40 @@ bool decide(void* damage_ps, void* target) {
     in.replica_dead = role == HitRole::Guest && target_found && tt.role == EntityRole::NpcReplica &&
                       aggressor != nullptr && aggressor == hero && is_dead(tt.net_id);
     const hit_rules::Decision d = hit_rules::decide(in);
+    if (aggressor_unreadable && d.reason != hit_rules::Reason::GuestHeroByReplica &&
+        d.reason != hit_rules::Reason::GuestHeroOther && d.reason != hit_rules::Reason::AvatarNoAggressor) {
+        return false;  // en cas de doute, on laisse passer (3.5)
+    }
     const bool block = d.block;
     if (d.queue_net_id != 0) queue_hit(d.queue_net_id);
-    const char* reason = "";  // coup bloqué : fin de la ligne Info
+    // Story 3.6, règle 4b : dégâts bruts du coup sur l'avatar, lus seulement s'il faut émettre.
+    bool raw_ok = false;
+    std::uint32_t raw = 0;
+    if (d.hit_on_guest) {
+        long amount = 0, bonus = 0;
+        float multiplier = 0.0f;
+        raw_ok = game::damage_raw(damage_ps, amount, bonus, multiplier);
+        if (raw_ok) {
+            raw = hit_rules::raw_damage(amount, bonus, multiplier);
+            queue_guest_hit(d.source_net_id, raw);
+        } else if (!g_raw_warned.exchange(true)) {
+            log::warn("[sync] dégâts : dégâts bruts illisibles (SEH) : coup sur l'avatar bloqué sans HitOnGuest");
+        }
+    }
+    std::string reason;  // coup bloqué : fin de la ligne Info
     switch (d.reason) {
         case hit_rules::Reason::HitRequest: reason = "(HitRequest)"; break;
         case hit_rules::Reason::DeadReplica: reason = "(réplique morte, sans HitRequest)"; break;
         case hit_rules::Reason::OtherAggressor: reason = "(autre agresseur, sans HitRequest)"; break;
         case hit_rules::Reason::GuestAvatar: reason = "(seuls les HitRequest blessent)"; break;
+        case hit_rules::Reason::GuestHeroByReplica:
+        case hit_rules::Reason::GuestHeroOther: reason = "(seuls les HitOnGuest blessent)"; break;
+        case hit_rules::Reason::AvatarHit:
+            reason = raw_ok ? "(HitOnGuest, dégâts bruts " + std::to_string(raw) + ")"
+                            : std::string("(dégâts bruts illisibles, sans HitOnGuest)");
+            break;
+        case hit_rules::Reason::AvatarFriendly: reason = "(pas de tir ami)"; break;
+        case hit_rules::Reason::AvatarNoAggressor: reason = "(agresseur nul, sans HitOnGuest)"; break;
         case hit_rules::Reason::Pass: break;
     }
     if (block) {
@@ -178,26 +219,34 @@ void publish(void* hero, Role role, bool in_session, std::uint32_t frame_thread)
     if (in_session && !g_was_in_session) {
         g_first_pass_logged.store(false);
         g_aggressor_warned.store(false);
+        g_raw_warned.store(false);
         g_blocked.store(0);
         std::lock_guard<std::mutex> lock(g_mutex);
         g_queue.clear();
+        g_guest_hits.clear();
         g_dead.clear();
     } else if (!in_session && g_was_in_session) {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_queue.clear();
+        g_guest_hits.clear();
         g_dead.clear();
     }
     g_was_in_session = in_session;
     g_in_session.store(in_session);
 }
 
+void* hero() { return g_hero.load(); }
+
 void drain(std::vector<cs::Input>& out) {
     std::vector<std::uint32_t> ids;
+    std::vector<GuestHit> guest_hits;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         ids.swap(g_queue);
+        guest_hits.swap(g_guest_hits);
     }
     for (std::uint32_t id : ids) out.push_back(cs::LocalHit{id});
+    for (const GuestHit& h : guest_hits) out.push_back(cs::LocalHitOnGuest{h.source, h.damage});
     const unsigned blocked = g_blocked.exchange(0);
     if (blocked != 0) out.push_back(cs::LocalHitsBlocked{blocked});
 }

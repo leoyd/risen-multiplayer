@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 12;
+inline constexpr std::uint16_t kProtocolVersion = 13;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -37,8 +37,7 @@ enum class Channel : std::uint8_t {
     Control = 2,   // hors KCP : Hello, Welcome, Reject
 };
 
-// 23 et 25 sont réservés (HitOnGuest, Respawn) et ne sont pas encore définis : ils se
-// décodent en `UnknownType`.
+// 25 est réservé (Respawn) et n'est pas encore défini : il se décode en `UnknownType`.
 enum class MsgType : std::uint8_t {
     Hello = 1,
     Welcome = 2,
@@ -50,6 +49,7 @@ enum class MsgType : std::uint8_t {
     Spawn = 20,    // v3 (story 2.2)
     Despawn = 21,  // v3 (story 2.2)
     HitRequest = 22,  // v12 (story 3.5)
+    HitOnGuest = 23,  // v13 (story 3.6)
     Death = 24,    // v5 (story 2.4)
     MotionParam = 26,  // v6 (story 2.4b)
     Weapon = 27,       // v7 (story 3.2)
@@ -187,6 +187,13 @@ struct HitRequest {
     std::uint32_t net_id = 0;  // NetId de la cible (≥ kFirstNpcNetId)
 };
 
+// Coup d'un monstre sur l'avatar de l'invité chez l'hôte (v13, story 3.6) : hôte → invité, fiable.
+// L'invité retire `damage` aux PV de son héros (sync/guest_health, seul écrivain).
+struct HitOnGuest {
+    std::uint32_t source_net_id = 0;  // NetId du PNJ agresseur, 0 = source inconnue
+    std::uint32_t damage = 0;         // dégâts bruts, avant toute protection
+};
+
 // Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,
 // valeur, durée) ou SetPlaySpeed(type, valeur). Daté comme Motion, rejoué au même instant.
 enum class MotionParamKind : std::uint8_t {
@@ -227,7 +234,7 @@ struct Armor {
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
 using ReliableMessage =
     std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon, Armor,
-                 HitRequest>;
+                 HitRequest, HitOnGuest>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,

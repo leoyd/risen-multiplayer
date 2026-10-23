@@ -73,6 +73,7 @@ if(WIN32)
         src/sync/probe_j2.cpp
         src/sync/npc.cpp
         src/sync/hits.cpp
+        src/sync/guest_health.cpp
         src/sync/hit_rules.cpp
         src/sync/session.cpp
         src/win/watchdog.cpp

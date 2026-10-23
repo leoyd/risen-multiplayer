@@ -705,3 +705,24 @@ func TestNoHitRequestByDefault(t *testing.T) {
 		t.Errorf("HitRequest envoyés %d, reçus %d, attendu 0", r.res.HitsTx, len(host.record().hits))
 	}
 }
+
+// Story 3.6 : HitOnGuest (v13) de l'hôte, journalisé une fois par message reçu et compté au bilan,
+// jamais appliqué.
+func TestHitOnGuest(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.HitOnGuestEvery = 4 // toutes les 200 ms
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1200 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	sent := host.record().hitsOnGuest
+	if r.res.HitsOnGuestRx < 3 {
+		t.Errorf("HitOnGuest reçus %d, attendu au moins 3 (envoyés %d)", r.res.HitsOnGuestRx, sent)
+	}
+	if r.res.HitsOnGuestRx > sent || sent-r.res.HitsOnGuestRx > 1 {
+		t.Errorf("HitOnGuest reçus %d, envoyés %d (au plus un en vol à la fin)", r.res.HitsOnGuestRx, sent)
+	}
+	expectLog(t, r, "<- HitOnGuest source=1000 dégâts=18", "HitOnGuest reçus=")
+}

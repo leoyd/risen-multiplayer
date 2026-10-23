@@ -23,7 +23,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v12, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v13, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte (--strict-timeout : sans message).
 
@@ -41,6 +41,8 @@ Armure : --armor <nom> part en Armor juste après le Weapon (« - » : sans armu
 d'Armor) ; directive de scénario « armor [instant s] <nom|-> ».
 Coups (v12) : --hit-interval <durée> envoie un HitRequest à cette cadence, sur --hit-target <NetId>
 (0 : premier PNJ présent et vivant ; NetId non vérifié, pour tester le refus de l'hôte).
+Coups subis (v13) : chaque HitOnGuest de l'hôte est journalisé « <- HitOnGuest source=N dégâts=D »
+et compté au bilan (HitOnGuest reçus=), jamais appliqué.
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :

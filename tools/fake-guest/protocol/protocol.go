@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 12
+	ProtocolVersion   = 13
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -35,7 +35,7 @@ const (
 	ChannelControl  Channel = 2 // Hello, Welcome, Reject
 )
 
-// MsgType : 23 et 25 sont réservés et se décodent en ErrUnknownType.
+// MsgType : 25 est réservé et se décode en ErrUnknownType.
 type MsgType uint8
 
 const (
@@ -47,6 +47,7 @@ const (
 	TypeSpawn       MsgType = 20 // v3
 	TypeDespawn     MsgType = 21 // v3
 	TypeHitRequest  MsgType = 22 // v12 (story 3.5)
+	TypeHitOnGuest  MsgType = 23 // v13 (story 3.6)
 	TypeAniName     MsgType = 18 // v5
 	TypeMotion      MsgType = 19 // v2
 	TypeDeath       MsgType = 24 // v5
@@ -182,6 +183,13 @@ type Death struct{ NetId uint32 }
 // HitRequest (v12, story 3.5) : coup du héros de l'invité sur la réplique NetId (≥ 1000), invité → hôte.
 type HitRequest struct{ NetId uint32 }
 
+// HitOnGuest (v13, story 3.6) : coup d'un monstre sur l'avatar de l'invité chez l'hôte, hôte →
+// invité. Source = NetId du PNJ agresseur (0 = inconnue), Damage = dégâts bruts.
+type HitOnGuest struct {
+	Source uint32
+	Damage uint32
+}
+
 // MotionParam : réglage de locomotion (v6). Nature 0 = SetTargetWeight(type, valeur, durée),
 // 1 = SetPlaySpeed(type, valeur).
 type MotionParam struct {
@@ -267,6 +275,7 @@ func (AniName) Type() MsgType     { return TypeAniName }
 func (Motion) Type() MsgType      { return TypeMotion }
 func (Death) Type() MsgType       { return TypeDeath }
 func (HitRequest) Type() MsgType  { return TypeHitRequest }
+func (HitOnGuest) Type() MsgType  { return TypeHitOnGuest }
 func (MotionParam) Type() MsgType { return TypeMotionParam }
 func (Weapon) Type() MsgType      { return TypeWeapon }
 func (Armor) Type() MsgType       { return TypeArmor }
@@ -348,6 +357,9 @@ func (w *writer) message(m Message) {
 		w.u32(m.NetId)
 	case HitRequest:
 		w.u32(m.NetId)
+	case HitOnGuest:
+		w.u32(m.Source)
+		w.u32(m.Damage)
 	case MotionParam:
 		w.u32(m.NetId)
 		w.u32(m.Ms)
@@ -385,7 +397,8 @@ func EncodeControl(m Message) ([]byte, error) {
 }
 
 // EncodeReliable rend le message [MsgType][charge] d'un message fiable (Heartbeat, SessionEnd,
-// Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon, Armor, HitRequest), sans octet de canal.
+// Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon, Armor, HitRequest, HitOnGuest), sans
+// octet de canal.
 func EncodeReliable(m Message) ([]byte, error) {
 	switch m := m.(type) {
 	case AniName:
@@ -412,7 +425,7 @@ func EncodeReliable(m Message) ([]byte, error) {
 		if !validSpawn(m) {
 			return nil, ErrOutOfBounds
 		}
-	case Heartbeat, SessionEnd, Despawn, Death, HitRequest:
+	case Heartbeat, SessionEnd, Despawn, Death, HitRequest, HitOnGuest:
 	default:
 		return nil, ErrOutOfBounds
 	}
@@ -629,6 +642,13 @@ func DecodeReliable(b []byte) (Message, error) {
 		return m, nil
 	case TypeHitRequest:
 		m := HitRequest{NetId: r.u32()}
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case TypeHitOnGuest:
+		m := HitOnGuest{Source: r.u32()}
+		m.Damage = r.u32()
 		if err := r.finish(); err != nil {
 			return nil, err
 		}

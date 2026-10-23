@@ -121,6 +121,11 @@ constexpr const char* kGetAgressor = "?GetAgressor@gCDamage_PS@@QEBAAEBVeCEntity
 constexpr const char* kProxyGetEntity = "?GetEntity@eCEntityProxy@@QEAAPEAVeCEntity@@XZ";  // Engine.dll
 using GetAgressorFn = const void* (*)(const void* damage_ps);
 using ProxyGetEntityFn = void* (*)(const void* proxy);
+// Story 3.6 : dégâts bruts du PS (Game.dll), accesseurs triviaux rendant une référence (`lea rax,
+// [rcx+off]`, vérifié au désassemblage) : Amount +0x44, Bonus +0x40, Multiplier +0x48 (float).
+constexpr const char* kGetDamageBonus = "?GetDamageBonus@gCDamage_PS@@QEBAAEBJXZ";
+constexpr const char* kGetDamageMultiplier = "?GetDamageMultiplier@gCDamage_PS@@QEBAAEBMXZ";
+using GetDamageMultiplierFn = const float* (*)(const void* damage_ps);
 
 struct CombatAbi {
     IntGetterFn get_right_hold_stack = nullptr;
@@ -228,6 +233,9 @@ struct DamageAbi {
     GetAgressorFn get_agressor = nullptr;
     ProxyGetEntityFn proxy_get_entity = nullptr;
     DoDamageFn do_damage = nullptr;       // PSDamage::DoDamage(Entity&, Entity&)
+    GetDamageAmountFn get_amount = nullptr;  // story 3.6 : dégâts bruts
+    GetDamageAmountFn get_bonus = nullptr;
+    GetDamageMultiplierFn get_multiplier = nullptr;
 };
 DamageAbi g_dmg;
 bool g_dmg_resolved = false;
@@ -372,7 +380,10 @@ bool resolve_damage(const char*& missing) {
     const bool ok = lookup(game, kDamagePsDoDamage, a.damage_ps_do_damage, missing) &&
                     lookup(game, kGetAgressor, a.get_agressor, missing) &&
                     lookup(engine, kProxyGetEntity, a.proxy_get_entity, missing) &&
-                    lookup(script, kDoDamage, a.do_damage, missing);
+                    lookup(script, kDoDamage, a.do_damage, missing) &&
+                    lookup(game, kGetDamageAmount, a.get_amount, missing) &&
+                    lookup(game, kGetDamageBonus, a.get_bonus, missing) &&
+                    lookup(game, kGetDamageMultiplier, a.get_multiplier, missing);
     if (!ok) return false;
     g_dmg = a;
     g_dmg_resolved = true;
@@ -392,6 +403,28 @@ bool damage_aggressor(const void* damage_ps, void*& out) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = nullptr;
+        return false;
+    }
+}
+
+bool damage_raw(const void* damage_ps, long& amount, long& bonus, float& multiplier) {
+    amount = 0;
+    bonus = 0;
+    multiplier = 0.0f;
+    if (!g_dmg_resolved || damage_ps == nullptr) return false;
+    __try {
+        const long* a = g_dmg.get_amount(damage_ps);
+        const long* b = g_dmg.get_bonus(damage_ps);
+        const float* m = g_dmg.get_multiplier(damage_ps);
+        if (a == nullptr || b == nullptr || m == nullptr) return false;
+        amount = *a;
+        bonus = *b;
+        multiplier = *m;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        amount = 0;
+        bonus = 0;
+        multiplier = 0.0f;
         return false;
     }
 }
