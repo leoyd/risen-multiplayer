@@ -76,7 +76,8 @@ bool resolve_npc(const char*& missing);
 // Story 3.5 (Q8) : dégâts de la session, bloc facultatif en tout ou rien : gCDamage_PS::DoDamage
 // (1 argument, cible du détour) et GetAgressor (Game.dll), eCEntityProxy::GetEntity (Engine.dll),
 // PSDamage::DoDamage (Script.dll) ; story 3.6 : gCDamage_PS::GetDamageAmount, GetDamageBonus et
-// GetDamageMultiplier (Game.dll). Un échec laisse la session sans dégâts synchronisés (déroge à
+// GetDamageMultiplier (Game.dll) ; PSNpc::GetCurrentTarget et SetCurrentTarget (Script.dll). Un
+// échec laisse la session sans dégâts synchronisés (déroge à
 // AD-3 pour ce seul bloc). False et `missing` au premier échec.
 bool resolve_damage(const char*& missing);
 bool damage_resolved();
@@ -88,6 +89,11 @@ bool damage_aggressor(const void* damage_ps, void*& out);
 // GetDamageMultiplier), sous SEH. Appelé depuis le détour des dégâts (accesseurs sans effet de bord).
 // Le calcul est fait par sync/hit_rules::raw_damage. False (sorties à 0) en cas d'échec.
 bool damage_raw(const void* damage_ps, long& amount, long& bonus, float& multiplier);
+// PSNpc::GetCurrentTarget / SetCurrentTarget (après resolve_damage), sous SEH, frame seulement.
+// Le script CanDoMeleeDamage n'accepte le coup d'un agresseur autre que le joueur que si sa cible
+// actuelle est l'entité frappée : l'hôte la fixe sur l'avatar invité le temps d'un HitRequest.
+bool npc_current_target(const Entity& e, Entity& out);
+bool set_npc_current_target(const Entity& e, const Entity& target);
 // Kill, Defeat et DownOrDeadBy* (Script_Game.dll), facultatifs : module déjà chargé par le jeu,
 // jamais par nous (sonde J2, et depuis la story 3.7 les détours DownOrDeadBy* de session). False et
 // `missing` (module ou symbole) en cas d'échec.

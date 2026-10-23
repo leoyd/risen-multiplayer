@@ -26,6 +26,7 @@ using MatrixByValueFn = void (*)(const Entity* self, Matrix* by_value);
 using MatrixByRefFn = void (*)(const Entity* self, const Matrix* pose);
 using SetHitPointsFn = void (*)(const Entity* self, int value, int modifier);
 using DoDamageFn = bool (*)(const Entity* weapon, const Entity* target, const Entity* attacker);
+using SetEntityFn = void (*)(const Entity* self, const Entity* value);
 using AssignAIModeFn = void* (*)(const Entity* self, const int* mode);
 using SetStateFn = void (*)(const Entity* self, void* bcstring_by_value);
 using GetNameFn = void* (*)(const Entity* self, void* bcstring_sret);
@@ -76,6 +77,10 @@ constexpr const char* kGetHitPoints = "?GetHitPoints@PSSkills@@QEBAHXZ";
 constexpr const char* kGetHitPointsMax = "?GetHitPointsMax@PSSkills@@QEBAHXZ";
 constexpr const char* kSetHitPoints = "?SetHitPoints@PSSkills@@QEAAXHW4gESkillModifier@@@Z";
 constexpr const char* kDoDamage = "?DoDamage@PSDamage@@QEAA_NAEAVEntity@@0@Z";
+// Cible de combat d'un PNJ : le script CanDoMeleeDamage refuse le coup d'un PNJ dont la cible n'est
+// pas l'entité frappée (docs/re/degats-hote.md).
+constexpr const char* kGetNpcCurrentTarget = "?GetCurrentTarget@PSNpc@@QEBA?AVEntity@@XZ";
+constexpr const char* kSetNpcCurrentTarget = "?SetCurrentTarget@PSNpc@@QEAAXAEBVEntity@@@Z";
 constexpr const char* kGetAIMode = "??BPropertyAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
 constexpr const char* kGetLastAIMode = "??BPropertyLastAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
 constexpr const char* kSetAIMode = "??4PropertyAIMode@PSRoutine@@QEAAAEAV01@AEBW4gEAIMode@@@Z";
@@ -237,6 +242,8 @@ struct DamageAbi {
     GetDamageAmountFn get_amount = nullptr;  // story 3.6 : dégâts bruts
     GetDamageAmountFn get_bonus = nullptr;
     GetDamageMultiplierFn get_multiplier = nullptr;
+    GetEntityRetFn get_npc_current_target = nullptr;  // PSNpc::GetCurrentTarget (sret)
+    SetEntityFn set_npc_current_target = nullptr;      // PSNpc::SetCurrentTarget(const Entity&)
 };
 DamageAbi g_dmg;
 bool g_dmg_resolved = false;
@@ -385,7 +392,9 @@ bool resolve_damage(const char*& missing) {
                     lookup(script, kDoDamage, a.do_damage, missing) &&
                     lookup(game, kGetDamageAmount, a.get_amount, missing) &&
                     lookup(game, kGetDamageBonus, a.get_bonus, missing) &&
-                    lookup(game, kGetDamageMultiplier, a.get_multiplier, missing);
+                    lookup(game, kGetDamageMultiplier, a.get_multiplier, missing) &&
+                    lookup(script, kGetNpcCurrentTarget, a.get_npc_current_target, missing) &&
+                    lookup(script, kSetNpcCurrentTarget, a.set_npc_current_target, missing);
     if (!ok) return false;
     g_dmg = a;
     g_dmg_resolved = true;
@@ -405,6 +414,28 @@ bool damage_aggressor(const void* damage_ps, void*& out) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = nullptr;
+        return false;
+    }
+}
+
+bool npc_current_target(const Entity& e, Entity& out) {
+    out.ptr = nullptr;
+    if (!g_dmg_resolved || e.ptr == nullptr) return false;
+    __try {
+        g_dmg.get_npc_current_target(&e, &out);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out.ptr = nullptr;
+        return false;
+    }
+}
+
+bool set_npc_current_target(const Entity& e, const Entity& target) {
+    if (!g_dmg_resolved || e.ptr == nullptr) return false;
+    __try {
+        g_dmg.set_npc_current_target(&e, &target);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
 }

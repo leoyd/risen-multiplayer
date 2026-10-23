@@ -288,12 +288,20 @@ void apply(std::uint32_t net_id, const protocol::Guid& guid) {
     }
     int before = 0, after = 0;
     const bool before_ok = game::get_hit_points(target, before);
+    // Le script CanDoMeleeDamage refuse le coup d'un PNJ (l'avatar) dont la cible actuelle n'est pas
+    // l'entité frappée : l'avatar, à l'IA figée, n'en a pas. Cible fixée le temps du coup, puis rendue.
+    game::Entity previous;
+    const bool previous_ok = game::npc_current_target(attacker, previous);
+    if (!game::set_npc_current_target(attacker, target)) {
+        log::warn(what + " : PSNpc::SetCurrentTarget a levé une exception (SEH) : le coup sera sans doute refusé");
+    }
     bool result = false;
     bool called = false;
     {
         ApplyGuard guard;  // le chemin du mod traverse le détour : il doit passer
         called = game::do_damage(weapon, target, attacker, result);
     }
+    if (previous_ok) game::set_npc_current_target(attacker, previous);
     const bool after_ok = game::get_hit_points(target, after);
     if (!called) {
         log::error(what + " : PSDamage::DoDamage a levé une exception (SEH) : aucun dégât");
