@@ -62,5 +62,7 @@ n'est pas appliquée (limite : sans effet au réglage par défaut).
   l'arme du dernier `Weapon` et la reprend (`HoldRightStack`) deux fois par seconde et avant chaque
   `HitRequest`.
 - Recul : les coups natifs sur le héros invité étant bloqués, le jeu ne joue pas sa réaction.
-  L'invité appelle `PSCombatSystem::StartStumble(Entity attaquant)` (Script.dll) sur son héros à
+  L'invité appelle `PSCombatSystem::StartStumble(gECombatMove_Stumble = 0x19, Entity attaquant)` (Script.dll ;
+  la variante sans mouvement rend faux : elle interroge le mouvement en cours de l’attaquant, que
+  la réplique n’a pas) sur son héros à
   chaque `HitOnGuest` non mortel, attaquant = réplique du PNJ source.

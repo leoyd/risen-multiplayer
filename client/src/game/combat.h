@@ -92,8 +92,8 @@ bool npc_current_target(const Entity& e, Entity& out);
 bool set_npc_current_target(const Entity& e, const Entity& target);
 // PSParty::GetPartyName (après resolve_damage), sous SEH, thread principal. Vide si sans groupe.
 bool party_name(const Entity& e, std::string& out);
-// PSCombatSystem::StartStumble(attaquant) sur `e` (après resolve_damage) : réaction native au coup,
-// orientée selon l'attaquant. `out` = retour du jeu. False sur SEH. Thread principal.
+// PSCombatSystem::StartStumble(gECombatMove_Stumble, attaquant) sur `e` (après resolve_damage) :
+// réaction native au coup, orientée selon l'attaquant. `out` = retour du jeu. False sur SEH. Thread principal.
 bool start_stumble(const Entity& e, const Entity& attacker, bool& out);
 // Kill, Defeat et DownOrDeadBy* (Script_Game.dll), facultatifs : module déjà chargé par le jeu,
 // jamais par nous (sonde J2, et depuis la story 3.7 les détours DownOrDeadBy* de session). False et

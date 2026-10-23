@@ -85,11 +85,15 @@ constexpr const char* kSetNpcCurrentTarget = "?SetCurrentTarget@PSNpc@@QEAAXAEBV
 // « Player » (script IsInPlayerParty), dont l'avatar, créé depuis le template du héros.
 constexpr const char* kGetPartyName = "?GetPartyName@PSParty@@QEBA?AVbCString@@XZ";
 // Réaction native à un coup (recul orienté selon l'attaquant), sur le héros invité à chaque
-// HitOnGuest. `Entity` par valeur : copie construite par le mod (Entity(const Entity&)), détruite
-// par l'appelé (AD-3).
-constexpr const char* kStartStumble = "?StartStumble@PSCombatSystem@@QEBA_NVEntity@@@Z";
+// HitOnGuest. La variante sans mouvement demande le recul au mouvement de combat en cours de
+// l'attaquant, qu'une réplique (IA figée) n'a pas : elle rend faux. Celle-ci joue le mouvement
+// donné (gECombatMove_Stumble = 0x19, enregistrement de l'enum dans Game.dll), orienté depuis
+// l'attaquant. `Entity` par valeur : copie construite par le mod (Entity(const Entity&)), laissée à
+// l'appelé (AD-3).
+constexpr const char* kStartStumble = "?StartStumble@PSCombatSystem@@QEBA_NW4gECombatMove@@VEntity@@@Z";
 constexpr const char* kEntityCopyCtor = "??0Entity@@QEAA@AEBV0@@Z";
-using StartStumbleFn = bool (*)(const Entity* self, Entity* attacker_by_value);
+constexpr int kCombatMoveStumble = 0x19;
+using StartStumbleFn = bool (*)(const Entity* self, int move, Entity* attacker_by_value);
 using EntityCopyCtorFn = Entity* (*)(Entity* self, const Entity* other);
 constexpr const char* kGetAIMode = "??BPropertyAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
 constexpr const char* kGetLastAIMode = "??BPropertyLastAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
@@ -248,7 +252,7 @@ struct DamageAbi {
     SetEntityFn set_npc_current_target = nullptr;      // PSNpc::SetCurrentTarget(const Entity&)
     GetNameFn get_party_name = nullptr;                // PSParty::GetPartyName (bCString, sret)
     BCStringDtorFn bcstring_dtor = nullptr;
-    StartStumbleFn start_stumble = nullptr;            // PSCombatSystem::StartStumble(Entity)
+    StartStumbleFn start_stumble = nullptr;            // PSCombatSystem::StartStumble(gECombatMove, Entity)
     EntityCopyCtorFn entity_copy_ctor = nullptr;
 };
 DamageAbi g_dmg;
@@ -712,7 +716,7 @@ bool start_stumble(const Entity& e, const Entity& attacker, bool& out) {
     __try {
         Entity copy;  // détruite par StartStumble (passage par valeur)
         g_dmg.entity_copy_ctor(&copy, &attacker);
-        out = g_dmg.start_stumble(&e, &copy);
+        out = g_dmg.start_stumble(&e, kCombatMoveStumble, &copy);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = false;
