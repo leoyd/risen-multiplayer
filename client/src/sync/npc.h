@@ -72,6 +72,13 @@ void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target);
 // Story 3.8, hôte : débuts d'attaque des PNJ capturés depuis la frame précédente → LocalNpcAttack.
 // `hero` = héros de l'hôte (cible 1). Sans effet si le bloc des attaques natives n'est pas résolu.
 void detect_attacks(void* hero, std::vector<core::session::Input>& out);
+// Story 3.8b, invité : début d'attaque de son héros `hero` depuis la frame précédente (même règle,
+// hit_rules::attack_started) → LocalNpcAttack{2, mouvement, cible}, cible traduite par
+// hit_rules::guest_attack_target_net_id (avatar de l'hôte 1, réplique son NetId, sinon 0). Sans effet
+// si le bloc des attaques natives n'est pas résolu. État oublié par release_all.
+void detect_hero_attack(void* hero, std::vector<core::session::Input>& out);
+// Story 3.8b, hôte : entité du PNJ capturé `net_id` (nul s'il ne l'est pas). Le temps de la frame.
+void* captured_entity(std::uint32_t net_id);
 // Story 3.4, hôte : inscrit (capture) ou retire (uncapture) le PNJ animé `net_id`.
 void capture(std::uint32_t net_id, const protocol::Guid& guid);
 void uncapture(std::uint32_t net_id);

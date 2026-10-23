@@ -1,5 +1,7 @@
 #include "sync/hit_rules.h"
 
+#include "core/protocol.h"
+
 namespace mp::sync::hit_rules {
 
 bool considered(bool guard, bool in_session, HitRole role) {
@@ -126,6 +128,14 @@ std::uint32_t attack_target_net_id(const void* target, const void* hero, const v
     if (target == hero) return 1;    // protocol::kHostNetId
     if (target == avatar) return 2;  // protocol::kGuestNetId
     if (found && entry.role == EntityRole::NpcCapture) return entry.net_id;
+    return 0;
+}
+
+std::uint32_t guest_attack_target_net_id(const void* target, const void* avatar, bool found,
+                                         const TrackedEntity& entry) {
+    if (target == nullptr) return 0;
+    if (target == avatar || (found && entry.role == EntityRole::Avatar)) return protocol::kHostNetId;
+    if (found && entry.role == EntityRole::NpcReplica && entry.net_id >= protocol::kFirstNpcNetId) return entry.net_id;
     return 0;
 }
 

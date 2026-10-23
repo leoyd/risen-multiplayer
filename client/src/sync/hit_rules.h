@@ -115,6 +115,11 @@ bool attack_started(AttackState& state, int current, int last_attack);
 // de l'invité → 2 ; PNJ capturé du registre → son NetId ; sinon 0.
 std::uint32_t attack_target_net_id(const void* target, const void* hero, const void* avatar, bool found,
                                    const TrackedEntity& entry);
+// Story 3.8b (D2), invité : NetId de la cible d'une attaque de son héros. Nulle → 0 ; avatar de l'hôte
+// (`avatar`, ou rôle Avatar au registre) → 1 ; réplique de PNJ du registre → son NetId (≥ 1000) ;
+// sinon 0 (son héros compris).
+std::uint32_t guest_attack_target_net_id(const void* target, const void* avatar, bool found,
+                                         const TrackedEntity& entry);
 // Story 3.8 (D4, différé), invité : un HitOnGuest non mortel met en attente un recul générique
 // (StartStumble) ; il est annulé si un coup cosmétique touche le héros dans les kCosmeticWindowMs
 // avant ou après le HitOnGuest, sinon joué kCosmeticWindowMs après lui. Un HitOnGuest plus récent

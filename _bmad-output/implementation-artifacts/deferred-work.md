@@ -251,3 +251,10 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-8-attaques-natives-repliques.md`
   summary: Mettre à jour epic-3-context.md et AD-11 (exception d'écriture des PV du héros invité par sync/hits pour les coups cosmétiques).
   evidence: le contexte compilé et la spine ne mentionnent pas encore la 3.8 ; à faire à la clôture de l'epic 3.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-8b-attaques-natives-avatar.md`
+  summary: Sortir en règle pure testée la traduction de cible de ApplyAvatarAttack chez l'hôte (≥ 1000 → PNJ capturé, sinon cibles effacées).
+  evidence: écrite dans execute() (sync/session.cpp), code DLL non couvert ; le pendant invité est testé.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-8b-attaques-natives-avatar.md`
+  summary: Observer en jeu les effets de bord d'un StartMove de l'avatar chez l'hôte (aggro, crime sur PNJ neutres, réaction du héros de l'hôte) (medium, non vérifié).
+  evidence: aucun effet étudié au désassemblage ; à surveiller au test près d'un camp ou d'une ville.

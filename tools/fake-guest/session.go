@@ -72,6 +72,11 @@ type sessionConfig struct {
 	// teste le refus de l'hôte.
 	HitInterval time.Duration
 	HitTarget   uint32
+	// Story 3.8b : ≠ 0 : chaque HitRequest est précédé d'un NpcAttack{AttackNetId, AttackMove, cible du
+	// coup} (début d'attaque du héros invité ; AttackNetId 2 par défaut, un autre NetId teste le refus
+	// de l'hôte).
+	AttackMove  uint32
+	AttackNetId uint32
 	// Story 3.7 : Death{2} (« à terre ») DieEvery après l'entrée en session, puis DieEvery après
 	// chaque Respawn reçu (0 = jamais).
 	DieEvery time.Duration
@@ -139,6 +144,7 @@ type sessionResult struct {
 	RespawnAcks  int // accusés Respawn envoyés
 	// Attaques natives des répliques (v15, story 3.8) : journalisées, jamais appliquées.
 	NpcAttacksRx int // NpcAttack reçus
+	NpcAttacksTx int // NpcAttack envoyés (v15, story 3.8b : --attack-move)
 	EndReason    string
 }
 
@@ -554,6 +560,9 @@ func (g *guest) sendReliable(m protocol.Message) {
 	case protocol.HitRequest:
 		g.res.HitsTx++
 		g.log.printf("-> HitRequest PNJ netid=%d", m.NetId)
+	case protocol.NpcAttack:
+		g.res.NpcAttacksTx++
+		g.log.printf("-> NpcAttack netid=%d move=%d cible=%d", m.NetId, m.Move, m.Target)
 	case protocol.Weapon:
 		g.res.WeaponsTx++
 		g.log.printf("-> Weapon netid=%d nom=%q", m.NetId, m.Name)
@@ -1031,6 +1040,9 @@ func (g *guest) sendHit() {
 			return
 		}
 	}
+	if g.cfg.AttackMove != 0 { // story 3.8b : début d'attaque du héros, avant le coup
+		g.sendReliable(protocol.NpcAttack{NetId: g.cfg.AttackNetId, Move: g.cfg.AttackMove, Target: target})
+	}
 	g.sendReliable(protocol.HitRequest{NetId: target})
 }
 
@@ -1066,8 +1078,8 @@ func (g *guest) npcSummary() {
 func (g *guest) end(code int, reason string) sessionResult {
 	g.npcSummary()
 	if g.cfg.HitInterval > 0 || g.res.HitsOnGuestRx > 0 || g.res.NpcAttacksRx > 0 {
-		g.log.printf("Bilan coups : HitRequest envoyés=%d HitOnGuest reçus=%d NpcAttack reçus=%d", g.res.HitsTx,
-			g.res.HitsOnGuestRx, g.res.NpcAttacksRx)
+		g.log.printf("Bilan coups : HitRequest envoyés=%d HitOnGuest reçus=%d NpcAttack reçus=%d envoyés=%d", g.res.HitsTx,
+			g.res.HitsOnGuestRx, g.res.NpcAttacksRx, g.res.NpcAttacksTx)
 	}
 	if g.cfg.DieEvery > 0 || g.res.RespawnsRx > 0 {
 		g.log.printf("Bilan à terre : Death envoyés=%d Respawn reçus=%d accusés=%d", g.res.DownDeathsTx,

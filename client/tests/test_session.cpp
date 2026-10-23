@@ -4179,9 +4179,167 @@ TEST("attaques 3.8 invité : native_attacks = 0 → NpcAttack ignoré, compté ;
              std::string("attaques natives : NpcAttack envoyés 0, appliqués 8, ignorés 1"));
 }
 
-TEST("attaques 3.8 invité : LocalNpcAttack chez l'invité → rien envoyé") {
+TEST("attaques 3.8 invité : LocalNpcAttack d'un PNJ chez l'invité → rien envoyé") {
     Session g = guest_with_npcs();
     const Output out = g.tick(400, loaded_world(), {LocalNpcAttack{1000, 11, 2}});
     CHECK(sent_of<proto::NpcAttack>(out).empty());
     CHECK(has_log(out, "ignorée (pas hôte)"));
+}
+
+// --- Story 3.8b : attaques natives de l'avatar invité chez l'hôte --------------------------------
+
+TEST("attaques 3.8b invité : LocalNpcAttack{2} de son héros → NpcAttack{2, 11, 1004} fiable une fois, Debug, compté") {
+    Session g = guest_with_npcs();  // reste en session jusqu'au bilan
+    const Output out = g.tick(400, loaded_world(), {LocalNpcAttack{proto::kGuestNetId, 11, 1004}});
+    const auto sent = sent_of<proto::NpcAttack>(out);
+    CHECK(sent.size() == 1 && sent[0].net_id == proto::kGuestNetId && sent[0].move == 11u &&
+          sent[0].target_net_id == 1004u);
+    CHECK(has_log_at(out, Level::Debug, "[sync] attaque du héros invité (mouvement 11, cible 1004) : NpcAttack envoyé"));
+    CHECK(sent_of<proto::NpcAttack>(g.tick(410, loaded_world(), {})).empty());
+    CHECK_EQ(attack_tail(guest_stats_line(g, 600)),
+             std::string("attaques natives : NpcAttack envoyés 1, appliqués 0, ignorés 0"));
+}
+
+TEST("attaques 3.8b invité : native_attacks = 0, héros à terre, hors session → rien envoyé, compté ignoré") {
+    Settings off = guest_settings();
+    off.native_attacks = false;
+    Session o(off);
+    o.tick(0, loaded_world(), {});
+    o.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    Output out = o.tick(400, loaded_world(), {LocalNpcAttack{proto::kGuestNetId, 11, 1}});
+    CHECK(sent_of<proto::NpcAttack>(out).empty());
+    CHECK(has_log(out, "ignorée (native_attacks = 0)"));
+    Session d = guest_in_session();
+    d.tick(400, loaded_world(), {LocalDown{kDownCauseHitOnGuest}});
+    out = d.tick(410, loaded_world(), {LocalNpcAttack{proto::kGuestNetId, 11, 1}});
+    CHECK(sent_of<proto::NpcAttack>(out).empty());
+    CHECK(has_log(out, "ignorée (héros à terre)"));
+    Session h(guest_settings());
+    h.tick(0, loaded_world(), {});
+    out = h.tick(10, loaded_world(), {LocalNpcAttack{proto::kGuestNetId, 11, 1}});
+    CHECK(commands_of<SendReliable>(out).empty());
+    CHECK(has_log(out, "ignorée (hors session)"));
+}
+
+TEST("attaques 3.8b invité : NpcAttack{2} reçu → ignoré (NetId non annoncé), jamais appliqué") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 11, 1000})));
+    CHECK(has_log(out, "ignoré (NetId non annoncé)"));
+    for (std::uint64_t t = 410; t <= 600; t += 50) {
+        const Output o = g.tick(t, loaded_world(), {});
+        CHECK(commands_of<ApplyNpcAttack>(o).empty() && commands_of<ApplyAvatarAttack>(o).empty());
+    }
+}
+
+TEST("attaques 3.8b hôte : NpcAttack{2} → ApplyAvatarAttack à l'instant d'affichage, après MoveAvatar, une fois") {
+    Session s = host_with_clock();  // dernier snapshot : 150 ms ; affiché = now − 1350
+    Output out = s.tick(1400, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1004})));
+    CHECK(commands_of<ApplyAvatarAttack>(out).empty());  // affiché 50 < 150
+    CHECK(commands_of<ApplyAvatarAttack>(s.tick(1499, loaded_world(), {})).empty());
+    out = s.tick(1500, loaded_world(), {});
+    const auto apply = commands_of<ApplyAvatarAttack>(out);
+    CHECK(apply.size() == 1 && apply[0]->move == 4u && apply[0]->target == 1004u);
+    CHECK(index_of<MoveAvatar>(out) < index_of<ApplyAvatarAttack>(out));
+    CHECK(commands_of<ApplyAvatarAttack>(s.tick(1550, loaded_world(), {})).empty());
+    CHECK_EQ(attack_tail(host_stats_line(s, 1600)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 1, ignorés 0"));
+}
+
+TEST("attaques 3.8b hôte : horloge pas prête → ApplyAvatarAttack aussitôt, cible 1 transmise") {
+    Session s = host_with_avatar();
+    const Output out = s.tick(1110, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 5, 1})));
+    const auto apply = commands_of<ApplyAvatarAttack>(out);
+    CHECK(apply.size() == 1 && apply[0]->move == 5u && apply[0]->target == 1u);
+}
+
+TEST("attaques 3.8b hôte : NetId autre que 2 → Warn, ignoré ; sans avatar → ignoré, compté") {
+    Session s = host_with_avatar();
+    Output out = s.tick(1110, loaded_world(), reliable(encode_r(proto::NpcAttack{1004, 4, 1000})));
+    CHECK(commands_of<ApplyAvatarAttack>(out).empty() && commands_of<ApplyNpcAttack>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "[sync] NpcAttack PNJ 1004 (mouvement 4, cible 1000) ignoré : l'hôte fait autorité"));
+    out = s.tick(1120, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kHostNetId, 4, 1000})));
+    CHECK(has_log_at(out, Level::Warn, "ignoré : l'hôte fait autorité"));
+    Session n = host_in_session();
+    out = n.tick(1060, host_world({}, false), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));
+    CHECK(commands_of<ApplyAvatarAttack>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "[sync] NpcAttack de l'avatar invité (mouvement 4, cible 1000) ignoré (pas d'avatar)"));
+    CHECK_EQ(attack_tail(host_stats_line(n, 1100)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 0, ignorés 1"));
+}
+
+TEST("attaques 3.8b hôte : native_attacks = 0 → NpcAttack{2} ignoré, Info une fois par session") {
+    Settings off = host_settings();
+    off.native_attacks = false;
+    Session s(off);
+    s.tick(0, loaded_world(), {});
+    s.tick(1000, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    s.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK(s.avatar_present());
+    Output out = s.tick(1110, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));
+    CHECK(commands_of<ApplyAvatarAttack>(out).empty());
+    CHECK(has_log(out, "ignoré (native_attacks = 0)"));
+    CHECK(has_log_at(out, Level::Info, "[sync] NpcAttack reçus de l'invité mais attaques natives inactives ici"));
+    out = s.tick(1120, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));
+    CHECK(!has_log(out, "attaques natives inactives ici"));
+}
+
+TEST("attaques 3.8b hôte : file de 8 au plus ; retrait de l'avatar → file vidée, comptée ignorée") {
+    Session s = host_with_clock();
+    for (int i = 0; i < 9; ++i) {
+        s.tick(1400 + i, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));
+    }
+    Output out = s.tick(1500, loaded_world(), {});
+    CHECK_EQ(commands_of<ApplyAvatarAttack>(out).size(), kMaxPendingAttacks);
+    Session r = host_with_clock();
+    r.tick(1400, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));
+    r.tick(1410, loaded_world(), reliable(encode_r(proto::Despawn{proto::kGuestNetId})));
+    CHECK(!r.avatar_present());
+    for (std::uint64_t t = 1420; t <= 1600; t += 60) CHECK(commands_of<ApplyAvatarAttack>(r.tick(t, loaded_world(), {})).empty());
+    CHECK_EQ(attack_tail(host_stats_line(r, 1700)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 0, ignorés 1"));
+}
+
+TEST("attaques 3.8b hôte : invité à terre → file vidée, NpcAttack{2} refusé jusqu'à l'accusé, comptés ignorés") {
+    Session s = host_with_clock();  // affiché = now − 1350
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));  // due à 1500
+    s.tick(1410, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    CHECK(s.respawn_waiting());
+    Output out = s.tick(1420, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));
+    CHECK(has_log_at(out, Level::Debug, "ignoré (invité à terre)"));
+    for (std::uint64_t t = 1430; t <= 1700; t += 30) CHECK(commands_of<ApplyAvatarAttack>(s.tick(t, loaded_world(), {})).empty());
+    CHECK_EQ(attack_tail(host_stats_line(s, 1800)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 0, ignorés 2"));
+}
+
+TEST("attaques 3.8b hôte : après l'accusé de Respawn, NpcAttack{2} de nouveau accepté et appliqué") {
+    Session s = host_with_clock();
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    s.tick(1500, loaded_world(), respawn_in(1, 2, 3, 0, 42));
+    CHECK(!s.respawn_waiting());
+    // Interpolation remise à zéro par l'accusé : aucun snapshot depuis, attaque due aussitôt.
+    const Output out = s.tick(1510, loaded_world(), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));
+    const auto apply = commands_of<ApplyAvatarAttack>(out);
+    CHECK(apply.size() == 1 && apply[0]->move == 4u && apply[0]->target == 1000u);
+}
+
+TEST("attaques 3.8b hôte : cible = PNJ déjà mort → ApplyAvatarAttack cible 0 (cibles effacées)") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 100.0f)}), {});
+    s.tick(1100, host_world({npc_at(1, 100.0f, 0, false)}), {});  // Death{1000}
+    s.tick(1110, host_world({}, false), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    CHECK(s.avatar_present());
+    const Output out =
+        s.tick(1120, host_world({}, false), reliable(encode_r(proto::NpcAttack{proto::kGuestNetId, 4, 1000})));
+    const auto apply = commands_of<ApplyAvatarAttack>(out);
+    CHECK(apply.size() == 1 && apply[0]->move == 4u && apply[0]->target == 0u);
+}
+
+TEST("attaques 3.8b hôte : Weapon{2} et NpcAttack{2} dus au même tick → AvatarWeapon avant ApplyAvatarAttack") {
+    Session s = host_with_clock();
+    s.tick(1400, loaded_world(),
+           reliable2(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"}, proto::NpcAttack{proto::kGuestNetId, 4, 1000}));
+    const Output out = s.tick(1500, loaded_world(), {});
+    CHECK_EQ(commands_of<AvatarWeapon>(out).size(), 1u);
+    CHECK_EQ(commands_of<ApplyAvatarAttack>(out).size(), 1u);
+    CHECK(index_of<AvatarWeapon>(out) < index_of<ApplyAvatarAttack>(out));
 }

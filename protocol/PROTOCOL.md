@@ -13,7 +13,9 @@ snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) 
 `HitRequest` (coup du héros de l'invité sur une réplique de PNJ), la v13 (story 3.6) `HitOnGuest`
 (coup d'un monstre sur l'avatar de l'invité, dégâts bruts), la v14 (story 3.7) `Respawn` (mise à
 terre et réapparition de l'invité, avec accusé ; `Death{2}` signifie désormais « à terre »), la v15
-(story 3.8) `NpcAttack` (début d'une attaque d'un PNJ, rejouée nativement par la réplique de l'invité).
+(story 3.8) `NpcAttack` (début d'une attaque d'un PNJ, rejouée nativement par la réplique de l'invité ;
+story 3.8b, sans changement de format ni de version : aussi invité → hôte, `NetId` 2, début d'une
+attaque du héros invité rejouée par son avatar).
 
 ## 1. Règles générales
 
@@ -60,7 +62,7 @@ terre et réapparition de l'invité, avec accusé ; `Death{2}` signifie désorma
 | 22 | `HitRequest` | fiable | invité → hôte : coup du héros de l'invité sur une réplique de PNJ, appliqué par l'hôte (v12) |
 | 23 | `HitOnGuest` | fiable | hôte → invité : coup d'un monstre sur l'avatar de l'invité, dégâts bruts à retirer aux PV de son héros (v13) |
 | 25 | `Respawn` | fiable | hôte → invité : ordre de réapparition de l'invité ; invité → hôte : accusé, avec le premier tick de snapshot valide (v14) |
-| 29 | `NpcAttack` | fiable | hôte → invité : début d'une attaque d'un PNJ capturé (mouvement de combat et cible), lancée nativement par la réplique (v15) |
+| 29 | `NpcAttack` | fiable | hôte → invité : début d'une attaque d'un PNJ capturé (mouvement de combat et cible), lancée nativement par la réplique (v15) ; invité → hôte (story 3.8b) : début d'une attaque du héros invité (`NetId` 2), lancée nativement par son avatar |
 
 Aucune valeur n'est réservée (depuis la v14). Toute autre valeur, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -258,15 +260,21 @@ une pose non finie (journalisé).
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `net_id` | `u32` | PNJ attaquant (≥ 1000, annoncé par l'hôte) |
-| `mouvement` | `u32` | `gECombatMove` brut du jeu (`PSCombatSystem::GetLastAttackMove` de l'hôte) |
-| `cible` | `u32` | NetId de la cible de l'attaque chez l'hôte : `1` héros de l'hôte, `2` avatar de l'invité, ≥ 1000 PNJ annoncé, **0** = aucune ou inconnue |
+| `net_id` | `u32` | attaquant : hôte → invité, PNJ (≥ 1000, annoncé par l'hôte) ; invité → hôte, **2** (héros invité) |
+| `mouvement` | `u32` | `gECombatMove` brut du jeu (`PSCombatSystem::GetLastAttackMove` de l'émetteur) |
+| `cible` | `u32` | NetId de la cible chez l'émetteur. Hôte → invité : `1` héros de l'hôte, `2` avatar de l'invité, ≥ 1000 PNJ annoncé ; invité → hôte : `1` avatar de l'hôte, ≥ 1000 réplique de PNJ ; **0** = aucune ou inconnue |
 
-Taille : 13 octets. Hôte → invité seulement : un PNJ capturé de l'hôte commence une attaque.
-L'invité fixe la cible de la réplique et lance ce mouvement par son système de combat (§8, « Attaques
-natives des répliques ») : le coup qui en résulte n'est qu'un rendu (sang, recul, flash), les dégâts
-restent ceux de `HitOnGuest`. Le décodeur ne vérifie aucune valeur (aucun `BadValue`) ; un hôte qui
-en reçoit un l'ignore.
+Taille : 13 octets. Deux sens, même format (v15) :
+- **hôte → invité** : un PNJ capturé de l'hôte commence une attaque. L'invité fixe la cible de la
+  réplique et lance ce mouvement par son système de combat (§8, « Attaques natives des répliques ») :
+  le coup qui en résulte n'est qu'un rendu (sang, recul, flash), les dégâts restent ceux de
+  `HitOnGuest` ;
+- **invité → hôte** (story 3.8b) : le héros invité commence une attaque (`net_id` = 2). L'hôte fixe
+  les cibles de l'avatar et lance ce mouvement (§8, « Attaques natives de l'avatar ») : son coup
+  local sur un PNJ est bloqué avec effet d'impact, seuls les `HitRequest` blessent.
+
+Le décodeur ne vérifie aucune valeur (aucun `BadValue`). Un hôte qui reçoit un `net_id` autre que 2
+l'ignore (journalisé) ; un invité qui reçoit `net_id` = 2 l'ignore (NetId non annoncé).
 
 ### `MotionParam` (26) — fiable — v6
 
@@ -1236,7 +1244,26 @@ d'appels.
     l'attaquer) est bloqué : l'hôte fait autorité sur ses PV.
   - Clé de configuration `native_attacks = 0` (diagnostic) : ni envoi ni application de `NpcAttack`
     (reçus ignorés et comptés), tout coup natif sur le héros invité est bloqué (comportement v14).
-  - Un hôte qui reçoit `NpcAttack` l'ignore (journalisé). Pas de limite de cadence.
+  - Un hôte qui reçoit `NpcAttack` d'un `net_id` autre que 2 l'ignore (Warn). Pas de limite de cadence.
+- **Attaques natives de l'avatar** (v15, story 3.8b) : symétrique, rendu des coups de l'invité chez
+  l'hôte (sang, effet d'impact sur le monstre) ; les dégâts restent ceux de `HitRequest`.
+  - **Invité, détection** : à chaque frame en session, même règle sur son héros (`GetLastAttackMove`,
+    `GetCurrentMove`) ; un début d'attaque envoie `NpcAttack{2, mouvement, cible}` une fois, sauf
+    héros à terre ; `cible` = `PSCombatSystem::GetCurrentTarget` traduite : avatar de l'hôte → 1,
+    réplique → son `NetId`, sinon 0.
+  - **Hôte, réception** : accepté seulement avec un avatar présent et pas mort, invité pas à terre
+    (refusé entre `Death{2}` et l'accusé de `Respawn`) ; au plus 8 en attente (au-delà : ignoré,
+    compté), file vidée (comptée) au retrait de l'avatar, au `Death{2}` et à l'accusé de `Respawn`.
+    Une cible déjà morte chez l'hôte (`Death` envoyé) est remplacée par 0. Chaque attaque s'applique
+    au même instant d'affichage que le dernier snapshot reçu de l'invité (aussitôt si aucun), après
+    l'arme, les gestes et la pose dus : arme du dernier `Weapon` reprise si la main est vide, puis
+    cibles fixées (`PSNpc::SetCurrentTarget` et `PSCombatSystem::SetCurrentTarget` : PNJ capturé de
+    ce `NetId` ; 1, 0 ou PNJ non capturé → cibles effacées) et `StartMove(mouvement)`. Sans arme en
+    main : ignorée (comptée au journal).
+  - **Hôte, coup qui en résulte** : un coup natif de l'avatar reste bloqué (effet d'impact sur un
+    PNJ, aucun sur le héros de l'hôte) ; seuls les `HitRequest` blessent.
+  - `native_attacks = 0`, d'un côté ou de l'autre : ni envoi ni application (reçus ignorés et
+    comptés ; une ligne Info par session chez celui qui les ignore).
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 

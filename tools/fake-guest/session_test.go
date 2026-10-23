@@ -475,6 +475,9 @@ func TestCLI(t *testing.T) {
 		{"--host", "127.0.0.1", "extra"},
 		{"--host", "127.0.0.1", "--weapon", strings.Repeat("w", 256)},
 		{"--host", "127.0.0.1", "--armor", strings.Repeat("a", 256)},
+		{"--host", "127.0.0.1", "--attack-move", "4"},                             // sans --hit-interval
+		{"--host", "127.0.0.1", "--hit-interval", "1s", "--attack-netid", "1004"}, // sans --attack-move
+		{"--host", "127.0.0.1", "--hit-interval", "1s", "--attack-move", "4", "--attack-netid", "0"},
 	}
 	for _, args := range bad {
 		if code := run(args, &out, &errOut); code != exitError {
@@ -497,7 +500,8 @@ func TestParseConfig(t *testing.T) {
 	if cfg.Host != netip.MustParseAddrPort("10.0.0.7:27960") || cfg.Hello.Nickname != "Invite" ||
 		cfg.Hello.ModVersion != "0.1.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != protocol.ProtocolVersion ||
 		cfg.Duration != 0 || cfg.Kill || cfg.Drop != 0 || cfg.Seed != 1 || cfg.DupHello || cfg.BadVersion ||
-		cfg.Weapon != "It_1H_Sword" || cfg.Armor != nil || cfg.StrictTimeout || cfg.HitInterval != 0 || cfg.HitTarget != 0 {
+		cfg.Weapon != "It_1H_Sword" || cfg.Armor != nil || cfg.StrictTimeout || cfg.HitInterval != 0 || cfg.HitTarget != 0 ||
+		cfg.AttackMove != 0 {
 		t.Errorf("config par défaut : %+v", cfg)
 	}
 
@@ -523,6 +527,8 @@ func TestParseConfig(t *testing.T) {
 		{[]string{"--strict-timeout"}, func(c sessionConfig) bool { return c.StrictTimeout }},
 		{[]string{"--hit-interval", "500ms"}, func(c sessionConfig) bool { return c.HitInterval == 500*time.Millisecond }},
 		{[]string{"--hit-target", "1500"}, func(c sessionConfig) bool { return c.HitTarget == 1500 }},
+		{[]string{"--hit-interval", "1s", "--attack-move", "4"}, func(c sessionConfig) bool { return c.AttackMove == 4 && c.AttackNetId == 2 }},
+		{[]string{"--hit-interval", "1s", "--attack-move", "4", "--attack-netid", "1004"}, func(c sessionConfig) bool { return c.AttackNetId == 1004 }},
 	}
 	for _, c := range cases {
 		cfg, code := parseConfig(append(append([]string{}, base...), c.args...), &errOut)
@@ -746,6 +752,48 @@ func TestNpcAttack(t *testing.T) {
 		t.Errorf("NpcAttack reçus %d, envoyés %d (au plus un en vol à la fin)", r.res.NpcAttacksRx, sent)
 	}
 	expectLog(t, r, "<- NpcAttack netid=1005 move=11 cible=2", "NpcAttack reçus=")
+}
+
+// Story 3.8b : --attack-move envoie NpcAttack{2, M, cible} juste avant chaque HitRequest, même cible.
+func TestGuestNpcAttack(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.SendNpcs = true
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1200 * time.Millisecond
+	cfg.HitInterval = 200 * time.Millisecond
+	cfg.AttackMove = 4
+	cfg.AttackNetId = protocol.GuestNetId
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	rec := host.record()
+	if r.res.NpcAttacksTx < 3 || r.res.NpcAttacksTx != r.res.HitsTx || len(rec.guestAttacks) != r.res.NpcAttacksTx {
+		t.Errorf("NpcAttack envoyés %d, reçus par l'hôte %d, HitRequest %d", r.res.NpcAttacksTx, len(rec.guestAttacks),
+			r.res.HitsTx)
+	}
+	for i, a := range rec.guestAttacks {
+		if a.NetId != protocol.GuestNetId || a.Move != 4 || i >= len(rec.hits) || a.Target != rec.hits[i] {
+			t.Errorf("NpcAttack %d : %+v (HitRequest %v)", i, a, rec.hits)
+		}
+	}
+	expectLog(t, r, "-> NpcAttack netid=2 move=4 cible=1000", "NpcAttack reçus=0 envoyés=")
+}
+
+// Sans --attack-move, aucun NpcAttack envoyé.
+func TestNoGuestNpcAttackByDefault(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.SendNpcs = true
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 600 * time.Millisecond
+	cfg.HitInterval = 200 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	if r.res.NpcAttacksTx != 0 || len(host.record().guestAttacks) != 0 {
+		t.Errorf("NpcAttack envoyés %d, reçus %d, attendu 0", r.res.NpcAttacksTx, len(host.record().guestAttacks))
+	}
 }
 
 // Story 3.7 : --die-every envoie Death{2} ; l'hôte répond Respawn, l'invité journalise l'ordre, prend

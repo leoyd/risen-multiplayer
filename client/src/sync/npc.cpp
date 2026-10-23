@@ -76,6 +76,9 @@ std::set<std::uint32_t> g_capture_lost;    // « PNJ animé perdu » : une ligne
 std::map<std::uint32_t, hit_rules::AttackState> g_attack_state;
 bool g_attack_error_logged = false;
 bool g_detect_error_logged = false;
+// Story 3.8b, invité : dernier état du système de combat de son héros (D2), oublié en fin de session.
+hit_rules::AttackState g_hero_attack_state;
+bool g_hero_detect_error_logged = false;
 
 // NetId dont le GUID est introuvable (ou la réplique perdue) : une ligne par NetId et par session.
 std::set<std::uint32_t> g_missing;
@@ -475,6 +478,8 @@ void release_all(const std::string& cause) {
     g_attack_state.clear();  // story 3.8 : sans appel au jeu
     g_attack_error_logged = false;
     g_detect_error_logged = false;
+    g_hero_attack_state = hit_rules::AttackState{};  // story 3.8b
+    g_hero_detect_error_logged = false;
     if (g_replicas.empty() && g_missing.empty() && g_captured.empty() && g_capture_failed.empty() &&
         g_wanted.empty() && g_capture_lost.empty() &&
         g_resources.empty() && g_failed_names.empty()) {
@@ -622,6 +627,41 @@ void detect_attacks(void* hero, std::vector<cs::Input>& out) {
         }
         out.push_back(cs::LocalNpcAttack{net_id, static_cast<std::uint32_t>(last), target});
     }
+}
+
+void detect_hero_attack(void* hero, std::vector<cs::Input>& out) {
+    if (hero == nullptr || !game::native_attacks_resolved()) return;
+    game::Entity e;
+    e.ptr = hero;
+    int current = 0, last = 0;
+    if (!game::combat_current_move(e, current) || !game::combat_last_attack_move(e, last)) {
+        if (!g_hero_detect_error_logged) {
+            g_hero_detect_error_logged = true;
+            log::warn("[sync] héros invité : PSCombatSystem illisible (SEH) : attaque non détectée à cette frame "
+                      "(signalé une fois par session)");
+        }
+        return;
+    }
+    const hit_rules::AttackState before = g_hero_attack_state;
+    const bool started = hit_rules::attack_started(g_hero_attack_state, current, last);
+    if (log::debug_enabled() && (!before.known || before.current != current || before.last_attack != last)) {
+        log::debug("[sync] héros invité : combat (CurrentMove, LastAttackMove) = (" + std::to_string(current) + ", " +
+                   std::to_string(last) + ")" + (started ? " : début d'attaque" : ""));
+    }
+    if (!started) return;
+    game::Entity aim;
+    std::uint32_t target = 0;
+    if (game::combat_current_target(e, aim)) {
+        TrackedEntity entry;
+        const bool found = aim.ptr != nullptr && anim_filter().find_by_entity(aim.ptr, entry);
+        target = hit_rules::guest_attack_target_net_id(aim.ptr, avatar::entity(), found, entry);
+    }
+    out.push_back(cs::LocalNpcAttack{protocol::kGuestNetId, static_cast<std::uint32_t>(last), target});
+}
+
+void* captured_entity(std::uint32_t net_id) {
+    const auto it = g_captured.find(net_id);
+    return it == g_captured.end() ? nullptr : it->second.entity.ptr;
 }
 
 std::size_t count() { return g_replicas.size() + g_captured.size() + g_wanted.size(); }

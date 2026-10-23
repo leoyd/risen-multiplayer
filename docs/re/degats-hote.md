@@ -110,3 +110,22 @@ Trois conditions, trouvées en jeu une à une, pour qu'une réplique (IA figée)
 
 Résultat : 20 coups locaux sur 24 attaques ont touché le héros invité, avec sang, recul et flash ; le
 coup local fait les mêmes dégâts que la mesure de l'hôte (10), PV rendus aussitôt.
+
+## Attaques natives de l'avatar invité chez l'hôte (story 3.8b, à valider en jeu)
+
+Constat (test du 2026-10-24) : chez l'hôte, l'avatar de l'invité ne fait que rejouer les animations
+de l'invité ; ses coups n'existent qu'en `HitRequest`, appliqués par `PSDamage::DoDamage` direct, qui
+ne passe pas par `HitTargets` : ni sang ni effet d'impact sur le monstre.
+
+Mécanisme, symétrique de la 3.8 : l'invité détecte le début d'une attaque de son héros (mêmes
+fonctions `PSCombatSystem`) et l'envoie (`NpcAttack{2, mouvement, cible}`) ; l'hôte, à l'instant
+d'affichage de l'avatar, applique les trois conditions trouvées pour les répliques : arme en main
+(l'arme du dernier `Weapon`, reprise par `HoldRightStack` si le jeu a vidé la main ; sans arme,
+`StartMove` ne trouve pas le mouvement), cible `PSCombatSystem` et cible `PSNpc` (PNJ capturé visé),
+puis `StartMove`. Le coup local de l'avatar sur le PNJ passe par le point d'accroche des dégâts et
+y est bloqué (règle 4) en rendant vrai : `HitTargets` joue l'effet d'impact sans dégâts. Les PV du
+monstre ne changent que par `HitRequest`.
+
+Hypothèses à vérifier en jeu : `StartMove` rend vrai sur l'avatar (gabarit du héros, IA figée) avec
+son arme humaine ; le coup local atteint `HitTargets` malgré l'animation locale bloquée (comme H2
+pour les répliques).

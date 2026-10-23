@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c, 3.3, 3.4, 3.4a, 3.5, 3.6 et 3.7 : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c, 3.3, 3.4, 3.4a, 3.5, 3.6, 3.7, 3.8 et 3.8b : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -522,6 +522,30 @@ if start_host coups_subis $p 30000 1 --npcs 1 --hit-guest-ms 500; then
     expect_log "attaques natives : NpcAttack envoyé par l'hôte" "$h" "attaque du PNJ 1000 (mouvement 11, cible 2) : NpcAttack envoyé"
     expect_log "attaques natives : NpcAttack reçu par l'invité" "$g" "<- NpcAttack netid=1000 move=11 cible=2"
     expect_log "attaques natives : bilan de l'invité" "$g" "NpcAttack reçus=[1-9]"
+fi
+
+# --- Story 3.8b : début d'attaque du héros invité (NpcAttack{2}) → ApplyAvatarAttack chez l'hôte ------
+p=$((base_port + 23))
+if start_host_npcs attaques_avatar $p 30000 3; then
+    h=$work/attaques_avatar.host.log
+    g=$work/attaques_avatar.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 3s --quit --hit-interval 500ms --attack-move 4 > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "attaques de l'avatar : invité" 0 $rc "$g"
+    expect_log "attaques de l'avatar : NpcAttack{2} envoyé" "$g" "-> NpcAttack netid=2 move=4 cible=1000"
+    expect_log "attaques de l'avatar : ApplyAvatarAttack chez l'hôte" "$h" "\[test\] ApplyAvatarAttack mouvement 4 cible 1000"
+    expect_count "attaques de l'avatar : aucun refus" "$h" "NpcAttack .* ignoré" 0
+    expect_log "attaques de l'avatar : bilan de l'invité" "$g" "NpcAttack reçus=0 envoyés=[1-9]"
+fi
+p=$((base_port + 24))
+if start_host_npcs attaques_netid $p 30000 3; then
+    h=$work/attaques_netid.host.log
+    g=$work/attaques_netid.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 2s --quit --hit-interval 500ms --attack-move 4 --attack-netid 1001 > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "attaques NetId ≠ 2 : invité" 0 $rc "$g"
+    expect_log "attaques NetId ≠ 2 : refusé par l'hôte" "$h" "NpcAttack PNJ 1001 (mouvement 4, cible 1000) ignoré : l'hôte fait autorité"
+    expect_count "attaques NetId ≠ 2 : aucune commande" "$h" "ApplyAvatarAttack" 0
 fi
 
 # --- Story 3.7 : invité à terre toutes les secondes : Respawn de l'hôte, accusé de l'invité -----

@@ -47,6 +47,13 @@ void set_weapon(std::uint32_t net_id, const std::string& name);
 // la main de l'avatar), la reprend (HoldRightStack). Aussi vérifié par move() deux fois par seconde.
 // True si l'arme attendue est en main. Frame seulement.
 bool rearm();
+// Story 3.8b, hôte : attaque native de l'avatar de l'invité (NpcAttack{2}). Arme du dernier Weapon
+// reprise si besoin (rearm) ; sans arme en main : ignorée, comptée (journal). Sinon cibles fixées
+// sur `target` (PSNpc::SetCurrentTarget pour CanDoMeleeDamage, PSCombatSystem::SetCurrentTarget ;
+// nul : cibles effacées), puis PSCombatSystem::StartMove(`move`), hors garde de rejeu : l'animation
+// locale reste bloquée (rôle avatar), le coup local sur un PNJ est bloqué par la règle 4 du détour
+// des dégâts, effet d'impact gardé. SEH : Warn une fois par session. Frame seulement.
+void attack(std::uint32_t move, void* target);
 // Équipement (story 3.2b), nom par nom : Template(nom) puis IsValid ; pile cherchée
 // (FindStackIndex) ou, à défaut, créée (CreateItems, 1) ; puis EquipStack sauf si IsStackEquiped.
 // Un nom en échec est journalisé et n'empêche pas les suivants. `equip` : avatar `net_id` (piles

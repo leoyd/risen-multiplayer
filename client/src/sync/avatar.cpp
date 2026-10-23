@@ -57,6 +57,9 @@ struct Entry {
     // l'avatar sans Weapon du pair (test en jeu du 2026-10-23) : reprise par reassert_weapon.
     std::string weapon;
     unsigned weapon_check_frames = 0;
+    // Story 3.8b : attaques natives ignorées faute d'arme en main ; SEH déjà signalée (avatar = session).
+    unsigned attacks_unarmed = 0;
+    bool attack_error_logged = false;
 };
 constexpr unsigned kWeaponCheckFrames = 30;  // vérification de la main environ deux fois par seconde
 constexpr unsigned kInventoryReadyFrames = 15;  // environ 250 ms à 60 images/s
@@ -690,6 +693,45 @@ bool present() { return !g_table.empty(); }
 void* entity() { return g_table.empty() ? nullptr : g_table.front().entity.ptr; }
 
 bool rearm() { return !g_table.empty() && reassert_weapon(g_table.front()); }
+
+void attack(std::uint32_t move, void* target) {
+    const std::string what = "[sync] avatar : attaque native (mouvement " + std::to_string(move) + ", cible " +
+                             (target == nullptr ? std::string("effacée") : hex_ptr(target)) + ")";
+    if (g_table.empty() || g_table.front().dead) {
+        log::debug(what + " : ignorée (pas d'avatar vivant)");
+        return;
+    }
+    if (!game::native_attacks_resolved()) {  // la session ne l'émet pas dans ce cas
+        log::debug(what + " : ignorée (attaques natives non résolues)");
+        return;
+    }
+    Entry& e = g_table.front();
+    // Comme un HitRequest : main vidée par le jeu depuis le dernier Weapon → arme reprise. Le mouvement
+    // est cherché dans le style de l'arme tenue (docs/re/degats-hote.md) : sans arme, rien à lancer.
+    reassert_weapon(e);
+    int held = -1;
+    if (!game::get_right_hold_stack(e.entity, held) || held < 0) {
+        ++e.attacks_unarmed;
+        (e.attacks_unarmed == 1 ? log::info : log::debug)(what + " : ignorée, avatar sans arme en main (" + std::to_string(e.attacks_unarmed) +
+                   " depuis la création de l'avatar)");
+        return;
+    }
+    game::Entity aim;
+    aim.ptr = target;
+    const bool npc_target_ok = game::set_npc_current_target(e.entity, aim);
+    bool target_set = false;
+    bool started = false;
+    if (!game::combat_set_current_target(e.entity, aim, target_set) ||
+        !game::combat_start_move(e.entity, static_cast<int>(move), started)) {
+        if (!e.attack_error_logged) {
+            e.attack_error_logged = true;
+            log::warn(what + " : PSCombatSystem a levé une exception (SEH) : ignorée (une fois par session)");
+        }
+        return;
+    }
+    log::debug(what + " : PSNpc::SetCurrentTarget " + (npc_target_ok ? "fait" : "en échec") + ", SetCurrentTarget -> " +
+               (target_set ? "1" : "0") + ", StartMove -> " + (started ? "1" : "0") + ", main " + std::to_string(held));
+}
 
 bool teleport_player(const Pose& pose, const char* what) {
     game::Entity player;

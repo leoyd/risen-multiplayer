@@ -274,6 +274,16 @@ void execute(cs::Output out) {
                 npc::attack(an->net_id, an->move, an->target);
                 continue;
             }
+            if (const auto* aa = std::get_if<cs::ApplyAvatarAttack>(&cmd)) {  // story 3.8b : chez l'hôte
+                // Cible ≥ 1000 : PNJ capturé de ce NetId (introuvable : cibles effacées) ; 1 ou 0 : effacées.
+                void* target = aa->target >= protocol::kFirstNpcNetId ? npc::captured_entity(aa->target) : nullptr;
+                if (target == nullptr && aa->target >= protocol::kFirstNpcNetId) {
+                    log::debug("[sync] avatar : attaque native sur le PNJ " + std::to_string(aa->target) +
+                               " non capturé : cibles effacées");
+                }
+                avatar::attack(aa->move, target);
+                continue;
+            }
             if (const auto* rh = std::get_if<cs::RespawnHero>(&cmd)) {  // story 3.7 : chez l'invité
                 guest_health::respawn(rh->pose, rh->teleport);
                 continue;
@@ -441,6 +451,10 @@ void frame() {
     // Story 3.8, hôte : débuts d'attaque des PNJ capturés, entités tout juste revérifiées.
     if (g_role == Role::Host && g_native_attacks && world.loaded() && g_session->state() == cs::State::InSession) {
         npc::detect_attacks(reinterpret_cast<void*>(world.player), g_inputs);
+    }
+    // Story 3.8b, invité : début d'attaque de son héros (NpcAttack{2} vers l'hôte).
+    if (g_role == Role::Guest && g_native_attacks && world.loaded() && g_session->state() == cs::State::InSession) {
+        npc::detect_hero_attack(reinterpret_cast<void*>(world.player), g_inputs);
     }
     world.routine_blocked = sync::anim_filter().take_routine_blocked();
     execute(g_session->tick(now, world, g_inputs));

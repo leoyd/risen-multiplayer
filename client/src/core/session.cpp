@@ -1118,15 +1118,25 @@ void Session::on_hit_on_guest(const proto::HitOnGuest& m, Output& out) {
 }
 
 void Session::on_local_npc_attack(const LocalNpcAttack& in, Output& out) {
-    const std::string what = "[sync] attaque du PNJ " + std::to_string(in.net_id) + " (mouvement " +
-                             std::to_string(in.move) + ", cible " + std::to_string(in.target) + ")";
+    // Story 3.8b : chez l'invité, seul son héros (NetId 2) attaque.
+    const bool guest = settings_.role == Role::Guest;
+    const std::string what = std::string("[sync] attaque ") +
+                             (guest && in.net_id == proto::kGuestNetId ? std::string("du héros invité")
+                                                                       : "du PNJ " + std::to_string(in.net_id)) +
+                             " (mouvement " + std::to_string(in.move) + ", cible " + std::to_string(in.target) + ")";
     const char* why = nullptr;
     if (state_ != State::InSession) {
         why = "hors session";
-    } else if (settings_.role != Role::Host) {
-        why = "pas hôte";
+    } else if (settings_.role != Role::Host && !guest) {
+        why = "rôle inconnu";
     } else if (!settings_.native_attacks) {
         why = "native_attacks = 0";
+    } else if (guest) {
+        if (in.net_id != proto::kGuestNetId) {
+            why = "pas hôte";  // un PNJ n'attaque que chez l'hôte
+        } else if (guest_down_) {
+            why = "héros à terre";
+        }
     } else if (npc_dead_.count(in.net_id) != 0) {
         why = "PNJ mort";
     } else if (npc_active_.count(in.net_id) == 0) {
@@ -1141,13 +1151,18 @@ void Session::on_local_npc_attack(const LocalNpcAttack& in, Output& out) {
     if (!proto::encode_reliable(proto::NpcAttack{in.net_id, in.move, in.target}, bytes)) return;
     ++attacks_.sent;
     out.commands.push_back(SendReliable{std::move(bytes)});
-    out.logs.push_back({Level::Info, what + " : NpcAttack envoyé"});
+    // Invité : une ligne par coup, en debug (le bilan de 5 s compte les envois).
+    out.logs.push_back({guest ? Level::Debug : Level::Info, what + " : NpcAttack envoyé"});
 }
 
 void Session::on_npc_attack(const proto::NpcAttack& m, Output& out) {
     const std::string what = "[sync] NpcAttack PNJ " + std::to_string(m.net_id) + " (mouvement " +
                              std::to_string(m.move) + ", cible " + std::to_string(m.target_net_id) + ")";
     if (settings_.role != Role::Guest) {
+        if (m.net_id == proto::kGuestNetId) {  // story 3.8b : attaque du héros invité
+            on_avatar_attack(m, out);
+            return;
+        }
         ++attacks_.ignored;
         out.logs.push_back({Level::Warn, what + " ignoré : l'hôte fait autorité sur les PNJ"});
         return;
@@ -1179,6 +1194,53 @@ void Session::on_npc_attack(const proto::NpcAttack& m, Output& out) {
     // que le coup tombe avec l'animation rejouée (Motion, même retard).
     r.attacks.push_back({r.interp.empty() ? 0.0 : r.interp.last_time(), m.move, m.target_net_id});
     out.logs.push_back({Level::Debug, what + " reçu : en attente d'affichage"});
+}
+
+void Session::on_avatar_attack(const proto::NpcAttack& m, Output& out) {
+    const std::string what = "[sync] NpcAttack de l'avatar invité (mouvement " + std::to_string(m.move) + ", cible " +
+                             std::to_string(m.target_net_id) + ")";
+    const char* why = nullptr;
+    if (!settings_.native_attacks) {
+        why = "native_attacks = 0";
+    } else if (!avatar_present_) {
+        why = "pas d'avatar";
+    } else if (avatar_dead_ || death_pending_) {
+        why = "avatar mort";
+    } else if (respawn_pending_ || respawn_wait_) {  // story 3.7 : Death{2} chez l'hôte = à terre
+        why = "invité à terre";
+    } else if (avatar_attacks_.size() >= kMaxPendingAttacks) {
+        why = "file pleine";
+    }
+    if (why != nullptr) {
+        ++attacks_.ignored;
+        out.logs.push_back({Level::Debug, what + " ignoré (" + why + ")"});
+        if (!settings_.native_attacks && !attacks_off_logged_) {  // réglage différent de l'invité : visible
+            attacks_off_logged_ = true;
+            out.logs.push_back({Level::Info, "[sync] NpcAttack reçus de l'invité mais attaques natives inactives ici "
+                                             "(native_attacks = 0 ou bloc non résolu) : ignorés (une fois par "
+                                             "session)"});
+        }
+        return;
+    }
+    // PNJ déjà mort (tué par un HitRequest avant l'attaque différée) : cibles effacées.
+    const std::uint32_t target = npc_dead_.count(m.target_net_id) != 0 ? 0u : m.target_net_id;
+    // Comme un Weapon ou un Death de l'avatar : à l'instant d'affichage du dernier snapshot reçu.
+    avatar_attacks_.push_back({interp_.empty() ? 0.0 : interp_.last_time(), m.move, target});
+    out.logs.push_back({Level::Debug, what + " reçu : en attente d'affichage"});
+}
+
+void Session::drop_avatar_attacks() {
+    attacks_.ignored += static_cast<unsigned>(avatar_attacks_.size());
+    avatar_attacks_.clear();
+}
+
+void Session::apply_due_avatar_attacks(bool ready, double shown, Output& out) {
+    while (!avatar_attacks_.empty() && (!ready || shown >= avatar_attacks_.front().at)) {
+        const PendingAttack a = avatar_attacks_.front();
+        avatar_attacks_.pop_front();
+        ++attacks_.applied;
+        out.commands.push_back(ApplyAvatarAttack{a.move, a.target});
+    }
 }
 
 bool Session::on_npc_entity(std::uint64_t now, std::uint32_t tick, const proto::SnapshotEntity& e) {
@@ -1264,7 +1326,7 @@ void Session::place_npcs(std::uint64_t now, Output& out) {
         // (aussitôt si l'horloge n'est pas prête), après les gestes dus (l'animation de
         // l'attaque) et la pose.
         while (!r.attacks.empty() && !r.death_pending && (!ready || shown >= r.attacks.front().at)) {
-            const Replica::PendingAttack a = r.attacks.front();
+            const PendingAttack a = r.attacks.front();
             r.attacks.pop_front();
             ++attacks_.applied;
             out.commands.push_back(ApplyNpcAttack{id, a.move, a.target});
@@ -1334,6 +1396,7 @@ void Session::send_snapshot(std::uint64_t now, const World& world, Output& out) 
 void Session::clear_peer_avatar_state() {
     pending_.clear();
     pending_carried_.clear();
+    drop_avatar_attacks();  // story 3.8b : avatar retiré
     avatar_dead_ = false;
     death_pending_ = false;
     death_at_ = 0.0;
@@ -1438,6 +1501,7 @@ void Session::on_guest_death(Output& out) {
         return;
     }
     respawn_pending_ = true;
+    drop_avatar_attacks();  // story 3.8b : attaques d'avant la mise à terre jamais jouées
     ++respawn_.deaths;
     out.logs.push_back({Level::Info, "[sync] Death reçu : invité à terre, Respawn à envoyer"});
 }
@@ -1458,6 +1522,7 @@ void Session::on_respawn(std::uint64_t now, const proto::Respawn& m, Output& out
         if (!respawn_wait_) return ignore("aucune réapparition en attente d'accusé");
         respawn_wait_ = false;
         interp_.reset();
+        drop_avatar_attacks();  // story 3.8b : instants de l'ancienne interpolation
         respawn_min_tick_ = m.tick;
         ++respawn_.acks;
         out.logs.push_back({Level::Info, "[sync] réapparition confirmée par l'invité (tick " + std::to_string(m.tick) +
@@ -1899,19 +1964,26 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
         avatar_dead_ = true;
         pending_.clear();
         pending_carried_.clear();
+        drop_avatar_attacks();  // story 3.8b : un mort n'attaque plus
         out.commands.push_back(AvatarDeath{peer_net_id()});
         return;
     }
-    if (!clock_.ready() || interp_.empty()) return;
-    const core::Sample s = interp_.sample(clock_.remote_ms(now) - core::kInterpolationDelayMs);
-    switch (s.mode) {
-        case core::SampleMode::Interpolated: ++snap_.interpolated; break;
-        case core::SampleMode::Extrapolated: ++snap_.extrapolated; break;
-        default: ++snap_.held; break;
+    const bool ready = clock_.ready();
+    const double shown = ready ? clock_.remote_ms(now) - core::kInterpolationDelayMs : 0.0;
+    if (ready && !interp_.empty()) {
+        const core::Sample s = interp_.sample(shown);
+        switch (s.mode) {
+            case core::SampleMode::Interpolated: ++snap_.interpolated; break;
+            case core::SampleMode::Extrapolated: ++snap_.extrapolated; break;
+            default: ++snap_.held; break;
+        }
+        avatar_pose_ = s.pose;  // hôte : rayon des PNJ autour de l'avatar (story 3.3)
+        avatar_pose_ok_ = true;
+        out.commands.push_back(MoveAvatar{peer_net_id(), s.pose});
     }
-    avatar_pose_ = s.pose;  // hôte : rayon des PNJ autour de l'avatar (story 3.3)
-    avatar_pose_ok_ = true;
-    out.commands.push_back(MoveAvatar{peer_net_id(), s.pose});
+    // Story 3.8b, hôte : attaques natives de l'avatar après les gestes, l'arme et la pose dus (aussitôt
+    // si l'horloge n'est pas prête), avant une mort encore en attente (vidées par elle sinon).
+    if (!death_pending_) apply_due_avatar_attacks(ready, shown, out);
 }
 
 void Session::snapshot_stats(std::uint64_t now, Output& out) {

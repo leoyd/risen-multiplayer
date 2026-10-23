@@ -34,6 +34,8 @@
 // DLL quand un monstre frappe l'avatar. Story 3.8 : avec --npcs ≥ 1, chaque coup est précédé d'un
 // LocalNpcAttack{1000, 11, 2} (début d'attaque du PNJ 1000 sur l'avatar), comme sync/npc::detect_attacks ;
 // la session l'ignore (compté) une fois le PNJ mort.
+// Attaques de l'avatar (story 3.8b) : chaque ApplyAvatarAttack est journalisé « [test]
+// ApplyAvatarAttack mouvement M cible C », comme l'exécuterait sync/avatar::attack.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -387,6 +389,9 @@ int main(int argc, char** argv) {
                     print("INFO", "[test] ApplyHit NetId " + std::to_string(ah->net_id) + " : PNJ simulé " +
                                       std::to_string(index) + ", PV −10 (dégâts cumulés " +
                                       std::to_string(npc_damage[index]) + ")");
+                } else if (const auto* aa = std::get_if<ApplyAvatarAttack>(&cmd)) {  // story 3.8b
+                    print("INFO", "[test] ApplyAvatarAttack mouvement " + std::to_string(aa->move) + " cible " +
+                                      std::to_string(aa->target));
                 } else if (const auto* un = std::get_if<UncaptureNpc>(&cmd)) {
                     captured.erase(un->net_id);
                     print("INFO", "[test] UncaptureNpc NetId " + std::to_string(un->net_id) +

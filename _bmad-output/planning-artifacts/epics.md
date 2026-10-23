@@ -646,3 +646,18 @@ So that le combat à deux se lise sans écart visible avec l’hôte, sans que l
 **Then** le comportement est celui de la story 3.6 (recul générique).
 
 *Note (implémentation 3.8, protocole v15) :* `NpcAttack` = type 29 (le 26 proposé par la spec est `MotionParam`), `{NetId u32, mouvement u32, cible u32}`, hôte → invité. L’hôte détecte le début d’une attaque de chaque PNJ capturé (`PSCombatSystem::GetLastAttackMove` / `GetCurrentMove`) ; l’invité, au même instant d’affichage que le dernier snapshot de la réplique, appelle `SetCurrentTarget` puis `StartMove` sur la réplique. Le coup natif qui en résulte sur son héros est cosmétique (PV rendus, mise à terre annulée) ; le recul générique de la 3.6 ne reste qu’en repli (aucun coup cosmétique depuis 500 ms). Hypothèses à vérifier en jeu : `StartMove` mène jusqu’à `HitTargets` sur une réplique à l’IA figée et à l’animation locale bloquée, `GetLastAttackMove` change à chaque attaque.
+
+### Story 3.8b : Attaques natives de l’avatar invité chez l’hôte
+
+As a hôte,
+I want voir les coups de l’invité sur les monstres comme dans le jeu solo (sang, effet d’impact),
+So that le combat à deux se lise dans les deux sens, sans que les dégâts aient deux sources.
+
+**Acceptance Criteria:**
+
+**Given** deux instances en session
+**When** l’invité frappe un monstre
+**Then** l’hôte voit le sang sur le monstre
+**And** ses PV ne baissent que du `HitRequest`.
+
+*Note (implémentation 3.8b, protocole v15 inchangé) :* `NpcAttack` devient bidirectionnel : invité → hôte avec `NetId` 2 seulement (tout autre NetId reçu par l’hôte est ignoré, Warn). L’invité détecte le début d’une attaque de son héros (même règle que la 3.8 ; cible : avatar de l’hôte → 1, réplique → son NetId, sinon 0). L’hôte, à l’instant d’affichage de l’avatar (file de 8, vidée au retrait), reprend l’arme du dernier `Weapon`, fixe les cibles `PSNpc` et `PSCombatSystem` (PNJ capturé ; 1 ou 0 → effacées) et lance `StartMove`. Le coup local de l’avatar reste bloqué par la règle 4 (effet d’impact gardé). Faux invité : `--attack-move`. À valider en jeu.

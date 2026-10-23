@@ -48,6 +48,9 @@ cette durée après chaque Respawn reçu. Chaque Respawn de l'hôte est journali
 pose=(x, y, z, lacet) », devient la pose simulée et reçoit son accusé (« -> Respawn accusé tick=T »).
 Attaques des PNJ (v15) : chaque NpcAttack de l'hôte est journalisé « <- NpcAttack netid=N move=M
 cible=C » et compté au bilan (NpcAttack reçus=), jamais appliqué.
+Attaques du héros invité (v15, story 3.8b) : --attack-move <M> envoie NpcAttack{2, M, cible} juste
+avant chaque HitRequest de --hit-interval (« -> NpcAttack netid=2 move=M cible=C », bilan envoyés=) ;
+--attack-netid <N> remplace le NetId 2 (refus de l'hôte attendu).
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :
@@ -105,6 +108,8 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	armor := fs.String("armor", "", "armure de l'invité, envoyée en Armor après le Weapon (« - » : sans armure ; vide : pas d'Armor)")
 	hitInterval := fs.Duration("hit-interval", 0, "cadence des HitRequest sur un PNJ, ex. 1s (0 = aucun)")
 	hitTarget := fs.Uint("hit-target", 0, "NetId visé par les HitRequest (0 = premier PNJ présent et vivant)")
+	attackMove := fs.Uint("attack-move", 0, "mouvement (gECombatMove) d'un NpcAttack{2} envoyé avant chaque HitRequest (0 = aucun)")
+	attackNetID := fs.Uint("attack-netid", 2, "NetId des NpcAttack de --attack-move (autre que 2 : refus de l'hôte attendu)")
 	dieEvery := fs.Duration("die-every", 0, "Death{2} (à terre) cette durée après l'entrée en session, puis après chaque Respawn reçu, ex. 10s (0 = jamais)")
 	strictTimeout := fs.Bool("strict-timeout", false, "timeout compté sur les seuls messages de l'hôte (contrôle, messages fiables rendus par KCP, snapshots), pas sur les acquittements KCP")
 	fs.Usage = func() {
@@ -157,6 +162,20 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	}
 	if *hitTarget > math.MaxUint32 {
 		return usageError("--hit-target hors bornes (%d)", *hitTarget)
+	}
+	if *attackMove > math.MaxUint32 || *attackNetID > math.MaxUint32 {
+		return usageError("--attack-move ou --attack-netid hors bornes")
+	}
+	if *attackMove != 0 && *hitInterval == 0 {
+		return usageError("--attack-move demande --hit-interval > 0")
+	}
+	attackNetIDSet := false
+	fs.Visit(func(f *flag.Flag) { attackNetIDSet = attackNetIDSet || f.Name == "attack-netid" })
+	if attackNetIDSet && *attackMove == 0 {
+		return usageError("--attack-netid demande --attack-move")
+	}
+	if *attackNetID == 0 {
+		return usageError("--attack-netid doit être non nul")
 	}
 	if *echo && *scenarioPath != "" {
 		return usageError("--echo et --scenario sont exclusifs")
@@ -219,6 +238,8 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 
 		HitInterval: *hitInterval,
 		HitTarget:   uint32(*hitTarget),
+		AttackMove:  uint32(*attackMove),
+		AttackNetId: uint32(*attackNetID),
 		DieEvery:    *dieEvery,
 
 		StrictTimeout: *strictTimeout,

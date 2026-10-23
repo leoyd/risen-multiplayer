@@ -386,6 +386,21 @@ TEST("attaque 3.8 (D1) : cible → héros 1, avatar 2, PNJ capturé NetId, hors 
     CHECK_EQ(attack_target_net_id(&g_other, &g_hero, nullptr, false, none), 0u);
 }
 
+TEST("attaque 3.8b (D2) : cible d'une attaque du héros invité traduite en NetId") {
+    const TrackedEntity none{};
+    CHECK_EQ(guest_attack_target_net_id(nullptr, &g_avatar, false, none), 0u);
+    CHECK_EQ(guest_attack_target_net_id(&g_avatar, &g_avatar, false, none), 1u);  // avatar de l'hôte
+    CHECK_EQ(guest_attack_target_net_id(&g_avatar, nullptr, true, entry(&g_avatar, EntityRole::Avatar, 1)), 1u);
+    CHECK_EQ(guest_attack_target_net_id(&g_replica, &g_avatar, true, entry(&g_replica, EntityRole::NpcReplica, 1004)),
+             1004u);
+    // Son propre héros, un PNJ capturé (rôle d'hôte), une entité inconnue : aucune cible.
+    CHECK_EQ(guest_attack_target_net_id(&g_hero, &g_avatar, true, entry(&g_hero, EntityRole::LocalHero, 2)), 0u);
+    CHECK_EQ(guest_attack_target_net_id(&g_replica, &g_avatar, true, entry(&g_replica, EntityRole::NpcCapture, 1004)),
+             0u);
+    CHECK_EQ(guest_attack_target_net_id(&g_other, &g_avatar, false, none), 0u);
+    CHECK_EQ(guest_attack_target_net_id(&g_other, nullptr, false, none), 0u);  // pas d'avatar : nul ≠ cible
+}
+
 TEST("attaque 3.8 (D4 différé) : recul en attente 500 ms, annulé par un coup cosmétique ±500 ms") {
     const PendingStumble none{};
     CHECK(stumble_step(none, 5000, false, 0) == StumbleStep::Idle);

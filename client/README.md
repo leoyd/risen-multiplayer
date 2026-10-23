@@ -824,6 +824,38 @@ Prérequis : comme la 3.7 (`log_level = debug`, faux invité reconstruit).
 4. **Deux machines, `native_attacks = 0`** chez l'invité : comportement de la 3.6 (`coup natif bloqué
    : PNJ N -> héros`, recul générique).
 
+### Attaques natives de l'avatar invité chez l'hôte (story 3.8b, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité) seulement. Même message `NpcAttack`, dans
+l'autre sens (protocole v15 inchangé). But : chez l'hôte, les coups de l'invité ont le rendu natif
+(sang, effet d'impact sur le monstre) ; les dégâts restent ceux des `HitRequest`.
+- **Invité, détection** : à chaque frame en session, même règle que les PNJ de l'hôte sur son héros ;
+  un début d'attaque donne (Debug, le bilan compte les envois) `[sync] attaque du héros invité
+  (mouvement M, cible C) : NpcAttack envoyé`, cible `1` avatar de l'hôte, NetId d'une réplique, `0`
+  sinon (rien si le héros est à terre). Chez l'hôte, `NpcAttack{2}` est refusé (`invité à terre`)
+  entre le `Death{2}` et l'accusé de `Respawn`, qui vident aussi la file ; une cible déjà morte part
+  en cible 0. Debug :
+  `[sync] héros invité : combat (CurrentMove, LastAttackMove) = (a, b)[ : début d'attaque]`.
+- **Hôte, application** : au même instant d'affichage que le dernier snapshot de l'invité, arme du
+  dernier `Weapon` reprise si besoin, cibles `PSNpc` et `PSCombatSystem` fixées sur le PNJ capturé
+  visé (effacées pour 1, 0 ou un PNJ non capturé), puis `StartMove(M)`. Debug : `[sync] avatar :
+  attaque native (mouvement M, cible …) : PSNpc::SetCurrentTarget fait, SetCurrentTarget -> 1,
+  StartMove -> 1, main P`. Sans arme en main : `ignorée, avatar sans arme en main (n …)` (Info la
+  première fois). Le coup local reste bloqué : `[sync] coup natif bloqué : avatar invité -> PNJ N
+  (seuls les HitRequest blessent)`.
+- `NpcAttack` d'un autre NetId que 2 reçu par l'hôte : Warn, ignoré. Clé `native_attacks` : couvre
+  aussi ce sens (à `0` d'un côté : ni envoi ni application ; Info une fois par session chez celui qui
+  ignore). Bilan : les compteurs `attaques natives` comptent désormais les deux sens (envoyés : PNJ
+  chez l'hôte, héros chez l'invité ; appliqués : avatar chez l'hôte, répliques chez l'invité).
+- Faux invité : `--hit-interval 500ms --attack-move 4` envoie `NpcAttack{2, 4, cible}` avant chaque
+  `HitRequest` (`--attack-netid N` : refus de l'hôte) ; scénario `attaques_avatar` de
+  `tests/session_fake_guest.sh`.
+
+1. **Deux machines** (`tools/installer-local.sh`, puis `~/Games/lancer-risen-coop.sh`) : l'invité
+   frappe un monstre. Chez l'hôte : sang sur le monstre, `avatar … StartMove -> 1` et `coup natif
+   bloqué : avatar invité -> PNJ N (seuls les HitRequest blessent)` ; les PV du monstre ne baissent
+   que par `HitRequest PNJ N appliqué`. `StartMove -> 0` : rapporter la ligne (arme tenue, `main`).
+
 ### Overlay à l'écran (rôle et état de session)
 
 Une ligne permanente en haut à gauche de l'image dit quelle fenêtre est l'hôte et laquelle est
