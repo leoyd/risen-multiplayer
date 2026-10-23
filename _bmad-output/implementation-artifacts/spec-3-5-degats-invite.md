@@ -6,7 +6,7 @@ status: 'done'
 baseline_revision: '46fbb3fe239e845aeba7eed981bd8dc6d0ec3b2c'
 route: 'auto'
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-3-context.md'
   - '{project-root}/_bmad-output/implementation-artifacts/spec-3-4b-mort-repliques-pnj.md'
@@ -226,6 +226,44 @@ deferred:
   - `[low]` `[reject]` (intent) D7 (compétences de l'avatar) et D8 (mains nues ignorées) en retrait du critère « PV baissent chez les deux » — choix prudents consignés en Design Notes, à relire par l'utilisateur.
   - `[false]` `[reject]` (intent) Correction de `self` = arme dans DownOrDeadBy* hors périmètre — documentation issue de la rétro-ingénierie de Q8, sans changement de comportement.
 
+### 2026-10-23 — Review pass (revue de suivi : détour gCDamage_PS::DoDamage et hit_rules)
+- verdicts: 34 findings — high 0, medium 0, low 23, false 6, maybe-false 5
+- findings:
+  - `[false]` `[reject]` (intent) Agresseur nul (proxy non nul, GetEntity nul) sur une réplique chez l'invité : bloqué (« autre agresseur ») au lieu de laissé — la règle 3 bloque tout coup sur une réplique quel que soit l'agresseur (D4, AD-9) ; laisser passer blesserait nativement une réplique non autoritaire. Le repli « on laisse passer » ne vaut que si la lecture échoue (SEH, proxy nul), ce que fait damage_aggressor.
+  - `[low]` `[reject]` (intent) Warn « agresseur illisible (SEH) » émis aussi pour un proxy nul — libellé seulement ; la ligne est une par session.
+  - `[low]` `[reject]` (intent) Compteur « appliqués » compté à l'émission d'ApplyHit — carried : chaque refus a sa ligne Warn ; le correctif demande un retour DLL → session.
+  - `[false]` `[reject]` (intent) Allocations (std::string) dans le détour contraires à « aucune allocation lourde » — les lignes Info par coup bloqué et Debug sont imposées par l'intention ; aucune autre allocation dans le chemin courant.
+  - `[false]` `[reject]` (intent) apply contrôle get_right_hold_stack en plus — garde de lecture sans effet nuisible, même Warn « avatar sans arme en main ».
+  - `[maybe-false]` `[defer]` (intent) Couture DLL (hits, adaptateur, apply) non exercée par les tests — carried : entrée `deferred` du chemin DLL, « Test en jeu à faire ».
+  - `[maybe-false]` `[defer]` (verif-gap) Garde de réentrance, assemblage des Inputs, publish et apply sans test automatique — carried (même entrée `deferred`). Relu ici : ApplyGuard entoure bien do_damage sur le thread de la frame, considered() lit t_applying, decide() le recopie dans Inputs.guard.
+  - `[low]` `[patch]` (verif-gap) Étape 6 du test en jeu (README) : « envoyés X / appliqués X » concordants même si la DLL refuse tous les ApplyHit — client/README.md (diagnostic et étape 6) et « Test en jeu à faire » étape 6 : « appliqués » = ApplyHit émis, vérifier les lignes `DoDamage -> 1` et l'absence de Warn `ignoré`.
+  - `[maybe-false]` `[defer]` (edge) DoDamage sur un PNJ déjà mort (plusieurs HitRequest entre deux ticks de snapshot) — carried : entrée `deferred` du cadavre.
+  - `[maybe-false]` `[defer]` (edge) npc_dead_ rafraîchi seulement au tick de snapshot — carried, même cause et même entrée `deferred`.
+  - `[low]` `[reject]` (edge) « appliqués » compté avant hits::apply — carried (voir ligne intent) ; la partie README est corrigée par la ligne verif-gap.
+  - `[low]` `[reject]` (edge) Invité : PNJ natif hors registre (non répliqué, hors rayon) frappé nativement — carried (« réplique sortie du registre ») : comportement 3.3 des PNJ non répliqués.
+  - `[low]` `[reject]` (edge) Hôte : projectile ou sort de l'avatar avec le projectile pour agresseur — carried : consigné en deferred-work.md et étape 8 facultative.
+  - `[low]` `[reject]` (edge) File de 64 pleine : coups perdus sans compteur — carried.
+  - `[low]` `[reject]` (edge) Plus de 256 répliques mortes : is_dead faux, log « (HitRequest) » trompeur — la session filtre ces NetId (npc_dead_) ; seul le log diffère, cas irréaliste.
+  - `[low]` `[reject]` (edge) Inventaire non résolu journalisé « avatar sans arme en main » — diagnostic seulement ; l'échec de résolution est déjà journalisé à l'installation ; correctif = branche de plus.
+  - `[false]` `[reject]` (edge) session_fake_guest.sh instable (1001 sort du rayon pendant qu'il est visé) — session_host_main : 1000 meurt à t = 2 s, 1001 est hors rayon de 1,5 à 2,5 s ; avant 2 s la cible est 1000, de 2 à 2,5 s 1001 est absent (cible 1002), après 2,5 s il ne ressort plus. ctest 6/6.
+  - `[low]` `[reject]` (edge) Affirmation « tout coup natif de l'avatar est bloqué » fausse pour les projectiles — carried, même cause que la ligne projectile.
+  - `[low]` `[patch]` (edge) README étape 6 : concordance trompeuse des compteurs — même correctif que la ligne verif-gap.
+  - `[low]` `[reject]` (blind) « appliqués » surévalué — carried (voir ligne intent) ; README corrigé.
+  - `[low]` `[reject]` (blind) « NetId inconnu » pour un PNJ annoncé puis sorti du rayon — libellé de diagnostic ; correctif = nouvelle branche (npc_guids_).
+  - `[false]` `[reject]` (blind) Deux sites d'appel dans HitTargets → deux HitRequest par coup — chaque appel natif de DoDamage est un dégât natif ; le miroir 1 pour 1 reproduit exactement les dégâts natifs, sans doublement.
+  - `[low]` `[reject]` (blind) Aucun contrôle de distance chez l'hôte — carried (D9, coop de confiance).
+  - `[low]` `[reject]` (blind) PNJ natifs non répliqués non protégés chez l'invité — carried (comportement 3.3).
+  - `[low]` `[reject]` (blind) Tir ami sur les avatars non bloqué — hors périmètre par l'intention (« ne pas traiter les coups reçus par le héros invité ou l'avatar (3.6) », règle 5).
+  - `[low]` `[patch]` (blind) Spine AD-2 « au plus un NetId en file pour la frame » contre kMaxQueued = 64 — AD-2 corrigée : un NetId par passage, 64 en attente au plus.
+  - `[low]` `[reject]` (blind) damage_hook = 0 accepté chez l'invité avec une simple ligne Info — carried : documenté comme interrupteur de diagnostic à éviter chez l'invité.
+  - `[low]` `[reject]` (blind) Résolution tout ou rien incluant PSDamage::DoDamage, dont l'invité n'a pas besoin — imposé par l'intention (« en tout ou rien ») ; le symbole est exporté (vérifié au banc Wine).
+  - `[low]` `[reject]` (blind) Aucun retour visuel du coup chez l'invité — perte assumée (D6).
+  - `[false]` `[reject]` (blind) Fin de monde : double publish faux → vrai qui remet le diagnostic à zéro en pleine session — core/session.cpp:242 termine la session (« fin de monde ») dans le même tick, donc le publish d'après tick passe in_session = false ; aucun passage faux → vrai.
+  - `[low]` `[reject]` (blind) Comptage incohérent hors session — carried (issue identique : ignoré ; on_reliable garde InSession).
+  - `[maybe-false]` `[reject]` (blind) ApplyGuard sans sauvegarde de la valeur précédente, garde large pendant DoDamage — carried : rien d'imbriqué ; apply n'est jamais réentrant ; à revoir en 3.6.
+  - `[low]` `[reject]` (blind) test_hit_rules sans cas cible Avatar/NpcCapture ni héros nul — issue « laissé » triviale (règle 5) ; ajout de tests seulement.
+  - `[low]` `[reject]` (blind) epic-3-context dit 3.5 faite alors qu'elle reste à valider en jeu — la ligne porte déjà « à valider en jeu ».
+
 ## Design Notes
 
 **Décisions prises sans l’utilisateur (option la plus prudente, à relire) :**
@@ -278,7 +316,7 @@ Log : `bin/scripts/Script_Multiplayer.log`.
    - Attendu chez l’invité : `coup natif bloqué : héros -> PNJ N (HitRequest)` et `coup sur PNJ N : HitRequest envoyé` ; la jauge locale ne baisse pas d’elle-même, puis suit l’hôte.
    - Attendu chez l’hôte : `HitRequest PNJ N appliqué`.
    - Tuer le monstre à deux : il meurt chez les deux (`Death`, 3.4b).
-   - Bilan : `coups : envoyés X, … bloqués Y` côté invité, `appliqués X` côté hôte.
+   - Bilan : `coups : envoyés X, … bloqués Y` côté invité, `appliqués X` côté hôte. « appliqués » compte les `ApplyHit` émis par la session, avant l'acceptation par la DLL : vérifier aussi autant de lignes `HitRequest PNJ N appliqué : DoDamage -> 1` et aucun Warn `HitRequest PNJ N ignoré`.
 7. **Deux machines, arme rangée** : frapper à mains nues. Attendu chez l’hôte : `HitRequest PNJ N ignoré : avatar sans arme en main` (D8).
 8. Si l’agresseur n’est jamais reconnu (aucune ligne `bloqué` alors que l’invité frappe), rapporter les lignes Debug `dégâts : agresseur … cible …` : l’hypothèse « proxy `+0x30` = personnage » est alors fausse. Repli prévu : `DoMeleeDamage` (Script_Game).
 
@@ -327,3 +365,30 @@ Status: done
   - D7 : dégâts calculés avec les compétences de l'avatar ;
   - le thread du détour est celui d'OnProcess ;
   - les projectiles et la magie.
+
+### Revue de suivi (2026-10-23)
+
+**Objet :** justesse du détour `gCDamage_PS::DoDamage` (garde de réentrance, threads, appels au jeu, repli sûr) et cohérence avec `sync/hit_rules`.
+
+**Constat sur le détour :** aucun défaut de code.
+- La garde `thread_local` entoure `do_damage` dans `apply` et est relue par `considered()`.
+- Le registre (`AnimFilter`) et le log sont protégés par des verrous ; l'état publié est atomique.
+- La lecture de l'agresseur est sous SEH, et `on_damage` attrape les exceptions C++. Un échec de lecture laisse passer le coup.
+- `decide()` recopie fidèlement les entrées dans `hit_rules::decide`, et `replica_dead` n'est lu que là où la règle 3 peut mettre en file.
+- La fin de monde termine la session dans le même tick : pas de remise à zéro en pleine session.
+
+**Correctifs (documentation seulement, 2 low) :**
+- `client/README.md` et l'étape 6 du « Test en jeu à faire » : « appliqués » compte les `ApplyHit` émis. Il faut vérifier les lignes `DoDamage -> 1` et l'absence de Warn `ignoré`.
+- Spine AD-2 : file de 64 `NetId` au plus, et non « au plus un ».
+
+**Rejets et reports :** 34 constats. 6 false, 21 low rejetés (dont 11 repris de la première passe), 4 maybe-false reportés vers les entrées `deferred` existantes, 1 maybe-false rejeté (carried).
+
+**Revue de suivi recommandée :** non. Aucun high corrigé dans cette passe (patchés : high 0, medium 0, low 2) : le travail a convergé.
+
+**Vérification :**
+- `cmake --build client/build`, `cmake --build client/build-tests`, `ctest --test-dir client/build-tests` : 6/6.
+- `go test ./...` et `go build` dans `tools/fake-guest` : OK.
+- `protocol/vectors/regen.sh --check` : OK.
+- Les correctifs ne touchent que la documentation.
+
+**Risques résiduels :** inchangés (aucun test en jeu ; hypothèses D1, D5, D7, thread du détour, projectiles).

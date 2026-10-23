@@ -634,7 +634,9 @@ Game.dll) seulement. Protocole **v12**.
   une fois par session (T doit égaler T0) ; en debug, chaque passage qui implique le registre ou
   le héros : `[sync] dégâts : agresseur P (rôle) cible Q (rôle) -> bloqué|laissé`. Bilan
   `[sync] snapshots (5 s)` : en fin de ligne, `coups : envoyés …, appliqués …, ignorés …,
-  bloqués …`.
+  bloqués …`. « appliqués » compte les `ApplyHit` émis par la session de l'hôte, avant que la DLL
+  ne les accepte ou ne les refuse (`PNJ introuvable`, `pas d'avatar`, `avatar sans arme en main`) :
+  seules les lignes `HitRequest PNJ N appliqué : DoDamage -> 1` prouvent un dégât.
 
 Prérequis : recompiler, copier `client/build/Script_Multiplayer.dll` dans `bin/scripts/`,
 **`log_level = debug`**, `damage_hook = 1`, overlay Steam désactivé ; reconstruire le faux invité
@@ -657,7 +659,9 @@ Prérequis : recompiler, copier `client/build/Script_Multiplayer.dll` dans `bin/
 6. **Deux machines** : l'invité frappe une réplique. Chez l'invité : `coup natif bloqué : héros ->
    PNJ N (HitRequest)` et `coup sur PNJ N : HitRequest envoyé` ; chez l'hôte : `HitRequest PNJ N
    appliqué`. Tuer le monstre à deux : il meurt chez les deux (`Death`, 3.4b). Bilan : `coups :
-   envoyés X, … bloqués Y` côté invité, `appliqués X` côté hôte.
+   envoyés X, … bloqués Y` côté invité, `appliqués X` côté hôte ; X compte les `ApplyHit` émis,
+   donc vérifier aussi autant de lignes `HitRequest PNJ N appliqué : DoDamage -> 1` et aucun Warn
+   `HitRequest PNJ N ignoré`.
 7. **Deux machines, arme rangée** : frapper à mains nues ; chez l'hôte : `HitRequest PNJ N ignoré :
    avatar sans arme en main`.
 8. **Facultatif, deux machines, arc ou sort** : l'invité tire sur une réplique. Hypothèse non
