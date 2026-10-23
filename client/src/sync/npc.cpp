@@ -557,11 +557,16 @@ void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target) {
             int stack = -1;
             const bool fist_ok = game::combat_right_fist_item(r.entity, fist) && fist.proxy != nullptr;
             if (fist_ok) game::find_stack_index(r.entity, fist, stack);
+            // Test du 2026-10-24 : l'arme naturelle (It_Fist_Monster) n'est pas dans l'inventaire de la
+            // réplique (créée par l'IA à l'entrée en combat) : créée ici si elle manque.
+            bool created = false;
+            if (fist_ok && stack < 0) created = game::create_items(r.entity, fist, 1, 0, stack) && stack >= 0;
             if (fist.proxy != nullptr) game::destroy_template(fist);
             bool held_ok = false;
             if (stack >= 0) game::hold_right_stack(r.entity, stack, held_ok);
             if (held_ok) game::combat_start_move(r.entity, static_cast<int>(move), started);
-            retry += std::string(", arme naturelle ") + (fist_ok ? "pile " + std::to_string(stack) : "absente") +
+            retry += std::string(", arme naturelle ") +
+                     (fist_ok ? "pile " + std::to_string(stack) + (created ? " (créée)" : "") : "absente") +
                      ", HoldRightStack -> " + (held_ok ? "1" : "0") + ", StartMove -> " + (started ? "1" : "0");
         }
     }
