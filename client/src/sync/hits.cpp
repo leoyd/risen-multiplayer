@@ -237,6 +237,10 @@ void publish(void* hero, Role role, bool in_session, std::uint32_t frame_thread)
 
 void* hero() { return g_hero.load(); }
 
+bool guest_in_session() {
+    return g_in_session.load() && g_role.load() == static_cast<int>(HitRole::Guest);
+}
+
 void drain(std::vector<cs::Input>& out) {
     std::vector<std::uint32_t> ids;
     std::vector<GuestHit> guest_hits;

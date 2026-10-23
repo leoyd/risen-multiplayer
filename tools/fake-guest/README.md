@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v13 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v14 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, `ErrBadValue`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -70,11 +70,20 @@ Empreintes du `Hello` : celles de `hello.bin` (Risen Steam x64, janvier 2023). �
 | `--strict-timeout` | (story 3.4a) le timeout de 5 s n'est repoussé que par les **messages** de l'hôte (contrôle, messages fiables rendus par KCP, snapshots), pas par chaque datagramme : les acquittements KCP d'un hôte au jeu figé ne maintiennent plus la session. Sert à vérifier les heartbeats de secours de l'hôte pendant une pause du jeu |
 | `--hit-interval DUR` | (story 3.5) envoie un `HitRequest` (v12) à cette cadence, ex. `1s` (défaut 0 : aucun) ; journalise `-> HitRequest PNJ netid=N`, et le bilan final `Bilan coups : HitRequest envoyés=… HitOnGuest reçus=…` |
 | `--hit-target N` | (story 3.5) NetId visé par `--hit-interval` (défaut 0 : premier PNJ présent et vivant, NetId croissant ; rien s'il n'y en a pas). Le NetId n'est pas vérifié : `--hit-target 1500` teste le refus de l'hôte (`NetId inconnu`) |
+| `--die-every DUR` | (story 3.7) envoie `Death{2}` (« à terre », v14) DUR après l'entrée en session, puis DUR après chaque `Respawn` reçu, ex. `10s` (défaut 0 : jamais) ; journalise `-> Death netid=2 (à terre, --die-every)` |
 
 Coups subis (v13, story 3.6) : sans option, chaque `HitOnGuest` reçu de l'hôte est journalisé
 `<- HitOnGuest source=N dégâts=D` (source 0 = inconnue) et compté, jamais appliqué. Le bilan final
 `Bilan coups : HitRequest envoyés=… HitOnGuest reçus=…` s'affiche dès qu'il en a reçu un (ou avec
 `--hit-interval`).
+
+À terre et réapparition (v14, story 3.7) : chaque `Respawn` de l'hôte est journalisé
+`<- Respawn netid=2 pose=(x, y, z, lacet)` ; sa pose devient la pose simulée de l'invité (ancre du
+scénario, ou décalage de `--echo` à partir de la pose actuelle de l'hôte), puis l'accusé
+`Respawn{2, même pose, tick}` part avec le premier tick de snapshot qui la porte
+(`-> Respawn accusé tick=T`). Le bilan final `Bilan à terre : Death envoyés=… Respawn reçus=…
+accusés=…` s'affiche avec `--die-every` ou dès qu'un `Respawn` est reçu. Un `Death` de scénario
+(`mort`) suit le même échange.
 
 `--quit` et `--kill` sont exclusifs et demandent `--duration` > 0.
 

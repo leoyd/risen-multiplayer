@@ -63,6 +63,8 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"hit_request.bin", true, HitRequest{NetId: FirstNpcNetId}},
 		// v13 (story 3.6) : coup d'un monstre sur l'avatar de l'invité.
 		{"hit_on_guest.bin", true, HitOnGuest{Source: FirstNpcNetId, Damage: 18}},
+		// v14 (story 3.7) : réapparition de l'invité (forme d'un accusé).
+		{"respawn.bin", true, Respawn{NetId: GuestNetId, X: 100, Y: 0, Z: -50, Yaw: 1.5, Tick: 42}},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
@@ -134,7 +136,7 @@ func TestAllVectorsCovered(t *testing.T) {
 		"aniname_empty.bin": true, "motion_param.bin": true, "motion_param_bad.bin": true,
 		"weapon.bin": true, "weapon_sheathed.bin": true, "armor.bin": true, "armor_removed.bin": true,
 		"spawn_npc.bin": true, "spawn_bad_type.bin": true, "snapshot_multi.bin": true, "motion_npc.bin": true,
-		"death_npc.bin": true, "hit_request.bin": true, "hit_on_guest.bin": true}
+		"death_npc.bin": true, "hit_request.bin": true, "hit_on_guest.bin": true, "respawn.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -157,7 +159,10 @@ func TestDecodeErrors(t *testing.T) {
 		{"canal snapshot", []byte{1, 1}, false, ErrUnknownChannel},
 		{"heartbeat en contrôle", []byte{2, 16}, false, ErrUnknownType},
 		{"hello en fiable", []byte{1, 1, 0}, true, ErrUnknownType},
-		{"réservé", []byte{25}, true, ErrUnknownType},
+		{"type absent", []byte{29}, true, ErrUnknownType},
+		{"respawn tronqué", []byte{25, 2, 0, 0, 0, 0, 0, 0xc8, 0x42, 0, 0, 0, 0, 0, 0, 0x48, 0xc2, 0, 0, 0xc0, 0x3f, 0x2a, 0, 0}, true, ErrTruncated},
+		{"respawn trop long", []byte{25, 2, 0, 0, 0, 0, 0, 0xc8, 0x42, 0, 0, 0, 0, 0, 0, 0x48, 0xc2, 0, 0, 0xc0, 0x3f, 0x2a, 0, 0, 0, 0}, true, ErrTrailingBytes},
+		{"respawn en contrôle", []byte{2, 25}, false, ErrUnknownType},
 		{"hitonguest tronqué", []byte{23, 0xe8, 3, 0, 0, 0x12, 0, 0}, true, ErrTruncated},
 		{"hitonguest trop long", []byte{23, 0xe8, 3, 0, 0, 0x12, 0, 0, 0, 0}, true, ErrTrailingBytes},
 		{"hitonguest en contrôle", []byte{2, 23}, false, ErrUnknownType},
@@ -337,10 +342,19 @@ func TestMotionAndAniNameErrors(t *testing.T) {
 	if _, err := EncodeReliable(AniName{Name: strings.Repeat("a", 256)}); err == nil {
 		t.Fatal("AniName de 256 octets encodé")
 	}
-	for _, typ := range []byte{25} {
+	// v14 : plus aucun type réservé ; un type absent de la liste reste inconnu.
+	for _, typ := range []byte{4, 15, 29} {
 		if _, err := DecodeReliable([]byte{typ}); !errors.Is(err, ErrUnknownType) {
-			t.Fatalf("type réservé %d : %v", typ, err)
+			t.Fatalf("type inconnu %d : %v", typ, err)
 		}
+	}
+	// Respawn : aucune valeur vérifiée au décodage (NetId quelconque, pose non finie).
+	b, err := EncodeReliable(Respawn{NetId: 7, X: float32(math.NaN())})
+	if err != nil {
+		t.Fatalf("Respawn non fini : %v", err)
+	}
+	if m, err := DecodeReliable(b); err != nil || m.(Respawn).NetId != 7 {
+		t.Fatalf("Respawn NetId 7 : %v %v", m, err)
 	}
 }
 

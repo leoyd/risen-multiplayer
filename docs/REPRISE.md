@@ -1,4 +1,4 @@
-# Reprise du travail — état au 2026-10-22
+# Reprise du travail — état au 2026-10-23
 
 Note de passation : où en est le projet et quoi faire à la prochaine session. Le détail de chaque livraison est dans sa spec, sous `_bmad-output/implementation-artifacts/spec-*.md`.
 
@@ -15,10 +15,16 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 | 3.2b | Équipement de l’invité : `guest_equipment`, héros invité, avatar équipé chez l’hôte (protocole toujours v7) | fait, **avatar validé en jeu sur une machine** le 2026-10-21 ; équipement de l’avatar différé de 15 frames (`docs/re/equipement.md`) ; héros d’un invité réel non testé |
 | 3.2c | Armure portée, transmise à l’avatar dans les deux sens (message `Armor`, protocole **v8**) | fait, **validé en jeu sur une machine** le 2026-10-21 (changements d’armure suivis, tunique de retour quand l’armure est retirée) |
 | 3.3 | Répliques des PNJ : apparition, position, PV (`Spawn{1}` avec GUID, protocole **v9**) | fait ; **côté hôte testé en jeu** le 2026-10-22 (annonces, GUID, PV) ; correctif : délai de grâce de 2 s pour les PNJ absents de la liste du moteur (`8887fe1`), **revérifié en jeu** le 2026-10-22 (retraits espacés, tous « absent de la liste depuis 2 s », 73 annonces pour 55 retraits en 2 min de va-et-vient) ; côté invité (GUID, IA figée) seulement testable à deux machines |
-| 3.4 → 3.7 | Animations et mort des répliques, dégâts dans les deux sens, à terre et réapparition | à faire |
+| 3.4 | Répliques des PNJ : animations (protocole **v10**) | fait |
+| 3.4a | Robustesse de session (heartbeat de secours, PNJ en avance, fin de monde) | fait, non testé en jeu, branche `auto/epic-3` |
+| 3.4b | Mort des répliques de PNJ sans `Kill` natif (protocole **v11**) | fait, non testé en jeu, branche `auto/epic-3` |
+| 3.5 | Dégâts de l’invité sur les monstres (`HitRequest`, protocole **v12**) | fait, non testé en jeu, branche `auto/epic-3` |
+| 3.6 | Dégâts subis par l’invité (`HitOnGuest`, protocole **v13**) | fait, non testé en jeu, branche `auto/epic-3` |
+| 3.7 | À terre et réapparition de l’invité (`Respawn` avec accusé, protocole **v14**) ; mort native (chute, eau profonde) = limite documentée | fait, non testé en jeu, branche `auto/epic-3` (procédure : `client/README.md`, « À terre et réapparition ») |
 
 - **Branches** :
   - `main` contient tout jusqu’à la 3.3 (fusion en avance rapide le 2026-10-22) ; il a des commits d’avance sur `origin`, **non poussés**.
+  - les stories 3.4a à 3.7 sont sur `story/3-7-a-terre-reapparition` (à fusionner dans `auto/epic-3`), **non poussées**.
 
 ## Décisions de l’utilisateur à ne pas rediscuter
 
@@ -35,7 +41,7 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre demain
 
-1. **Story suivante** : `/bmad-build story 3.4` (animations et mort des répliques). À trancher : le budget `Motion` des PNJ (Q12), la mort d’une réplique (Q11), et le PNJ vivant à 0 PV (reporté dans `deferred-work.md`). Le contexte compilé `epic-3-context.md` est à jour.
+1. **Tests en jeu de l’epic 3** : dérouler la section « Test en jeu à faire » des specs 3.4a à 3.7 (`_bmad-output/implementation-artifacts/spec-3-4a-*.md` à `spec-3-7-a-terre-reapparition.md`), d’abord sur une machine (hôte + faux invité), puis à deux machines (côté invité : répliques, coups, mise à terre et réapparition). Rapporter les lignes de log demandées.
 2. **Recompiler et installer** :
    ```bash
    cmake --build client/build && cmake --build client/build-tests && ctest --test-dir client/build-tests
@@ -47,7 +53,7 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Points ouverts à vérifier en jeu
 
-- **Pillage de l’avatar mort** : l’hôte peut-il fouiller le corps de l’avatar et récupérer les armes créées dans son inventaire ? Si oui, c’est une duplication d’objets, à corriger (retirer les objets au `Death` ou au `Despawn`).
+- ~~**Pillage de l’avatar mort**~~ : sans objet depuis la story 3.7 (protocole v14) : `Death{2}` ne met plus l’avatar en ragdoll, il est replacé devant l’hôte ; l’avatar ne meurt plus chez l’hôte (invulnérable depuis la 3.6).
 - **Validation à deux machines** de J1, de l’arme, de l’équipement (héros d’un invité réel), de l’armure et du côté invité de la 3.3 (PNJ retrouvés par GUID, IA figée, positions et PV suivis).
 - 3.3 : coût de la lecture des PNJ à 20 Hz, et `MoveTo` sur un PNJ figé sans lutte avec son contrôleur de déplacement.
 - Sans `--echo`, l’avatar reste en T-pose : c’est **normal**, car le faux invité n’envoie alors aucune animation.

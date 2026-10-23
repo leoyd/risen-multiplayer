@@ -136,7 +136,7 @@
   summary: Story 3.2b — équipement des personnages. Format de `guest_equipment` (noms de templates séparés par des virgules, `[A-Za-z0-9_]`, 1 à 64 octets par nom, 16 noms, 255 octets en tout ; validé au chargement avec le nom du champ au log) ; héros de l'invité équipé à l'entrée en session (décision de l'utilisateur, 2026-10-20 : objet créé seulement s'il manque, `FindStackIndex` puis `CreateItems`, puis `EquipStack`) ; avatar de l'invité équipé chez l'hôte (`Hello.equipment`) ; armure portée par l'hôte transmise à son avatar chez l'invité (décision de l'utilisateur, 2026-10-20 ; emplacements `gEEquipSlot` à rétro-concevoir) ; le faux invité envoie un équipement.
   evidence: Story 3.2 découpée par l'utilisateur (spec d'environ 2 500 tokens) : l'arme de l'avatar (message `Weapon`, protocole v7) est livrée seule d'abord. Symboles vérifiés dans Script.dll : `??0Template@@QEAA@PEBD@Z`, `?IsValid@Template@@QEBA_NXZ`, `?FindStackIndex@PSInventory@@QEBAHAEBVTemplate@@H_N@Z`, `?AssureItems@PSInventory@@QEAAHAEBVTemplate@@HW4gEStackType@@@Z`.
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2-equipement-arme.md`
-  summary: Les armes créées dans l'inventaire de l'avatar (CreateItems, une par nom) pourraient être pillées par l'hôte sur l'avatar mort de l'invité (duplication d'objets).
+  summary: Les armes créées dans l'inventaire de l'avatar (CreateItems, une par nom) pourraient être pillées par l'hôte sur l'avatar mort de l'invité (duplication d'objets). **Résolue par la story 3.7 (protocole v14) : `Death{2}` ne met plus l'avatar en ragdoll (il est replacé devant l'hôte), et l'avatar est invulnérable depuis la 3.6 : il n'y a plus d'avatar mort à fouiller.**
   evidence: Revue de la story 3.2, non vérifié (gravité medium si vrai) : tester en jeu si l'hôte peut fouiller l'avatar en ragdoll ; sinon, retirer les objets au Death/Despawn.
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2-equipement-arme.md`
   summary: Main gauche (bouclier, torche) non répliquée sur l'avatar : seul GetRightHoldStack est lu.
@@ -225,3 +225,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-6-degats-subis-invite.md`
   summary: Garde de réentrance inchangée : un coup natif imbriqué sur l'avatar pendant l'application d'un `HitRequest` (riposte) passerait et blesserait l'avatar chez l'hôte.
   evidence: D7/H5 de la spec 3.6 ; aucun cas connu. À revoir si une ligne « coup natif bloqué » manque alors que l'avatar perd des PV.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-7-a-terre-reapparition.md`
+  summary: Chemin DLL de la mise à terre et de la réapparition (`sync/guest_health` : note de mise à terre dans `apply_hit`, détour `on_down_or_dead`, `drain`, `respawn` avec `MoveTo` et `GetHitPointsMax` ; détours `DownOrDeadBy*` de session dans `win/hooks`) sans test automatique ; seules la logique de session (`core/session`) et la chaîne hôte ⇄ faux invité sont testées, et les symboles vérifiés au banc Wine (où `Script_Game.dll` est absente : détours inactifs).
+  evidence: Même couture `game::` que 3.3 à 3.6 (`sync/` hors `client_tests`) ; couvert par les étapes 1, 4 et 5 du « Test en jeu à faire » de la spec 3.7.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-7-a-terre-reapparition.md`
+  summary: Mort native de l'invité (chute via `OnMovementModeChanged`/`RagDollKill`, eau profonde via `PlayerInDeepWater`) non interceptée (Q9, limite D5) : écran de mort natif chez l'invité, `Respawn` refusé, session finie à son rechargement.
+  evidence: Décision D5 de la spec 3.7 (pas de nouveau hook invérifiable sans le jeu, mode dieu `gCSessionCheats` écarté) ; à revoir après l'étape 6 du test en jeu (H5 : `IsDead` passe-t-il à 1 avant tout chargement ?).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-7-a-terre-reapparition.md`
+  summary: Hypothèses non vérifiées en jeu : `Entity::MoveTo` du héros en cours de partie, même en combat (H1), `SetHitPoints(GetHitPointsMax, fixer)` remplit la jauge (H2), la pose lue à la frame suivant la téléportation est la nouvelle (H3, sinon l'accusé date trop tôt et l'avatar repasse un instant sur l'ancienne position), `DownOrDeadBy*` voit le héros dans `other` pour les projectiles et l'inferno (H4).
+  evidence: Rétro-ingénierie statique et banc seulement ; étapes 2, 4 et 5 du « Test en jeu à faire » de la spec 3.7.

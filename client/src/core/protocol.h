@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 12 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 14 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 13;
+inline constexpr std::uint16_t kProtocolVersion = 14;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -37,7 +37,7 @@ enum class Channel : std::uint8_t {
     Control = 2,   // hors KCP : Hello, Welcome, Reject
 };
 
-// 25 est réservé (Respawn) et n'est pas encore défini : il se décode en `UnknownType`.
+// Aucun type n'est plus réservé (v14) : un type absent de cette liste se décode en `UnknownType`.
 enum class MsgType : std::uint8_t {
     Hello = 1,
     Welcome = 2,
@@ -51,6 +51,7 @@ enum class MsgType : std::uint8_t {
     HitRequest = 22,  // v12 (story 3.5)
     HitOnGuest = 23,  // v13 (story 3.6)
     Death = 24,    // v5 (story 2.4)
+    Respawn = 25,  // v14 (story 3.7)
     MotionParam = 26,  // v6 (story 2.4b)
     Weapon = 27,       // v7 (story 3.2)
     Armor = 28,        // v8 (story 3.2c)
@@ -194,6 +195,18 @@ struct HitOnGuest {
     std::uint32_t damage = 0;         // dégâts bruts, avant toute protection
 };
 
+// Réapparition de l'invité (v14, story 3.7), fiable, 25 octets. Deux sens :
+// - hôte → invité : ordre, net_id = 2, pose où placer le héros, tick = 0 (ignoré) ;
+// - invité → hôte : accusé, même pose, tick = premier tick de snapshot de l'invité qui porte la
+//   nouvelle pose (l'hôte ignore les entrées du NetId 2 de tick inférieur).
+// Le décodeur ne vérifie aucune valeur : le récepteur ignore un net_id ≠ 2 ou une pose non finie.
+struct Respawn {
+    std::uint32_t net_id = 0;
+    float x = 0.0f, y = 0.0f, z = 0.0f;  // position (unités du monde)
+    float yaw = 0.0f;                    // radians, atan2(m[8], m[10]) (AD-7)
+    std::uint32_t tick = 0;
+};
+
 // Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,
 // valeur, durée) ou SetPlaySpeed(type, valeur). Daté comme Motion, rejoué au même instant.
 enum class MotionParamKind : std::uint8_t {
@@ -234,7 +247,7 @@ struct Armor {
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
 using ReliableMessage =
     std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon, Armor,
-                 HitRequest, HitOnGuest>;
+                 HitRequest, HitOnGuest, Respawn>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,

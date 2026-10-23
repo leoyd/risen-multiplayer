@@ -211,6 +211,7 @@ struct NpcAbi {
     VoidStaticFn update_entity_lists = nullptr;
     BoolGetterFn is_player = nullptr;
     IntGetterFn get_hit_points = nullptr;
+    IntGetterFn get_hit_points_max = nullptr;  // story 3.7 : réapparition du héros invité, PV pleins
     SetHitPointsFn set_hit_points = nullptr;
     GetIdFn get_id = nullptr;
     RuntimeGetEntityFn runtime_get_entity = nullptr;
@@ -356,6 +357,7 @@ bool resolve_npc(const char*& missing) {
                     lookup(script, kUpdateEntityLists, a.update_entity_lists, missing) &&
                     lookup(script, kIsPlayer, a.is_player, missing) &&
                     lookup(script, kGetHitPoints, a.get_hit_points, missing) &&
+                    lookup(script, kGetHitPointsMax, a.get_hit_points_max, missing) &&
                     lookup(script, kSetHitPoints, a.set_hit_points, missing) &&
                     lookup(engine, kGetId, a.get_id, missing) &&
                     lookup(game, kRuntimeGetEntity, a.runtime_get_entity, missing) &&
@@ -806,7 +808,9 @@ bool runtime_entity_by_id(const std::uint8_t (&id)[kPropertyIdSize], void*& out)
 bool get_hit_points(const Entity& e, int& out) {
     return call_int(pick_npc(g_npc.get_hit_points, g_abi.get_hit_points), e, out);
 }
-bool get_hit_points_max(const Entity& e, int& out) { return call_int(g_abi.get_hit_points_max, e, out); }
+bool get_hit_points_max(const Entity& e, int& out) {
+    return call_int(pick_npc(g_npc.get_hit_points_max, g_abi.get_hit_points_max), e, out);
+}
 
 bool set_hit_points(const Entity& e, int value, int modifier) {
     const SetHitPointsFn fn = pick_npc(g_npc.set_hit_points, g_abi.set_hit_points);

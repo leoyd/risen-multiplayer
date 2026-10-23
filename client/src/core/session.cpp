@@ -82,6 +82,16 @@ Pose guest_pose_near(const Pose& host) {
     return p;
 }
 
+const char* down_cause_name(std::uint8_t cause) {
+    switch (cause) {
+        case kDownCauseHitOnGuest: return "HitOnGuest";
+        case kDownCauseMelee: return "DownOrDeadByMeleeWeapon";
+        case kDownCauseProjectile: return "DownOrDeadByProjectile";
+        case kDownCauseInferno: return "DownOrDeadByInferno";
+        default: return "cause inconnue";
+    }
+}
+
 const char* state_name(State state) {
     switch (state) {
         case State::Inactive: return "Inactive";
@@ -148,6 +158,7 @@ void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t loc
     pending_carried_.clear();              // stories 3.2 et 3.2c : rien ne survit à la session
     peer_equipment_.clear();               // story 3.2b
     reset_carried_sent();
+    reset_respawn();                       // story 3.7
     linger_until_ = now + kLingerMs;  // le KCP reste ouvert pour laisser partir le SessionEnd
     wait_new_world_ = !rearm_now;
     track_world(world_, false);  // fin de monde : le monde a déjà changé
@@ -158,6 +169,10 @@ void Session::remove_avatar(const std::string& why, Output& out) {
     avatar_present_ = false;
     avatar_pose_ok_ = false;
     clear_peer_avatar_state();
+    // Story 3.7, hôte : la réapparition en cours visait cet avatar.
+    respawn_pending_ = false;
+    respawn_wait_ = false;
+    respawn_min_tick_ = 0;
     out.commands.push_back(DespawnAvatar{peer_net_id()});
     out.logs.push_back({Level::Info, "[sync] avatar " + net_id_text(peer_net_id()) + " retiré : " + why});
 }
@@ -270,6 +285,8 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             hits_.blocked += lb->count;
         } else if (const auto* lg = std::get_if<LocalHitOnGuest>(&in)) {  // story 3.6
             on_local_hit_on_guest(*lg, out);
+        } else if (const auto* ld = std::get_if<LocalDown>(&in)) {  // story 3.7
+            on_local_down(now, *ld, out);
         } else {
             on_local_param(now, std::get<LocalParam>(in), out);
         }
@@ -282,7 +299,8 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
     }
     if (state_ != State::Ended) timers(now, out);
     if (state_ == State::InSession) {
-        send_death(world, out);
+        send_death(now, world, out);
+        respawn_timers(now, world, out);  // story 3.7 : replis, puis Respawn dû (hôte), avant la pose
         send_snapshot(now, world, out);
         place_avatar(now, out);
         place_npcs(now, out);
@@ -590,6 +608,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
             on_npc_death(de->net_id, out);
             return;
         }
+        if (settings_.role == Role::Host && de->net_id == proto::kGuestNetId) {  // story 3.7 : à terre
+            on_guest_death(out);
+            return;
+        }
         if (de->net_id != peer_net_id() || !avatar_present_ || avatar_dead_ || death_pending_) {
             out.logs.push_back({Level::Warn, "[sync] Death reçu (NetId " + net_id_text(de->net_id) + ") : ignoré (" +
                                                  (de->net_id != peer_net_id() ? "pas l'avatar du pair"
@@ -661,6 +683,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         on_hit_on_guest(*hg, out);
         return;
     }
+    if (const auto* rs = std::get_if<proto::Respawn>(&decoded.message)) {  // story 3.7
+        on_respawn(now, *rs, out);
+        return;
+    }
     const auto& e = std::get<proto::SessionEnd>(decoded.message);
     out.logs.push_back({Level::Info, "[sync] SessionEnd reçu : " + end_text(e.reason)});
     // L'hôte dont l'invité part se réarme aussitôt ; l'invité attend le monde suivant.
@@ -709,6 +735,8 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     npc_anim_ = NpcAnimCounters{};
     hits_ = HitCounters{};  // story 3.5
     guest_hits_ = GuestHitCounters{};  // story 3.6
+    reset_respawn();                   // story 3.7
+    respawn_ = RespawnCounters{};
     avatar_pose_ok_ = false;
     proto::Spawn spawn;
     spawn.net_id = own_net_id();
@@ -744,7 +772,10 @@ void Session::on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& /*out
             continue;
         }
         if (e.net_id == peer_net_id()) {
-            interp_.push(decoded.message.tick, Pose{e.x, e.y, e.z, e.yaw});
+            // Story 3.7 (Q13) : chez l'hôte, entrées périmées par une réapparition ignorées.
+            if (accepts_guest_entry(decoded.message.tick)) {
+                interp_.push(decoded.message.tick, Pose{e.x, e.y, e.z, e.yaw});
+            }
             continue;
         }
         if (!on_npc_entity(now, decoded.message.tick, e)) ++snap_.ignored;
@@ -1065,6 +1096,13 @@ void Session::on_hit_on_guest(const proto::HitOnGuest& m, Output& out) {
         out.logs.push_back({Level::Warn, "[sync] HitOnGuest ignoré : l'hôte ne subit pas de coups"});
         return;
     }
+    if (guest_down_) {  // story 3.7 : à terre, le héros ne subit plus rien jusqu'au Respawn
+        ++guest_hits_.ignored;
+        out.logs.push_back({Level::Debug, "[sync] HitOnGuest reçu (source " + source_text(m.source_net_id) +
+                                              ", dégâts bruts " + std::to_string(m.damage) +
+                                              ") : ignoré (héros à terre)"});
+        return;
+    }
     ++guest_hits_.received;
     out.commands.push_back(ApplyHitOnGuest{m.source_net_id, m.damage});
     out.logs.push_back({Level::Debug, "[sync] HitOnGuest reçu (source " + source_text(m.source_net_id) +
@@ -1282,9 +1320,159 @@ void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& 
                                           (fresh ? " « " + in.name + " »" : std::string())});
 }
 
-void Session::send_death(const World& world, Output& out) {
-    // Une fois par mort (Entity::IsDead). Chez l'hôte, la mort termine la session avant d'arriver
-    // ici (raison 3) : seul l'invité envoie Death.
+bool Session::send_down(std::uint64_t now, Output& out) {
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::Death{proto::kGuestNetId}, bytes)) return false;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    guest_down_ = true;
+    down_since_ = now;
+    ++respawn_.deaths;
+    return true;
+}
+
+void Session::on_local_down(std::uint64_t now, const LocalDown& in, Output& out) {
+    const std::string what = std::string("[sync] héros à terre (") + down_cause_name(in.cause) + ")";
+    if (state_ != State::InSession || settings_.role != Role::Guest) {
+        ++respawn_.ignored;
+        out.logs.push_back({Level::Debug, what + " : ignoré (" +
+                                              (settings_.role != Role::Guest ? "pas invité" : "hors session") + ")"});
+        return;
+    }
+    if (guest_down_) {
+        ++respawn_.ignored;
+        out.logs.push_back({Level::Debug, what + " : déjà à terre, ignoré"});
+        return;
+    }
+    if (!send_down(now, out)) return;
+    out.logs.push_back({Level::Info, what + " : Death envoyé, attente du Respawn"});
+}
+
+void Session::on_guest_death(Output& out) {
+    if (!avatar_present_ || respawn_pending_ || respawn_wait_) {
+        ++respawn_.ignored;
+        out.logs.push_back({Level::Warn, std::string("[sync] Death reçu (NetId 2 (invité)) : ignoré (") +
+                                             (!avatar_present_ ? "pas d'avatar" : "réapparition déjà en cours") + ")"});
+        return;
+    }
+    respawn_pending_ = true;
+    ++respawn_.deaths;
+    out.logs.push_back({Level::Info, "[sync] Death reçu : invité à terre, Respawn à envoyer"});
+}
+
+void Session::on_respawn(std::uint64_t now, const proto::Respawn& m, Output& out) {
+    const bool host = settings_.role == Role::Host;
+    const std::string what = std::string("[sync] ") + (host ? "accusé de Respawn" : "Respawn") + " reçu (NetId " +
+                             net_id_text(m.net_id) + ", " + pose_text(m.x, m.y, m.z, m.yaw) +
+                             (host ? ", tick " + std::to_string(m.tick) : std::string()) + ")";
+    auto ignore = [&](const char* why) {
+        ++respawn_.ignored;
+        out.logs.push_back({Level::Warn, what + " : ignoré (" + why + ")"});
+    };
+    if (m.net_id != proto::kGuestNetId) return ignore("NetId autre que 2");
+    if (!finite_pose(m.x, m.y, m.z, m.yaw)) return ignore("pose non finie");
+    const Pose pose{m.x, m.y, m.z, m.yaw};
+    if (host) {  // accusé de l'invité
+        if (!respawn_wait_) return ignore("aucune réapparition en attente d'accusé");
+        respawn_wait_ = false;
+        interp_.reset();
+        respawn_min_tick_ = m.tick;
+        ++respawn_.acks;
+        out.logs.push_back({Level::Info, "[sync] réapparition confirmée par l'invité (tick " + std::to_string(m.tick) +
+                                             ")"});
+        return;
+    }
+    // Invité : ordre de l'hôte.
+    if (!guest_down_) return ignore("héros pas à terre");
+    if (native_dead_ || world_.dead) return ignore("héros mort nativement : pas de relève d'un mort");
+    // Premier tick de snapshot qui portera la nouvelle pose : RespawnHero s'exécute après ce tick, et
+    // le snapshot du tick courant est déjà parti ou part avec la pose lue avant la téléportation.
+    const auto ack_tick = static_cast<std::uint32_t>((now - t0_) / proto::kSnapshotTickMs + 1);
+    out.commands.push_back(RespawnHero{pose, true});
+    guest_down_ = false;
+    ++respawn_.received;
+    Bytes bytes;
+    if (proto::encode_reliable(proto::Respawn{proto::kGuestNetId, m.x, m.y, m.z, m.yaw, ack_tick}, bytes)) {
+        out.commands.push_back(SendReliable{std::move(bytes)});
+        ++respawn_.acks;
+    }
+    out.logs.push_back({Level::Info, "[sync] Respawn reçu : héros replacé " + pose_text(m.x, m.y, m.z, m.yaw) +
+                                         ", PV pleins ; accusé envoyé (tick " + std::to_string(ack_tick) + ")"});
+}
+
+void Session::respawn_timers(std::uint64_t now, const World& world, Output& out) {
+    if (settings_.role == Role::Guest) {
+        if (guest_down_ && !native_dead_ && now - down_since_ >= kRespawnTimeoutMs) {
+            guest_down_ = false;
+            out.commands.push_back(RespawnHero{Pose{}, false});
+            out.logs.push_back({Level::Warn, "[sync] pas de Respawn de l'hôte depuis " +
+                                                 std::to_string(kRespawnTimeoutMs / 1000) + " s : PV rendus sur place"});
+        }
+        return;
+    }
+    if (respawn_wait_ && now - respawn_sent_at_ >= kRespawnAckTimeoutMs) {
+        respawn_wait_ = false;
+        respawn_min_tick_ = 0;
+        out.logs.push_back({Level::Warn, "[sync] pas d'accusé de Respawn depuis " +
+                                             std::to_string(kRespawnAckTimeoutMs / 1000) +
+                                             " s : snapshots de l'invité repris"});
+    }
+    if (!respawn_pending_ || !avatar_present_ || !world.pose_ok) return;  // pose de l'hôte attendue
+    if (!finite_pose(world.x, world.y, world.z, world.yaw)) return;
+    const Pose pose = guest_pose_near(Pose{world.x, world.y, world.z, world.yaw});
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::Respawn{proto::kGuestNetId, pose.x, pose.y, pose.z, pose.yaw, 0}, bytes)) return;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    out.commands.push_back(MoveAvatar{proto::kGuestNetId, pose});
+    interp_.reset();
+    avatar_pose_ = pose;
+    avatar_pose_ok_ = true;
+    respawn_pending_ = false;
+    respawn_wait_ = true;
+    respawn_sent_at_ = now;
+    respawn_min_tick_ = 0;
+    ++respawn_.sent;
+    out.logs.push_back({Level::Info, "[sync] Respawn envoyé : invité replacé " +
+                                         pose_text(pose.x, pose.y, pose.z, pose.yaw)});
+}
+
+bool Session::accepts_guest_entry(std::uint32_t tick) {
+    if (settings_.role != Role::Host) return true;
+    if (respawn_wait_ || tick < respawn_min_tick_) {
+        ++respawn_.stale;
+        return false;
+    }
+    return true;
+}
+
+void Session::reset_respawn() {
+    guest_down_ = false;
+    down_since_ = 0;
+    native_dead_ = false;
+    respawn_pending_ = false;
+    respawn_wait_ = false;
+    respawn_sent_at_ = 0;
+    respawn_min_tick_ = 0;
+}
+
+void Session::send_death(std::uint64_t now, const World& world, Output& out) {
+    if (settings_.role == Role::Guest) {
+        // Story 3.7 : mort native (chute, eau profonde : hors DoDamage et DownOrDeadBy*). Même verrou
+        // que la mise à terre : Death{2} une seule fois ; le héros reste à terre (pas de repli).
+        if (!world.dead) {
+            native_dead_ = false;
+            return;
+        }
+        if (native_dead_) return;
+        native_dead_ = true;
+        const bool already = guest_down_;
+        if (!already && !send_down(now, out)) return;
+        out.logs.push_back({Level::Warn, std::string("[sync] mort native du héros (chute, eau profonde ?) : ") +
+                                             (already ? "Death déjà envoyé" : "Death envoyé") +
+                                             " ; réapparition impossible, la session finira au rechargement"});
+        return;
+    }
+    // Hôte : une fois par mort (Entity::IsDead). En pratique, la mort de l'hôte termine la session
+    // avant d'arriver ici (raison 3).
     if (!world.dead) {
         death_sent_ = false;
         return;
@@ -1646,7 +1834,7 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
 void Session::snapshot_stats(std::uint64_t now, Output& out) {
     if (now < next_stats_) return;
     next_stats_ = now + kSnapshotStatsMs;
-    char buf[1400];
+    char buf[1600];  // story 3.7 : marge pour le pire cas (toutes les valeurs au maximum)
     const auto npc_rate = static_cast<unsigned long long>(npc_anim_.bytes * 1000 / kSnapshotStatsMs);
     std::snprintf(buf, sizeof buf,
                   "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
@@ -1659,7 +1847,8 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   "file pleine %u, MotionParam envoyés %u, regroupés %u, rejoués %u, ignorés %u, %llu o/s ; "
                   "PNJ reçus avant leur Spawn %u ; morts de PNJ : envoyées %u, appliquées %u, ignorées %u ; "
                   "coups : envoyés %u, appliqués %u, ignorés %u, bloqués %u ; "
-                  "coups subis : HitOnGuest envoyés %u, reçus %u, ignorés %u",
+                  "coups subis : HitOnGuest envoyés %u, reçus %u, ignorés %u ; "
+                  "à terre : Death %u, Respawn envoyés %u, reçus %u, accusés %u, ignorés %u, snapshots périmés %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
                   anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
@@ -1669,7 +1858,8 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   npc_anim_.params_grouped, npc_anim_.params_played, npc_anim_.params_ignored, npc_rate,
                   npc_.early, npc_.deaths_sent, npc_.deaths_applied, npc_.deaths_ignored, hits_.sent,
                   hits_.applied, hits_.ignored, hits_.blocked, guest_hits_.sent, guest_hits_.received,
-                  guest_hits_.ignored);
+                  guest_hits_.ignored, respawn_.deaths, respawn_.sent, respawn_.received, respawn_.acks,
+                  respawn_.ignored, respawn_.stale);
     out.logs.push_back({Level::Debug, buf});
     // Story 3.4 (Q12) : budget des animations des PNJ, une ligne par bilan au plus.
     if (npc_rate > kNpcAnimBudgetBytesPerSec) {
@@ -1684,6 +1874,7 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
     npc_ = NpcCounters{};
     hits_ = HitCounters{};
     guest_hits_ = GuestHitCounters{};
+    respawn_ = RespawnCounters{};
 }
 
 void Session::send_hello(Output& out) {

@@ -45,7 +45,12 @@ type hostConfig struct {
 	AcksOnly bool
 	// Story 3.6 : > 0 : HitOnGuest{1000, 18} tous les N ticks de snapshot (50 ms), à partir du tick N.
 	HitOnGuestEvery int64
+	// Story 3.7 : Death{2} reçu → Respawn{2, respawnPose, 0} (ordre de réapparition).
+	RespawnOnDeath bool
 }
+
+// Story 3.7 : pose des Respawn de l'hôte simulé.
+var respawnPose = protocol.Respawn{NetId: protocol.GuestNetId, X: 500, Y: 10, Z: -300, Yaw: 0.5}
 
 var (
 	npcGuidA = [protocol.GuidSize]byte{0xc3, 0x62, 0x46, 0x68, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
@@ -83,13 +88,15 @@ type hostRecord struct {
 	motions      []protocol.Motion
 	params       []protocol.MotionParam
 	deaths       []uint32
-	hits         []uint32          // NetId des HitRequest reçus (v12)
-	hitsOnGuest  int               // HitOnGuest envoyés à l'invité (v13)
-	weapons      []protocol.Weapon // reçus de l'invité (v7)
-	armors       []protocol.Armor  // reçus de l'invité (v8)
-	snapshotAt   []time.Time       // heure de réception de chacun
-	lastDatagram time.Time         // dernier datagramme du pair de session
-	timeoutAt    time.Time         // fin « timeout » constatée
+	hits         []uint32           // NetId des HitRequest reçus (v12)
+	hitsOnGuest  int                // HitOnGuest envoyés à l'invité (v13)
+	respawnsSent int                // Respawn (ordres) envoyés à l'invité (v14)
+	respawnAcks  []protocol.Respawn // accusés reçus de l'invité (v14)
+	weapons      []protocol.Weapon  // reçus de l'invité (v7)
+	armors       []protocol.Armor   // reçus de l'invité (v8)
+	snapshotAt   []time.Time        // heure de réception de chacun
+	lastDatagram time.Time          // dernier datagramme du pair de session
+	timeoutAt    time.Time          // fin « timeout » constatée
 	ended        string
 }
 
@@ -396,6 +403,16 @@ func (h *simHost) drain() {
 		case protocol.Death:
 			h.mu.Lock()
 			h.rec.deaths = append(h.rec.deaths, m.NetId)
+			h.mu.Unlock()
+			if h.cfg.RespawnOnDeath && m.NetId == protocol.GuestNetId {
+				h.sendReliable(respawnPose)
+				h.mu.Lock()
+				h.rec.respawnsSent++
+				h.mu.Unlock()
+			}
+		case protocol.Respawn:
+			h.mu.Lock()
+			h.rec.respawnAcks = append(h.rec.respawnAcks, m)
 			h.mu.Unlock()
 		case protocol.HitRequest:
 			h.mu.Lock()

@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 12, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 14, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 13
+	ProtocolVersion   = 14
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -35,7 +35,7 @@ const (
 	ChannelControl  Channel = 2 // Hello, Welcome, Reject
 )
 
-// MsgType : 25 est réservé et se décode en ErrUnknownType.
+// MsgType : plus aucun type réservé (v14) ; un type absent de la liste se décode en ErrUnknownType.
 type MsgType uint8
 
 const (
@@ -51,6 +51,7 @@ const (
 	TypeAniName     MsgType = 18 // v5
 	TypeMotion      MsgType = 19 // v2
 	TypeDeath       MsgType = 24 // v5
+	TypeRespawn     MsgType = 25 // v14 (story 3.7)
 	TypeMotionParam MsgType = 26 // v6
 	TypeWeapon      MsgType = 27 // v7
 	TypeArmor       MsgType = 28 // v8
@@ -190,6 +191,16 @@ type HitOnGuest struct {
 	Damage uint32
 }
 
+// Respawn (v14, story 3.7) : réapparition de l'invité. Hôte → invité : ordre, NetId 2, pose où placer
+// le héros, Tick 0 (ignoré). Invité → hôte : accusé, même pose, Tick = premier tick de snapshot de
+// l'invité qui porte la nouvelle pose. Le décodeur ne vérifie aucune valeur.
+type Respawn struct {
+	NetId   uint32
+	X, Y, Z float32
+	Yaw     float32
+	Tick    uint32
+}
+
 // MotionParam : réglage de locomotion (v6). Nature 0 = SetTargetWeight(type, valeur, durée),
 // 1 = SetPlaySpeed(type, valeur).
 type MotionParam struct {
@@ -276,6 +287,7 @@ func (Motion) Type() MsgType      { return TypeMotion }
 func (Death) Type() MsgType       { return TypeDeath }
 func (HitRequest) Type() MsgType  { return TypeHitRequest }
 func (HitOnGuest) Type() MsgType  { return TypeHitOnGuest }
+func (Respawn) Type() MsgType     { return TypeRespawn }
 func (MotionParam) Type() MsgType { return TypeMotionParam }
 func (Weapon) Type() MsgType      { return TypeWeapon }
 func (Armor) Type() MsgType       { return TypeArmor }
@@ -360,6 +372,13 @@ func (w *writer) message(m Message) {
 	case HitOnGuest:
 		w.u32(m.Source)
 		w.u32(m.Damage)
+	case Respawn:
+		w.u32(m.NetId)
+		w.f32(m.X)
+		w.f32(m.Y)
+		w.f32(m.Z)
+		w.f32(m.Yaw)
+		w.u32(m.Tick)
 	case MotionParam:
 		w.u32(m.NetId)
 		w.u32(m.Ms)
@@ -397,8 +416,8 @@ func EncodeControl(m Message) ([]byte, error) {
 }
 
 // EncodeReliable rend le message [MsgType][charge] d'un message fiable (Heartbeat, SessionEnd,
-// Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon, Armor, HitRequest, HitOnGuest), sans
-// octet de canal.
+// Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon, Armor, HitRequest, HitOnGuest, Respawn),
+// sans octet de canal.
 func EncodeReliable(m Message) ([]byte, error) {
 	switch m := m.(type) {
 	case AniName:
@@ -425,7 +444,7 @@ func EncodeReliable(m Message) ([]byte, error) {
 		if !validSpawn(m) {
 			return nil, ErrOutOfBounds
 		}
-	case Heartbeat, SessionEnd, Despawn, Death, HitRequest, HitOnGuest:
+	case Heartbeat, SessionEnd, Despawn, Death, HitRequest, HitOnGuest, Respawn:
 	default:
 		return nil, ErrOutOfBounds
 	}
@@ -649,6 +668,12 @@ func DecodeReliable(b []byte) (Message, error) {
 	case TypeHitOnGuest:
 		m := HitOnGuest{Source: r.u32()}
 		m.Damage = r.u32()
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case TypeRespawn:
+		m := Respawn{NetId: r.u32(), X: r.f32(), Y: r.f32(), Z: r.f32(), Yaw: r.f32(), Tick: r.u32()}
 		if err := r.finish(); err != nil {
 			return nil, err
 		}

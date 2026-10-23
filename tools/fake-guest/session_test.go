@@ -726,3 +726,47 @@ func TestHitOnGuest(t *testing.T) {
 	}
 	expectLog(t, r, "<- HitOnGuest source=1000 dégâts=18", "HitOnGuest reçus=")
 }
+
+// Story 3.7 : --die-every envoie Death{2} ; l'hôte répond Respawn, l'invité journalise l'ordre, prend
+// la pose et renvoie l'accusé avec le premier tick de snapshot qui la porte ; puis remeurt DieEvery
+// après chaque Respawn.
+func TestDieEveryRespawn(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.RespawnOnDeath = true
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1500 * time.Millisecond
+	cfg.DieEvery = 300 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	rec := host.record()
+	if r.res.DownDeathsTx < 2 || r.res.RespawnsRx < 2 || r.res.RespawnAcks != r.res.RespawnsRx {
+		t.Fatalf("Death envoyés %d, Respawn reçus %d, accusés %d : attendu au moins 2 cycles",
+			r.res.DownDeathsTx, r.res.RespawnsRx, r.res.RespawnAcks)
+	}
+	if r.res.DownDeathsTx-r.res.RespawnsRx > 1 {
+		t.Errorf("Death envoyés %d pour %d Respawn : un seul Death par mise à terre", r.res.DownDeathsTx, r.res.RespawnsRx)
+	}
+	if len(rec.respawnAcks) == 0 {
+		t.Fatal("aucun accusé reçu par l'hôte")
+	}
+	first := rec.respawnAcks[0]
+	if first.NetId != protocol.GuestNetId || first.X != respawnPose.X || first.Y != respawnPose.Y ||
+		first.Z != respawnPose.Z || first.Yaw != respawnPose.Yaw || first.Tick == 0 {
+		t.Errorf("accusé %+v : attendu la pose du Respawn et un tick non nul", first)
+	}
+	// Q13 : à partir du tick de l'accusé, les snapshots de l'invité portent la nouvelle pose.
+	for _, sn := range rec.snapshots {
+		if sn.Tick < first.Tick || len(sn.Entities) == 0 {
+			continue
+		}
+		e := sn.Entities[0]
+		if e.X != respawnPose.X || e.Z != respawnPose.Z {
+			t.Errorf("snapshot tick %d (accusé %d) : pose (%g, %g), attendu celle du Respawn", sn.Tick, first.Tick, e.X, e.Z)
+			break
+		}
+	}
+	expectLog(t, r, "-> Death netid=2 (à terre, --die-every)", "<- Respawn netid=2 pose=(500, 10, -300, 0.5)",
+		"-> Respawn accusé tick=", "Bilan à terre : Death envoyés=")
+}

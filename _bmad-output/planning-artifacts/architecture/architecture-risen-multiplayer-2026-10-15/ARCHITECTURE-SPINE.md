@@ -165,7 +165,8 @@ graph TD
 - **Prevents:** des messages ad hoc ajoutés sans contrat.
 - **Rule:**
   - Le canal de contrôle ne transporte que `Hello`, `Welcome` et `Reject`.
-  - Le canal fiable ne transporte que : `Heartbeat`, `SessionEnd{raison: u8}`, `AniName`, `Motion`, `MotionParam` (AD-8), `Spawn`, `Despawn{NetId}`, `Death{NetId}`, `HitRequest{NetId cible}`, `HitOnGuest{NetId source, dégâts bruts}`, `Respawn{NetId, pose}`.
+  - Le canal fiable ne transporte que : `Heartbeat`, `SessionEnd{raison: u8}`, `AniName`, `Motion`, `MotionParam` (AD-8), `Spawn`, `Despawn{NetId}`, `Death{NetId}`, `HitRequest{NetId cible}`, `HitOnGuest{NetId source, dégâts bruts}`, `Respawn{NetId, pose, tick}`.
+  - **`Respawn` a deux sens** (story 3.7, protocole v14) : hôte → invité = **ordre** (`NetId` 2, pose de réapparition, `tick` 0) ; invité → hôte = **accusé** (même pose, `tick` = premier tick de ses snapshots qui porte la nouvelle pose). Depuis la v14, `Death{2}` signifie « invité à terre » : l’hôte ne met plus l’avatar en ragdoll.
   - **`Spawn` dépend de son `type`** : `0` = avatar `{NetId, type, pose}` ; `1` = PNJ `{NetId, type, pose, GUID 16 o}` (story 3.3).
   - Ajouter un type **ou changer une struct** (y compris le tableau d’empreinte de `Hello`) exige de mettre à jour `PROTOCOL.md` et les vecteurs `protocol/vectors/`, et d’incrémenter la version du protocole.
 
@@ -181,9 +182,12 @@ graph TD
   - Tout ce qui termine une session (mort de l’hôte, timeout, quitter, fin de monde, `Reject`) passe par **la même** transition vers `Ended`. Elle retire les avatars, **libère** les répliques (AD-9), puis rend la main au jeu solo.
   - **La mort du héros de l’hôte reste native** et finit la session.
   - **Le héros de l’invité ne meurt jamais nativement (FR-12).** Ses PV n’ont qu’**un** chemin d’écriture, dans `sync/` :
-    - `HitOnGuest` retire ses dégâts ; un résultat ≤ 0 met le héros **à terre**. Le seul écrivain est **`sync/guest_health`** (story 3.6) : il lit les PV, puis écrit `SetHitPoints(nouveau, fixer)`. Jamais 0, jamais `Kill` ni `DoDamage` sur le héros. **Jusqu’à la story 3.7, un coup mortel maintient le héros à 1 PV** (Warn « à terre : story 3.7 »), sans `Death{2}`.
-    - Un coup natif restant (source non répliquée) est intercepté dans les détours `DownOrDeadByMeleeWeapon`, `DownOrDeadByProjectile` et `DownOrDeadByInferno` (`self` = **l’arme** qui frappe, pas le personnage : corrigé en story 3.5 ; `other` = la victime). Si la victime est le héros invité **et** que ses PV sont ≤ 0, le détour le remet à 1 PV, le met à terre et rend 0 sans appeler l’original. Sinon il appelle l’original.
-    - **À terre** : 1 PV, `Death{2}` émis **une seule fois** (verrou jusqu’au `Respawn`). L’hôte répond `Respawn{2, pose}` près de son avatar ; l’invité y place son héros, PV pleins, et réinitialise l’interpolation.
+    - `HitOnGuest` retire ses dégâts ; un résultat ≤ 0 laisse le héros à 1 PV et le met **à terre**. Le seul écrivain est **`sync/guest_health`** (stories 3.6 et 3.7) : il lit les PV, puis écrit `SetHitPoints(nouveau, fixer)`. Jamais 0, jamais `Kill` ni `DoDamage` sur le héros.
+    - Un coup natif restant (source non répliquée) est intercepté dans les détours `DownOrDeadByMeleeWeapon`, `DownOrDeadByProjectile` et `DownOrDeadByInferno` (`self` = **l’arme** qui frappe, pas le personnage : corrigé en story 3.5 ; `other` = la victime, ou `GetOtherEntity` de l’unité si `other` est nul). Si la victime est le héros invité **et** que ses PV sont ≤ 0, le détour (`sync/guest_health::on_down_or_dead`) le remet à 1 PV, le met à terre et rend 0 sans appeler l’original. Sinon il appelle l’original. C’est un filet (story 3.7) : la règle 3b du point d’accroche des dégâts bloque déjà en amont tout coup natif sur le héros invité.
+    - **À terre** (story 3.7) : 1 PV, état logique sans animation. `Death{2}` est émis **une seule fois** par la session (verrou jusqu’au `Respawn`) ; à terre, les `HitOnGuest` reçus sont ignorés. L’hôte répond `Respawn{2, pose}` au premier tick où la pose de son héros est lisible, avec `pose` = 2 m devant son héros, tourné vers lui (`guest_pose_near`), place aussitôt l’avatar à cette pose et remet son interpolation à zéro. L’invité (à terre, pas mort nativement) se téléporte (`Entity::MoveTo`), remet ses PV au maximum (`GetHitPointsMax`) et renvoie l’**accusé** `Respawn{2, pose, tick}`.
+    - **Snapshots périmés (question 13)** : en attente de l’accusé, l’hôte ignore toute entrée de snapshot du `NetId` 2 ; après, celles de tick inférieur au `tick` de l’accusé.
+    - **Replis** : invité à terre depuis 10 s sans `Respawn` → PV pleins sur place, fin de l’état à terre ; hôte sans accusé depuis 5 s → snapshots de l’invité repris. Un message perdu ne fige ainsi ni le héros à 1 PV ni l’avatar.
+    - **Mort native (question 9, limite)** : chute (`OnMovementModeChanged` → `RagDollKill`) et eau profonde (`PlayerInDeepWater`) ne passent ni par le point d’accroche des dégâts ni par `DownOrDeadBy*` ; elles ne sont pas interceptées (pas de nouveau hook, pas de mode dieu). Quand `Entity::IsDead` passe à 1 chez l’invité, il envoie `Death{2}` s’il ne l’a pas déjà fait (même verrou), refuse le `Respawn` (pas de relève d’un mort) et n’a pas de repli ; la session finit à son rechargement (fin de monde, `SessionEnd{2}`), l’hôte reste en jeu et se réarme.
   - Écartés au spike : `Kill → Defeat` (mène au menu de chargement), état `ZS_Unconscious` forcé, relève d’un mort.
 
 ### AD-12 — Hooks de combat et registre des entités (J2)
@@ -196,7 +200,7 @@ graph TD
     - `eCAnimation_PS::PlayMotion` et `SetRagDollEnabled` ;
     - les quatre réglages de locomotion EMotionFX (story 2.4b) ;
     - `gCScriptRoutine_PS::OnProcess` ;
-    - les trois `DownOrDeadBy*` ;
+    - les trois `DownOrDeadBy*` : sonde J2, et en session (story 3.7) le filet de la mise à terre de l’invité, qui délègue à `sync/guest_health::on_down_or_dead`. Facultatifs en session : `Script_Game.dll` absente ou symbole introuvable → Warn, session sans ce filet ;
     - le point d’accroche des dégâts : `gCDamage_PS::DoDamage(eCEntity*)` (Game.dll, version à 1 argument ; question 8 tranchée en 3.5). Seul passage commun de tout coup natif (mêlée, projectiles, magie) avant la baisse des PV ; agresseur = `eCEntityProxy::GetEntity(GetAgressor())` (proxy à `+0x30`), cible = l’argument ; bloquer = rendre `false` sans appeler l’original. Facultatif : un échec de résolution, ou `damage_hook = 0`, laisse la session sans dégâts synchronisés (dérogation à AD-3 pour ce seul bloc).
 
     Un seul détour par fonction. Il délègue à `sync/` et choisit son comportement selon le **rôle** de l’entité. Ajouter un hook exige de mettre à jour cette liste.
@@ -303,11 +307,11 @@ graph LR
 6. ~~Collisions entre PNJ et avatar~~ : **tranché** : l’avatar reste traversable (la recette solide décroche son modèle, AD-8). Les PNJ le ciblent et le frappent quand même (vérifié). Un avatar solide sans ce défaut reste possible après J2, en cherchant le réglage fautif.
 7. ~~Mort native de l’invité~~ : **résolu** (coup mortel intercepté dans `DownOrDeadBy*`, AD-11).
 8. ~~Point d’accroche des dégâts (AD-9, AD-12)~~ : **tranché** en story 3.5 : `gCDamage_PS::DoDamage(eCEntity*)` (Game.dll, 1 argument), qui voit agresseur et cible avant la baisse des PV et sait rendre « rien fait ». Écartés : la version à 2 arguments (jamais appelée par la mêlée native), `OnDamage` (diffuse seulement), `DoMeleeDamage`/`DoSwordDamage` (repli si l’hypothèse « proxy `+0x30` = personnage » tombe en jeu). Détails : `docs/re/spike-j2.md`, « Q8 ».
-9. **Morts hors `DownOrDeadBy*`** (chute, noyade) et message de perte d’XP (vu seulement avec `Kill → Defeat`) : story 3.7. Seule la mêlée a été testée en jeu ; `Projectile` et `Inferno` ne sont vérifiés qu’au désassemblage.
+9. ~~**Morts hors `DownOrDeadBy*`** (chute, noyade)~~ : **tranché** en story 3.7, **limite documentée** (AD-11, « Mort native ») : pas d’interception (elle demanderait un nouveau hook invérifiable sans le jeu ; mode dieu `gCSessionCheats` écarté). L’invité envoie `Death{2}`, refuse le `Respawn`, la session finit à son rechargement. Le message de perte d’XP (vu seulement avec `Kill → Defeat`) reste inexpliqué. Seule la mêlée a été testée en jeu ; `Projectile` et `Inferno` ne sont vérifiés qu’au désassemblage.
 10. **PNJ créés en cours de partie** (réapparition de monstres) : leur GUID est-il le même chez les deux pairs ? Sinon, repli à fixer dans la spine avant la **story 3.3**.
 11. **Mort d’une réplique chez l’invité** : comment `Death` la tue (sans `Kill` natif ?) et ce qu’il advient du butin et de l’XP de l’invité. **Story 3.4**.
 12. **Budget de `Motion` et `MotionParam` pour les PNJ** (AD-8) : à fixer dans la **story 3.4**.
-13. **Après `Respawn`**, les snapshots de l’invité encore en route peuvent replacer son avatar sur le lieu de la mort chez l’hôte. Remède à fixer dans la **story 3.7** (époque de vie dans le snapshot, ou accusé de `Respawn`).
+13. ~~**Après `Respawn`**, snapshots de l’invité encore en route~~ : **tranché** en story 3.7 par **accusé** de `Respawn` (AD-10, AD-11), sans toucher au format du snapshot : l’hôte ignore les entrées du `NetId` 2 jusqu’à l’accusé, puis celles de tick inférieur au sien.
 14. **Équipement de l’invité** (`guest_equipment`) : format de la liste (noms de templates) et façon de transmettre l’arme sortie ou rangée. **Story 3.2**.
 
 ## Deferred

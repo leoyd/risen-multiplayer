@@ -44,6 +44,9 @@ bool on_damage(void* damage_ps, void* target) noexcept;
 void publish(void* hero, Role role, bool in_session, std::uint32_t frame_thread);
 // Héros local publié par la frame (nul hors monde chargé). Frame : sync/guest_health.
 void* hero();
+// Story 3.7 : rôle invité et « en session » publiés par la frame (lecture atomique, sûre depuis les
+// détours DownOrDeadBy* de sync/guest_health).
+bool guest_in_session();
 // Frame : coups mis en file par le détour (LocalHit, puis LocalHitOnGuest), puis coups bloqués
 // depuis l'appel précédent (LocalHitsBlocked, si > 0).
 void drain(std::vector<core::session::Input>& out);

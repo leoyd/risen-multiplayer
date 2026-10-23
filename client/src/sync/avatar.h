@@ -67,8 +67,10 @@ bool present();
 // Entité de l'avatar (nul s'il n'y en a pas) : sync/npc l'exclut de la liste des PNJ et lit sa
 // pose pour le rayon (story 3.3). Le temps de la frame seulement : jamais gardée par l'appelant.
 void* entity();
-// Déplace le héros local (invité, à l'entrée en session) par Entity::MoveTo.
-void teleport_player(const core::session::Pose& pose);
+// Déplace le héros local par Entity::MoveTo : invité, à l'entrée en session (« placé devant
+// l'hôte ») et, story 3.7, à la réapparition (sync/guest_health). `what` complète la ligne Info.
+// False (Error au log) si le héros manque ou sur SEH.
+bool teleport_player(const core::session::Pose& pose, const char* what = "placé devant l'hôte");
 
 // Hooks eCAnimation_PS::PlayMotion et SetRagDollEnabled en session : capturent les appels sur
 // le PS du héros local (AnimFilter), retournent false pour bloquer ceux du moteur sur un avatar.

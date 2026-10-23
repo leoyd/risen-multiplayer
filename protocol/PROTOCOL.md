@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 13
+# Protocole Risen Multiplayer — version 14
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -11,8 +11,8 @@ snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) 
 `MotionParam` de PNJ, sans changement de format), la v11 (story 3.4b) la mort des répliques de PNJ
 (`Death` d'un PNJ à la place du `Despawn` de mort, sans changement de format), la v12 (story 3.5)
 `HitRequest` (coup du héros de l'invité sur une réplique de PNJ), la v13 (story 3.6) `HitOnGuest`
-(coup d'un monstre sur l'avatar de l'invité, dégâts bruts). La mise à terre et la réapparition de
-l'invité arrivent avec la story suivante et incrémenteront la version.
+(coup d'un monstre sur l'avatar de l'invité, dégâts bruts), la v14 (story 3.7) `Respawn` (mise à
+terre et réapparition de l'invité, avec accusé ; `Death{2}` signifie désormais « à terre »).
 
 ## 1. Règles générales
 
@@ -58,9 +58,9 @@ l'invité arrivent avec la story suivante et incrémenteront la version.
 | 28 | `Armor` | fiable | les deux sens : armure portée par une entité dont l'émetteur a l'autorité, vide si aucune (v8) |
 | 22 | `HitRequest` | fiable | invité → hôte : coup du héros de l'invité sur une réplique de PNJ, appliqué par l'hôte (v12) |
 | 23 | `HitOnGuest` | fiable | hôte → invité : coup d'un monstre sur l'avatar de l'invité, dégâts bruts à retirer aux PV de son héros (v13) |
-| 25 | *réservé* | fiable | `Respawn` — **non défini en v13** |
+| 25 | `Respawn` | fiable | hôte → invité : ordre de réapparition de l'invité ; invité → hôte : accusé, avec le premier tick de snapshot valide (v14) |
 
-Toute autre valeur, les valeurs réservées, et un type reçu sur le mauvais canal (ex.
+Plus aucune valeur n'est réservée (v14). Toute autre valeur, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
 mettre à jour ce document et d'incrémenter la version du protocole.
 
@@ -70,7 +70,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `13` en v13 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `14` en v14 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -233,6 +233,23 @@ Les dégâts bruts valent `(DamageAmount + DamageBonus) × DamageMultiplier` du 
 l'arme qui frappe, arrondis au plus proche. L'invité les retire aux PV de son héros (§8, « Coups
 subis par l'invité ») ; un hôte qui en reçoit un l'ignore. `source_net_id` ne sert qu'au journal.
 
+### `Respawn` (25) — fiable — v14
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `net_id` | `u32` | `2` (héros de l'invité) |
+| `x`, `y`, `z` | `f32` ×3 | position de réapparition (unités du monde), finie |
+| `lacet` | `f32` | radians, `atan2(m[8], m[10])` (AD-7), fini |
+| `tick` | `u32` | ordre : `0` (ignoré à la réception) ; accusé : premier tick de snapshot de l'invité qui porte la nouvelle pose |
+
+Taille : 25 octets. Deux sens, même format :
+- **ordre**, hôte → invité : en réponse à un `Death{2}`, l'hôte indique où l'invité réapparaît ;
+- **accusé**, invité → hôte : l'invité a replacé son héros à cette pose ; `tick` est le premier tick
+  de ses snapshots à porter la nouvelle pose (§8, « Mort et réapparition de l'invité »).
+
+Le décodeur ne vérifie aucune valeur (aucun `BadValue`) : le récepteur ignore un `net_id` ≠ 2 ou
+une pose non finie (journalisé).
+
 ### `MotionParam` (26) — fiable — v6
 
 Un réglage de l'enveloppe EMotionFX (`eCWrapper_emfx3ActorInstance`) que Risen applique chaque
@@ -347,13 +364,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=13`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=14`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0d00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0e00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -363,7 +380,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `0d 00` | `version_protocole` = 13 |
+| 0x02 | `0e 00` | `version_protocole` = 14 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -510,6 +527,27 @@ v13 (story 3.6) : coup du PNJ `source_net_id=1000` sur l'avatar de l'invité, 18
 | 0x00 | `17` | `MsgType` HitOnGuest (23) |
 | 0x01 | `e8 03 00 00` | `source_net_id` = 1000 (PNJ) |
 | 0x05 | `12 00 00 00` | `damage` = 18 |
+
+#### `respawn.bin` — `Respawn` (fiable, sans octet de canal), 25 octets
+
+v14 (story 3.7) : réapparition du héros de l'invité (`net_id=2`) en `(100.0, 0.0, -50.0)`, lacet
+`1.5`, `tick=42` (forme d'un accusé ; un ordre porte `tick=0`).
+
+<!-- vector: respawn.bin -->
+```text
+00000000: 1902 0000 0000 00c8 4200 0000 0000 0048  ........B......H
+00000010: c200 00c0 3f2a 0000 00                   ....?*...
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `19` | `MsgType` Respawn (25) |
+| 0x01 | `02 00 00 00` | `net_id` = 2 (héros de l'invité) |
+| 0x05 | `00 00 c8 42` | `x` = 100.0 |
+| 0x09 | `00 00 00 00` | `y` = 0.0 |
+| 0x0d | `00 00 48 c2` | `z` = -50.0 |
+| 0x11 | `00 00 c0 3f` | `lacet` = 1.5 |
+| 0x15 | `2a 00 00 00` | `tick` = 42 |
 
 #### `spawn.bin` — `Spawn` (fiable, sans octet de canal), 22 octets
 
@@ -749,11 +787,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 13.
+`Truncated` ; `peek_hello_version` → 14.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0d00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0e00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -763,7 +801,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0d00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0e00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -833,7 +871,7 @@ type ; un type inconnu n'est pas lisible).
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -917,14 +955,14 @@ d'appels.
   mêmes conditions qu'un `Motion` et le rejoue sur l'avatar au même instant d'affichage, dans l'ordre
   d'arrivée ; parmi ceux qui partent à la même frame, un réglage des types 0/1 placé avant le
   `Motion` gardé de son type est écarté (il visait l'animation remplacée).
-- **Mort** (v5) : quand le jeu déclare le héros mort (`Entity::IsDead` passe à 1), l'émetteur
-  envoie `Death{son NetId}`, une fois par mort (à nouveau après un retour à la vie). Un ragdoll sans
-  mort (chute, renversement) n'envoie rien.
-  Le récepteur l'applique au même instant d'affichage que la pose (celui du dernier snapshot reçu
-  avec le `Death`), après les gestes encore en attente : l'avatar passe en ragdoll, puis n'est plus
-  ni déplacé ni animé jusqu'à son retrait (un `Spawn` suivant lève cet état). En pratique, seul
-  l'invité envoie `Death` : la mort de l'hôte termine la session (raison 3) avant tout envoi, et
-  l'invité retire alors l'avatar.
+- **Mort** (v5, sens de `Death{2}` changé en v14) : seul l'invité envoie `Death`, et `Death{2}`
+  signifie « **à terre** » (« Mort et réapparition de l'invité », plus bas) : l'hôte ne met plus
+  l'avatar en ragdoll. `Death{1}` n'est jamais émis : la mort de l'hôte termine la session
+  (raison 3) avant tout envoi, et l'invité retire alors l'avatar. S'il en reçoit un quand même,
+  l'invité garde le comportement v5 : il l'applique au même instant d'affichage que la pose (celui
+  du dernier snapshot reçu avec le `Death`), après les gestes encore en attente ; l'avatar passe en
+  ragdoll, puis n'est plus ni déplacé ni animé jusqu'à son retrait (un `Spawn` suivant lève cet
+  état).
 - **Arme en main** (v7) : à chaque frame, l'émetteur lit l'objet que tient son héros en main
   droite (`PSInventory::GetRightHoldStack` ≥ 0, puis le nom de `GetRightHoldItem`) ; il envoie
   `Weapon{son NetId, nom}` quand ce nom change (vide : arme rangée), en session seulement, et une
@@ -1100,9 +1138,40 @@ d'appels.
     J2). Hors `InSession`, rien n'est émis. Les PV de l'avatar ne servent jamais à détecter un coup.
   - **Invité** : tout coup natif sur son héros est bloqué, quel que soit l'agresseur. Un
     `HitOnGuest` reçu en session retire `damage` aux PV de son héros ; `damage = 0` ne change rien.
-    Jusqu'à la mise à terre (story suivante), un coup mortel laisse le héros à **1 PV** : il ne meurt
-    jamais nativement, et rien n'est émis en retour.
+    Un coup mortel laisse le héros à **1 PV** et le met à terre (v14, « Mort et réapparition de
+    l'invité ») : il ne meurt jamais nativement. Un `HitOnGuest` reçu à terre est ignoré.
   - Un hôte qui reçoit `HitOnGuest` l'ignore. Pas de limite de cadence.
+- **Mort et réapparition de l'invité** (v14, story 3.7) : l'invité ne meurt jamais nativement sous
+  un coup ; il passe **à terre**, puis l'hôte le fait réapparaître près de lui, PV pleins.
+  - **Invité, mise à terre** : un `HitOnGuest` mortel, ou un coup natif mortel intercepté dans
+    `DownOrDeadBy*`, laisse le héros à **1 PV** et le met à terre. Il envoie `Death{2}` **une seule
+    fois** : à terre, les mises à terre suivantes n'envoient rien (verrou jusqu'au `Respawn`), et les
+    `HitOnGuest` reçus sont ignorés. Jamais 0 PV, ni `Kill`, ni ragdoll.
+  - **Hôte, ordre** : un `Death{2}` reçu avec l'avatar présent, hors réapparition en cours, rend une
+    réapparition due : au premier tick où la pose de son héros est lisible, l'hôte envoie
+    `Respawn{2, pose, 0}`, avec `pose` = 2 m devant son héros, tournée vers lui (la règle du
+    « placement de l'invité »), place aussitôt l'avatar à cette pose, remet son interpolation à zéro
+    et **attend l'accusé**. Pas de ragdoll de l'avatar. Un `Death{2}` sans avatar ou pendant une
+    réapparition en cours est ignoré (journalisé).
+  - **Invité, ordre reçu** : accepté seulement à terre, héros non mort nativement, `net_id` = 2 et
+    pose finie (sinon ignoré, journalisé). Le héros est téléporté à la pose (`Entity::MoveTo`), ses PV
+    remis au maximum, l'état à terre levé, et l'invité renvoie l'**accusé** `Respawn{2, même pose,
+    tick}` avec `tick` = son tick de snapshot courant + 1 : le premier de ses snapshots qui porte la
+    nouvelle pose.
+  - **Hôte, accusé et snapshots périmés** : en attente de l'accusé, toute entrée de snapshot du
+    `NetId` 2 est ignorée (l'avatar reste à la pose du `Respawn`). L'accusé reçu met fin à l'attente,
+    remet l'interpolation à zéro et fixe un tick minimal : ensuite, une entrée du `NetId` 2 de tick
+    inférieur est ignorée (périmée). Un accusé hors attente est ignoré (journalisé).
+  - **Replis** : l'invité à terre depuis **10 s** sans `Respawn` (et sans mort native) remet ses PV
+    au maximum sur place et lève l'état à terre ; un `Respawn` arrivé ensuite est ignoré. L'hôte sans
+    accusé depuis **5 s** reprend les snapshots de l'invité (tick minimal 0).
+  - **Mort native** (chute, eau profonde : hors `DoDamage` et `DownOrDeadBy*`) : quand
+    `Entity::IsDead` passe à 1 chez l'invité, il envoie `Death{2}` s'il ne l'a pas déjà fait (même
+    verrou). Le héros est mort pour son jeu : l'invité refuse le `Respawn` (pas de relève d'un mort)
+    et la session se termine à son rechargement (fin de monde, `SessionEnd{2}`) ; l'hôte, qui a
+    replacé l'avatar, se réarme. Limite connue de la v14.
+  - Tout cet état repart de zéro à l'entrée en session, au retrait de l'avatar et à la fin de
+    session.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -1117,4 +1186,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v13).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v14).

@@ -64,12 +64,13 @@ bool resolve_combat(const char*& missing);
 // premier échec. Après resolve_entities (destroy_template).
 bool resolve_inventory(const char*& missing);
 // Répliques des PNJ de la session (story 3.3, AD-3) : Script.dll (Entity::ms_arrNPCs,
-// UpdateEntityLists, IsPlayer, PSSkills::GetHitPoints/SetHitPoints, et depuis la story 3.4b
-// PSRoutine::PropertyAIMode, lecture et operator=), Engine.dll
+// UpdateEntityLists, IsPlayer, PSSkills::GetHitPoints/SetHitPoints, depuis la story 3.4b
+// PSRoutine::PropertyAIMode, lecture et operator=, et depuis la story 3.7
+// PSSkills::GetHitPointsMax, pour la réapparition du héros invité), Engine.dll
 // (eCDynamicEntity::GetID), Game.dll (gCRuntimeInfo::GetEntity, gCScriptRoutine_PS::OnProcess),
 // en tout ou rien, indépendants de resolve_combat (sonde). IsDead, GetPose et MoveTo viennent de
 // resolve_entities (à appeler avant). Les enveloppes get_entity_id, runtime_entity_by_id,
-// get_hit_points, set_hit_points, get_ai_mode et set_ai_mode marchent après l'une ou l'autre. False et `missing` au premier
+// get_hit_points, get_hit_points_max, set_hit_points, get_ai_mode et set_ai_mode marchent après l'une ou l'autre. False et `missing` au premier
 // échec.
 bool resolve_npc(const char*& missing);
 // Story 3.5 (Q8) : dégâts de la session, bloc facultatif en tout ou rien : gCDamage_PS::DoDamage
@@ -87,8 +88,9 @@ bool damage_aggressor(const void* damage_ps, void*& out);
 // GetDamageMultiplier), sous SEH. Appelé depuis le détour des dégâts (accesseurs sans effet de bord).
 // Le calcul est fait par sync/hit_rules::raw_damage. False (sorties à 0) en cas d'échec.
 bool damage_raw(const void* damage_ps, long& amount, long& bonus, float& multiplier);
-// Kill et Defeat (Script_Game.dll), facultatifs : module déjà chargé par le jeu, jamais par
-// nous. False et `missing` (module ou symbole) en cas d'échec.
+// Kill, Defeat et DownOrDeadBy* (Script_Game.dll), facultatifs : module déjà chargé par le jeu,
+// jamais par nous (sonde J2, et depuis la story 3.7 les détours DownOrDeadBy* de session). False et
+// `missing` (module ou symbole) en cas d'échec.
 bool resolve_script_game(const char*& missing);
 
 void* routine_on_process_address();  // gCScriptRoutine_PS::OnProcess (Game.dll), après resolve_npc ou resolve_combat

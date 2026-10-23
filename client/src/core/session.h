@@ -26,7 +26,8 @@
 // (AniName la première fois) et part en Motion daté ; ceux du pair attendent le même instant
 // d'affichage que les snapshots, puis deviennent PlayAvatarMotion. Le ragdoll du héros
 // (IsDead passe à 1) envoie Death, une fois par mort ; celle du pair met l'avatar en ragdoll
-// (AvatarDeath), au même instant d'affichage que la pose.
+// (AvatarDeath), au même instant d'affichage que la pose. Story 3.7 : chez l'hôte, Death{2} veut
+// dire « à terre » (réapparition, plus de ragdoll) ; seul l'invité garde AvatarDeath sur Death{1}.
 //
 // Arme (story 3.2) : le nom de l'objet en main du héros local (LocalWeapon, vide si l'arme est
 // rangée) part en Weapon à chaque changement, et une fois à l'entrée en session, après le Spawn.
@@ -76,6 +77,17 @@
 // l'avatar invité, bloqué par le détour, arrive en LocalHitOnGuest et part en HitOnGuest{source,
 // dégâts bruts}. Chez l'invité, un HitOnGuest reçu donne ApplyHitOnGuest, appliqué par
 // sync/guest_health, seul écrivain des PV de son héros (AD-11).
+//
+// À terre et réapparition (story 3.7, protocole v14) : chez l'invité, une mise à terre (LocalDown :
+// HitOnGuest mortel ou coup natif mortel intercepté dans DownOrDeadBy*) ou une mort native (IsDead
+// passe à 1) envoie Death{2} une seule fois (verrou jusqu'au Respawn) ; à terre, les HitOnGuest reçus
+// sont ignorés. L'hôte répond Respawn{2, guest_pose_near(sa pose), 0}, place l'avatar à cette pose
+// (MoveAvatar), ne met plus l'avatar en ragdoll et ignore les entrées de snapshot du NetId 2 jusqu'à
+// l'accusé Respawn{2, pose, tick} de l'invité, puis celles de tick inférieur. L'invité qui reçoit
+// l'ordre (à terre, pas mort nativement) émet RespawnHero{pose, teleport} et renvoie l'accusé. Replis :
+// invité à terre kRespawnTimeoutMs sans Respawn → RespawnHero sur place ; hôte sans accusé
+// kRespawnAckTimeoutMs → snapshots repris. Une mort native reste à terre (session finie au
+// rechargement de l'invité).
 //
 // Robustesse (story 3.4a) : Start porte le Heartbeat encodé et ses délais, que le transport envoie
 // depuis son thread quand la frame ne le lit plus (pause du jeu). Chez l'invité, l'entrée de
@@ -234,8 +246,17 @@ struct LocalHitOnGuest {
     std::uint32_t source = 0;
     std::uint32_t damage = 0;  // dégâts bruts
 };
+// Story 3.7, invité : son héros est mis à terre (PV maintenus à 1) par `sync/guest_health`.
+inline constexpr std::uint8_t kDownCauseHitOnGuest = 0;  // HitOnGuest mortel
+inline constexpr std::uint8_t kDownCauseMelee = 1;       // DownOrDeadByMeleeWeapon intercepté
+inline constexpr std::uint8_t kDownCauseProjectile = 2;  // DownOrDeadByProjectile intercepté
+inline constexpr std::uint8_t kDownCauseInferno = 3;     // DownOrDeadByInferno intercepté
+struct LocalDown {
+    std::uint8_t cause = kDownCauseHitOnGuest;
+};
+const char* down_cause_name(std::uint8_t cause);  // "HitOnGuest", "DownOrDeadByMeleeWeapon"…
 using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor,
-                           LocalHit, LocalHitsBlocked, LocalHitOnGuest>;
+                           LocalHit, LocalHitsBlocked, LocalHitOnGuest, LocalDown>;
 
 // Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
 // (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
@@ -348,6 +369,12 @@ struct ApplyHitOnGuest {
     std::uint32_t source = 0;  // NetId du PNJ agresseur, 0 = inconnu
     std::uint32_t damage = 0;
 };
+// Story 3.7, invité : réapparition de son héros (sync/guest_health::respawn) : si `teleport`, le
+// placer à `pose` (Entity::MoveTo) ; puis PV au maximum. Sans `teleport` (repli), PV pleins sur place.
+struct RespawnHero {
+    Pose pose;
+    bool teleport = true;
+};
 // Invité : rejouer un Motion ou un réglage de l'hôte sur la réplique, sous ReplayGuard.
 struct PlayNpcMotion {
     std::uint32_t net_id = 0;
@@ -362,7 +389,7 @@ using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseRelia
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
                              ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath, ApplyHit,
-                             ApplyHitOnGuest>;
+                             ApplyHitOnGuest, RespawnHero>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -374,6 +401,11 @@ inline constexpr double kMaxMotionLeadMs = 1000.0;      // au-delà, un Motion �
 inline constexpr std::uint32_t kAniIdCount = 0x10000;   // AniId u16
 
 inline constexpr std::uint64_t kSnapshotStatsMs = 5000;  // bilan debug des snapshots
+
+// Story 3.7 : replis de la réapparition. Invité à terre sans Respawn : PV rendus sur place. Hôte sans
+// accusé du Respawn : snapshots de l'invité repris.
+inline constexpr std::uint64_t kRespawnTimeoutMs = 10000;
+inline constexpr std::uint64_t kRespawnAckTimeoutMs = 5000;
 
 // Story 3.4 (Q12, option A) : PNJ animés au plus (les plus proches), et budget visé de leurs
 // Motion, MotionParam et AniName (octets des messages par seconde, journalisé s'il est dépassé).
@@ -413,6 +445,11 @@ public:
     std::size_t animated_npc_count() const { return npc_animated_.size(); }
     bool avatar_present() const { return avatar_present_; }
     bool avatar_dead() const { return avatar_dead_; }
+    // Story 3.7. Invité : héros à terre (Death{2} envoyé, Respawn attendu). Hôte : réapparition à
+    // envoyer, ou accusé attendu.
+    bool guest_down() const { return guest_down_; }
+    bool respawn_pending() const { return respawn_pending_; }
+    bool respawn_waiting() const { return respawn_wait_; }
     std::uint32_t conv() const { return conv_; }
     const Endpoint& peer() const { return peer_; }
 
@@ -422,7 +459,8 @@ private:
     void on_reliable(std::uint64_t now, const ReliableIn& in, Output& out);
     void on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& out);
     void on_local_motion(std::uint64_t now, const LocalMotion& in, Output& out);
-    void send_death(const World& world, Output& out);
+    void send_death(std::uint64_t now, const World& world, Output& out);
+    bool send_down(std::uint64_t now, Output& out);  // story 3.7, invité : Death{2}, état à terre
     void on_peer_motion(const protocol::Motion& m, Output& out);
     void on_local_param(std::uint64_t now, const LocalParam& in, Output& out);
     void on_peer_param(const protocol::MotionParam& p);
@@ -465,6 +503,14 @@ private:
     // Story 3.6. Hôte : coup sur l'avatar invité (HitOnGuest). Invité : HitOnGuest reçu (ApplyHitOnGuest).
     void on_local_hit_on_guest(const LocalHitOnGuest& in, Output& out);
     void on_hit_on_guest(const protocol::HitOnGuest& m, Output& out);
+    // Story 3.7. Invité : mise à terre (LocalDown), Respawn reçu (ordre), repli. Hôte : Death{2} reçu,
+    // envoi du Respawn dû, accusé reçu, repli ; filtre des entrées de snapshot du NetId 2.
+    void on_local_down(std::uint64_t now, const LocalDown& in, Output& out);
+    void on_guest_death(Output& out);
+    void on_respawn(std::uint64_t now, const protocol::Respawn& m, Output& out);
+    void respawn_timers(std::uint64_t now, const World& world, Output& out);
+    bool accepts_guest_entry(std::uint32_t tick);
+    void reset_respawn();
     bool on_npc_entity(std::uint64_t now, std::uint32_t tick, const protocol::SnapshotEntity& e);
     struct Replica;
     void push_npc_entity(Replica& r, std::uint32_t tick, const protocol::SnapshotEntity& e);
@@ -536,7 +582,7 @@ private:
     std::unordered_map<std::string, std::uint16_t> ani_ids_;   // émetteur : nom → AniId
     std::uint32_t next_ani_id_ = 0;
     bool ani_full_logged_ = false;
-    bool death_sent_ = false;  // Death envoyé pour la mort en cours (remis à faux au retour à la vie)
+    bool death_sent_ = false;  // Death envoyé pour la mort en cours (hôte ; l'invité suit guest_down_, story 3.7)
     std::unordered_map<std::uint16_t, std::string> peer_names_;  // récepteur : AniId → nom
     std::unordered_set<std::uint16_t> warned_ani_ids_;            // une ligne de log par AniId
     // Événement d'animation du pair en attente : Motion (avec son nom) ou MotionParam.
@@ -637,6 +683,21 @@ private:
     struct GuestHitCounters {
         unsigned sent = 0, received = 0, ignored = 0;
     } guest_hits_;
+    // Story 3.7 : à terre et réapparition. Invité : à terre (Death{2} envoyé), depuis quand, mort native
+    // (IsDead) en cours et déjà signalée. Hôte : Respawn à envoyer, accusé attendu depuis
+    // respawn_sent_at_, premier tick valide des entrées du NetId 2.
+    bool guest_down_ = false;
+    std::uint64_t down_since_ = 0;
+    bool native_dead_ = false;
+    bool respawn_pending_ = false;
+    bool respawn_wait_ = false;
+    std::uint64_t respawn_sent_at_ = 0;
+    std::uint32_t respawn_min_tick_ = 0;
+    // Invité : Death{2} envoyés, Respawn (ordres) reçus et acceptés, accusés envoyés. Hôte : Death{2}
+    // reçus, Respawn envoyés, accusés reçus, entrées de snapshot périmées. Les deux : ignorés.
+    struct RespawnCounters {
+        unsigned deaths = 0, sent = 0, received = 0, acks = 0, ignored = 0, stale = 0;
+    } respawn_;
     // Animations des PNJ (story 3.4). Hôte : NetId animés, filtre des réglages par PNJ, réglages de
     // la frame en attente (ordre de leur dernière mise à jour).
     std::set<std::uint32_t> npc_animated_;

@@ -261,6 +261,10 @@ void execute(cs::Output out) {
                 guest_health::apply_hit(ag->source, ag->damage);
                 continue;
             }
+            if (const auto* rh = std::get_if<cs::RespawnHero>(&cmd)) {  // story 3.7 : chez l'invité
+                guest_health::respawn(rh->pose, rh->teleport);
+                continue;
+            }
             if (g_transport == nullptr) continue;
             bool posted = true;
             if (auto* s = std::get_if<cs::Send>(&cmd)) {
@@ -406,6 +410,7 @@ void frame() {
     }
     local_captures(world);
     hits::drain(g_inputs);  // stories 3.5 et 3.6 : coups du héros, coups sur l'avatar, coups natifs bloqués
+    guest_health::drain(g_inputs);  // story 3.7 : mise à terre du héros invité (LocalDown)
     // Story 3.3 : répliques (et, story 3.4, PNJ animés de l'hôte) revérifiées une fois par frame,
     // avant leurs commandes ; appels de routine bloqués (IA figée), pour le bilan debug.
     if (npc::count() != 0) npc::validate();

@@ -72,6 +72,9 @@ type sessionConfig struct {
 	// teste le refus de l'hôte.
 	HitInterval time.Duration
 	HitTarget   uint32
+	// Story 3.7 : Death{2} (« à terre ») DieEvery après l'entrée en session, puis DieEvery après
+	// chaque Respawn reçu (0 = jamais).
+	DieEvery time.Duration
 
 	HelloInterval     time.Duration
 	ConnectTimeout    time.Duration
@@ -130,7 +133,11 @@ type sessionResult struct {
 	HitsTx int // HitRequest envoyés
 	// Coups subis par l'invité (v13, story 3.6) : journalisés, jamais appliqués.
 	HitsOnGuestRx int // HitOnGuest reçus
-	EndReason     string
+	// À terre et réapparition (v14, story 3.7).
+	DownDeathsTx int // Death{2} envoyés par --die-every
+	RespawnsRx   int // Respawn (ordres) reçus de l'hôte
+	RespawnAcks  int // accusés Respawn envoyés
+	EndReason    string
 }
 
 // npcStats : bilan d'un PNJ annoncé par l'hôte (v9) : annonces, poses reçues, PV.
@@ -205,12 +212,16 @@ type guest struct {
 	deathSent      bool
 	motionRxPeriod int
 	paramRxPeriod  int
-	npcPosePeriod  int             // entités de PNJ reçues depuis la dernière ligne de bilan
-	npcAnimPeriod  map[uint32]bool // v10 : PNJ animés depuis la dernière ligne de bilan
-	npcAnimWarned  map[uint32]bool // v10 : NetId ignorés déjà journalisés
-	endAt          time.Time       // fin de --duration (zéro = aucune)
-	extraHello     bool            // --dup-hello : Hello supplémentaire encore à envoyer
-	nextHit        time.Time       // v12 : prochain HitRequest (--hit-interval)
+	npcPosePeriod  int                     // entités de PNJ reçues depuis la dernière ligne de bilan
+	npcAnimPeriod  map[uint32]bool         // v10 : PNJ animés depuis la dernière ligne de bilan
+	npcAnimWarned  map[uint32]bool         // v10 : NetId ignorés déjà journalisés
+	endAt          time.Time               // fin de --duration (zéro = aucune)
+	extraHello     bool                    // --dup-hello : Hello supplémentaire encore à envoyer
+	nextHit        time.Time               // v12 : prochain HitRequest (--hit-interval)
+	nextDie        time.Time               // v14 : prochain Death{2} (--die-every ; zéro = aucun)
+	down           bool                    // v14 : Death{2} envoyé, Respawn attendu
+	hostPose       protocol.SnapshotEntity // v14 : dernière pose du héros de l'hôte (écho après Respawn)
+	hostPoseOK     bool
 	incoming       chan datagram
 }
 
@@ -277,6 +288,12 @@ func (g *guest) run(ctx context.Context) sessionResult {
 			if g.cfg.HitInterval > 0 && !now.Before(g.nextHit) {
 				g.sendHit()
 				g.nextHit = now.Add(g.cfg.HitInterval)
+			}
+			if g.cfg.DieEvery > 0 && !g.down && !now.Before(g.nextDie) {
+				g.down = true
+				g.res.DownDeathsTx++
+				g.sendReliable(protocol.Death{NetId: protocol.GuestNetId})
+				g.log.printf("-> Death netid=%d (à terre, --die-every)", protocol.GuestNetId)
 			}
 			if !now.Before(g.nextHBLog) {
 				g.log.printf("Heartbeat envoyés=%d reçus=%d (total %d/%d) ; snapshots envoyés=%d reçus=%d ; Motion reçus=%d ; MotionParam reçus=%d ; PNJ suivis=%d poses=%d inattendues=%d animés=%d",
@@ -585,6 +602,8 @@ func (g *guest) handle(d datagram) (sessionResult, bool) {
 				hostSeen = true
 				g.res.SnapshotsRx++
 				g.snapRxPeriod++
+				g.hostPose = e
+				g.hostPoseOK = true
 				if g.cfg.Echo {
 					g.echoSnapshot(time.Now(), e)
 				}
@@ -698,6 +717,9 @@ func (g *guest) enterSession(w protocol.Welcome) {
 	g.hostNames = map[uint16]string{}
 	g.lastEventMs = -1
 	g.deathSent = false
+	g.down = false
+	g.hostPoseOK = false
+	g.nextDie = now.Add(g.cfg.DieEvery)    // v14 : première mise à terre une période après l'entrée en session
 	g.nextHit = now.Add(g.cfg.HitInterval) // premier coup une période après l'entrée en session
 	g.sendReliable(g.spawn)                // avatar de l'invité chez l'hôte (v3) ; le scénario part de cette pose
 	// Arme en main (v7), juste après le Spawn : l'avatar apparaît armé.
@@ -785,12 +807,38 @@ func (g *guest) drain() (sessionResult, bool) {
 		case protocol.HitOnGuest:
 			g.res.HitsOnGuestRx++
 			g.log.printf("<- HitOnGuest source=%d dégâts=%d", m.Source, m.Damage)
+		case protocol.Respawn:
+			g.respawn(m)
 		case protocol.SessionEnd:
 			g.log.printf("<- SessionEnd raison=%d (%s)", m.Reason, protocol.EndReasonName(m.Reason))
 			g.kcp.Flush() // acquitte le SessionEnd avant de fermer
 			return g.endSession(exitOK, protocol.EndReasonName(m.Reason), false), true
 		}
 	}
+}
+
+// respawn : ordre de réapparition de l'hôte (v14). La pose simulée devient celle du Respawn (ancre
+// du scénario, ou décalage de l'écho par rapport à l'hôte), puis l'accusé part avec le premier tick
+// de snapshot qui la porte (tick courant + 1, comme la DLL).
+func (g *guest) respawn(m protocol.Respawn) {
+	g.log.printf("<- Respawn netid=%d pose=(%g, %g, %g, %g)", m.NetId, m.X, m.Y, m.Z, m.Yaw)
+	if m.NetId != protocol.GuestNetId || !finite(m.X, m.Y, m.Z, m.Yaw) {
+		g.log.printf("<- Respawn ignoré (NetId autre que 2 ou pose non finie)")
+		return
+	}
+	g.res.RespawnsRx++
+	now := time.Now()
+	g.spawn.X, g.spawn.Y, g.spawn.Z, g.spawn.Yaw = m.X, m.Y, m.Z, m.Yaw
+	if g.hostPoseOK { // écho : même décalage, à partir de la pose actuelle de l'hôte
+		g.welcome.X, g.welcome.Y, g.welcome.Z = g.hostPose.X, g.hostPose.Y, g.hostPose.Z
+	}
+	tick := uint32(now.Sub(g.sessionStart)/(protocol.SnapshotTickMs*time.Millisecond)) + 1
+	g.sendReliable(protocol.Respawn{NetId: protocol.GuestNetId, X: m.X, Y: m.Y, Z: m.Z, Yaw: m.Yaw, Tick: tick})
+	g.res.RespawnAcks++
+	g.log.printf("-> Respawn accusé tick=%d", tick)
+	g.down = false
+	g.deathSent = false // scénario : une nouvelle mort repartira
+	g.nextDie = now.Add(g.cfg.DieEvery)
 }
 
 // endSession : SessionEnd{1} si demandé (puis attente bornée de son acquittement),
@@ -1014,6 +1062,10 @@ func (g *guest) end(code int, reason string) sessionResult {
 	g.npcSummary()
 	if g.cfg.HitInterval > 0 || g.res.HitsOnGuestRx > 0 {
 		g.log.printf("Bilan coups : HitRequest envoyés=%d HitOnGuest reçus=%d", g.res.HitsTx, g.res.HitsOnGuestRx)
+	}
+	if g.cfg.DieEvery > 0 || g.res.RespawnsRx > 0 {
+		g.log.printf("Bilan à terre : Death envoyés=%d Respawn reçus=%d accusés=%d", g.res.DownDeathsTx,
+			g.res.RespawnsRx, g.res.RespawnAcks)
 	}
 	g.res.Code = code
 	g.res.EndReason = reason

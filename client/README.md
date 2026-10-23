@@ -125,7 +125,9 @@ timeout des deux côtés, au moins 4 heartbeats de secours journalisés à la re
 snapshots), puis `--hit-target 1500` : `HitRequest PNJ 1500 ignoré : NetId inconnu`, aucune
 commande ; (story 3.6) `--npcs 1 --hit-guest-ms 500` face au faux invité : `HitOnGuest envoyé,
 dégâts bruts 18` chez l'hôte, un `<- HitOnGuest source=1000 dégâts=18` par coup chez le faux
-invité. Le test CTest
+invité ; (story 3.7) faux invité `--die-every 1s --duration 4s --quit` : chez l'hôte, à chaque mort,
+`Death reçu : invité à terre`, `Respawn envoyé` et `réapparition confirmée par l'invité (tick T)`,
+jamais d'`AvatarDeath` ; chez le faux invité `<- Respawn netid=2` et `-> Respawn accusé tick=T`. Le test CTest
 `session_fake_guest` est enregistré avec `fake_guest` (si `go` est trouvé) ; il dure environ
 90 s. Lancement à la main :
 
@@ -695,9 +697,9 @@ vraie Game.dll) seulement. Protocole **v13** (`HitOnGuest`, type 23). Même dét
 - **Invité** : tout coup natif sur son héros est bloqué, quel que soit l'agresseur
   (`coup natif bloqué : PNJ N -> héros (seuls les HitOnGuest blessent)`). Un `HitOnGuest` reçu est
   appliqué par `sync/guest_health`, seul écrivain des PV du héros (`SetHitPoints` fixé) :
-  `[sync] HitOnGuest (source PNJ N) appliqué : dégâts bruts D, PV a -> b`. **Jusqu'à la story 3.7**,
-  un coup mortel laisse le héros à 1 PV : `[sync] HitOnGuest mortel (source …) : héros maintenu à
-  1 PV (à terre : story 3.7)` (Warn). Pas de recul ni d'effet d'impact chez l'invité.
+  `[sync] HitOnGuest (source PNJ N) appliqué : dégâts bruts D, PV a -> b`. Un coup mortel laisse le
+  héros à 1 PV et le met à terre (story 3.7, section suivante). Pas de recul ni d'effet d'impact
+  chez l'invité.
 - Bilan `[sync] snapshots (5 s)` : en fin de ligne, `coups subis : HitOnGuest envoyés …, reçus …,
   ignorés …` (hôte : envoyés ; invité : reçus ; un `HitOnGuest` reçu par l'hôte est ignoré, Warn).
 
@@ -717,8 +719,56 @@ invité reconstruit). Si `dégâts inactifs` nomme un des trois getters `GetDama
    `coup natif bloqué : PNJ N -> héros (seuls les HitOnGuest blessent)` (son absence tranche H4),
    et à chaque coup `HitOnGuest (source PNJ N) appliqué : …, PV a -> b`, jauge qui baisse (H6).
    Bilans : `HitOnGuest envoyés X` côté hôte, `reçus X` côté invité.
-6. **Deux machines, coup mortel** : laisser frapper l'invité jusqu'au bout : `HitOnGuest mortel (…) :
-   héros maintenu à 1 PV`, héros debout à 1 PV, ni menu de chargement ni fin de session.
+6. **Deux machines, coup mortel** : voir la story 3.7 ci-dessous (mise à terre puis réapparition).
+
+### À terre et réapparition de l'invité (story 3.7, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité `--die-every` ; banc Wine : symboles
+`DownOrDeadBy*` et `GetHitPointsMax`) seulement. Protocole **v14** (`Respawn`, type 25 ; `Death{2}` =
+« à terre »).
+- **Invité, mise à terre** : un `HitOnGuest` mortel (`sync/guest_health`, héros laissé à 1 PV) ou un
+  coup natif mortel intercepté dans `DownOrDeadBy*` (Warn `[sync] coup natif mortel intercepté
+  (DownOrDeadBy…) : héros à 1 PV, à terre`) donne `[sync] héros à terre (<cause>) : Death envoyé,
+  attente du Respawn`. `Death{2}` part une seule fois : les mises à terre suivantes sont ignorées
+  (Debug) et les `HitOnGuest` reçus à terre aussi (`ignoré (héros à terre)`).
+- **Hôte** : `[sync] Death reçu : invité à terre, Respawn à envoyer`, puis au premier tick où la pose
+  de son héros est lisible `[sync] Respawn envoyé : invité replacé (x, y, z) lacet=…` (2 m devant son
+  héros, tourné vers lui) ; l'avatar y saute aussitôt, **sans ragdoll**. Ses snapshots sont ignorés
+  (« snapshots périmés ») jusqu'à `[sync] réapparition confirmée par l'invité (tick T)`, puis ceux de
+  tick < T.
+- **Invité, réapparition** : `[sync] Respawn reçu : héros replacé (…), PV pleins ; accusé envoyé
+  (tick T)`, puis `[sync] héros local replacé (réapparition) : …` et `[sync] réapparition : PV du
+  héros remis à N ; placé en …`.
+- **Replis** : invité sans `Respawn` depuis 10 s → Warn `pas de Respawn de l'hôte depuis 10 s : PV
+  rendus sur place` ; hôte sans accusé depuis 5 s → Warn `pas d'accusé de Respawn depuis 5 s :
+  snapshots de l'invité repris`.
+- **Mort native (limite)** : chute ou eau profonde ne passent pas par les détours. Warn `[sync] mort
+  native du héros (chute, eau profonde ?) : Death envoyé ; réapparition impossible, la session finira
+  au rechargement` ; le `Respawn` est refusé (`pas de relève d'un mort`), l'écran de mort natif
+  s'affiche et la session finit au rechargement de l'invité (fin de monde) ; l'hôte se réarme.
+- **Installation** : `[hooks] détours DownOrDeadBy* de session posés (mise à terre de l'invité)`, ou
+  Warn `[hooks] DownOrDeadBy* inactifs : … (coup natif mortel non intercepté si le point d'accroche
+  des dégâts manque)` : la session continue (sur le banc Wine, `Script_Game.dll` est absente).
+- Bilan `[sync] snapshots (5 s)` : en fin de ligne, `à terre : Death …, Respawn envoyés …, reçus …,
+  accusés …, ignorés …, snapshots périmés …` (hôte : Death reçus, Respawn envoyés, accusés reçus ;
+  invité : Death envoyés, Respawn reçus, accusés envoyés).
+
+Prérequis : comme la 3.6, plus `cd tools/fake-guest && go build`.
+
+1. **Installation** : la ligne des détours `DownOrDeadBy*` de session ; un Warn `inactifs` est à
+   rapporter.
+2. **Une machine, hôte + faux invité qui meurt** : `fake-guest --host 127.0.0.1 --duration 120s
+   --echo --die-every 10s`. Chez l'hôte, une fois par mort : `Death reçu : invité à terre`, `Respawn
+   envoyé`, `réapparition confirmée (tick T)`. L'avatar ne passe jamais en ragdoll, saute 2 m devant
+   le héros de l'hôte, puis reprend l'écho sans revenir à l'ancienne position. Chez le faux invité :
+   `<- Respawn netid=2 pose=…` et `-> Respawn accusé tick=T`.
+3. **Mort de l'hôte** : fin de session raison 3, comme avant.
+4. **Deux machines, monstres** : l'invité tombe à 1 PV, `Death` part une fois, il réapparaît devant
+   l'hôte jauge pleine, sans menu de chargement ni ragdoll ; la session continue (H1, H2).
+5. **Deux machines, filet** : `damage_hook = 0` chez l'invité, se faire tuer : `coup natif mortel
+   intercepté (DownOrDeadBy…)`, puis la réapparition (H4).
+6. **Deux machines, chute ou eau profonde** : Warn `mort native du héros …`, `Respawn` refusé, fin de
+   session au rechargement de l'invité, aucun crash (H5).
 
 ### Fin de session en jeu (story 1.5, une machine)
 

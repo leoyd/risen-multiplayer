@@ -73,6 +73,10 @@ expect_no_log "nominal : log_level=info, aucune ligne DEBUG" "$d" "DEBUG"
 # Story 3.5 (Q8) : point d'accroche des dégâts posé par défaut (damage_hook = 1), symboles résolus.
 expect_log "nominal : point d'accroche des dégâts posé" "$d" "\[hooks\] point d'accroche des dégâts posé (gCDamage_PS::DoDamage)"
 expect_no_log "nominal : dégâts actifs" "$d" "dégâts inactifs"
+# Story 3.7 : détours DownOrDeadBy* de session facultatifs ; le banc ne charge jamais Script_Game.dll :
+# Warn nommé, session installée quand même.
+expect_log "nominal : DownOrDeadBy* inactifs, cause nommée" "$d" \
+    "\[hooks\] DownOrDeadBy\* inactifs : Script_Game.dll introuvable"
 
 # Spike J1 : sonde explicitement désactivée (hooks de session), puis activée (hooks posés sur les vraies
 # DLL du jeu ; le banc n'appelle jamais OnProcess, donc aucun tick).
@@ -107,8 +111,12 @@ expect_log "probe = 1 : J2 : hook Routine posé" "$d" "\[hooks\] J2 : hook Routi
 expect_no_log "probe = 1 : J2 : ABI du combat résolue" "$d" "expériences Num1 à Num6 inactives"
 expect_log "probe = 1 : J2 : Q7 inactive, cause nommée" "$d" \
     "\[hooks\] J2 : expérience Q7 (Num6, mort interceptée) inactive : Script_Game.dll introuvable"
-# Noms décorés de Kill et Defeat présents dans la Script_Game.dll du jeu (résolus en jeu seulement).
-for sym in '?Kill@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' '?Defeat@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z'; do
+# Noms décorés de Kill, Defeat et DownOrDeadBy* (sonde J2, session depuis la story 3.7) présents dans
+# la Script_Game.dll du jeu (résolus en jeu seulement).
+for sym in '?Kill@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' '?Defeat@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' \
+    '?DownOrDeadByMeleeWeapon@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' \
+    '?DownOrDeadByProjectile@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' \
+    '?DownOrDeadByInferno@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z'; do
     if grep -qaF -- "$sym" "$risen_bin/scripts/Script_Game.dll" 2>/dev/null; then
         echo "[ OK ] Script_Game.dll exporte $sym"
     else
@@ -132,9 +140,10 @@ done
 
 # Story 3.3 : symboles de resolve_npc présents dans les DLL du jeu (Script, Engine, Game) ;
 # story 3.4b : PSRoutine::PropertyAIMode (lecture et operator=) ; story 3.5 : resolve_damage ;
-# story 3.6 : getters des dégâts bruts (resolve_damage).
+# story 3.6 : getters des dégâts bruts (resolve_damage) ; story 3.7 : PSSkills::GetHitPointsMax (resolve_npc).
 for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Script.dll|?UpdateEntityLists@Entity@@KAXXZ' \
     'Script.dll|?IsPlayer@Entity@@QEBA_NXZ' 'Script.dll|?GetHitPoints@PSSkills@@QEBAHXZ' \
+    'Script.dll|?GetHitPointsMax@PSSkills@@QEBAHXZ' \
     'Script.dll|?SetHitPoints@PSSkills@@QEAAXHW4gESkillModifier@@@Z' 'Script.dll|?IsDead@Entity@@QEBA_NXZ' \
     'Script.dll|?GetPose@Entity@@QEBA?AVbCMatrix@@XZ' 'Script.dll|?MoveTo@Entity@@QEAAXAEBVbCMatrix@@@Z' \
     'Engine.dll|?GetID@eCDynamicEntity@@UEBAAEBVbCPropertyID@@XZ' \

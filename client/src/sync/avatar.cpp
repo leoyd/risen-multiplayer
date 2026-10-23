@@ -662,17 +662,18 @@ bool present() { return !g_table.empty(); }
 
 void* entity() { return g_table.empty() ? nullptr : g_table.front().entity.ptr; }
 
-void teleport_player(const Pose& pose) {
+bool teleport_player(const Pose& pose, const char* what) {
     game::Entity player;
     if (!game::get_player(player) || player.ptr == nullptr) {
         log::error("[sync] téléportation impossible : pas de héros local");
-        return;
+        return false;
     }
     if (!game::move_to(player, matrix_of(pose))) {
         log::error("[sync] téléportation : Entity::MoveTo a levé une exception (SEH)");
-        return;
+        return false;
     }
-    log::info("[sync] héros local placé devant l'hôte : " + pose_text(pose));
+    log::info(std::string("[sync] héros local ") + what + " : " + pose_text(pose));
+    return true;
 }
 
 bool on_play_motion(void* animation_ps, int type, void* desc, bool flag) noexcept {

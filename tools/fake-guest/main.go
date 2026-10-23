@@ -23,7 +23,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v13, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v14, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte (--strict-timeout : sans message).
 
@@ -43,6 +43,9 @@ Coups (v12) : --hit-interval <durée> envoie un HitRequest à cette cadence, sur
 (0 : premier PNJ présent et vivant ; NetId non vérifié, pour tester le refus de l'hôte).
 Coups subis (v13) : chaque HitOnGuest de l'hôte est journalisé « <- HitOnGuest source=N dégâts=D »
 et compté au bilan (HitOnGuest reçus=), jamais appliqué.
+À terre (v14) : --die-every <durée> envoie Death{2} cette durée après l'entrée en session, puis
+cette durée après chaque Respawn reçu. Chaque Respawn de l'hôte est journalisé « <- Respawn netid=2
+pose=(x, y, z, lacet) », devient la pose simulée et reçoit son accusé (« -> Respawn accusé tick=T »).
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :
@@ -100,6 +103,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	armor := fs.String("armor", "", "armure de l'invité, envoyée en Armor après le Weapon (« - » : sans armure ; vide : pas d'Armor)")
 	hitInterval := fs.Duration("hit-interval", 0, "cadence des HitRequest sur un PNJ, ex. 1s (0 = aucun)")
 	hitTarget := fs.Uint("hit-target", 0, "NetId visé par les HitRequest (0 = premier PNJ présent et vivant)")
+	dieEvery := fs.Duration("die-every", 0, "Death{2} (à terre) cette durée après l'entrée en session, puis après chaque Respawn reçu, ex. 10s (0 = jamais)")
 	strictTimeout := fs.Bool("strict-timeout", false, "timeout compté sur les seuls messages de l'hôte (contrôle, messages fiables rendus par KCP, snapshots), pas sur les acquittements KCP")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), usageText)
@@ -145,6 +149,9 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	}
 	if *hitInterval < 0 {
 		return usageError("--hit-interval négative")
+	}
+	if *dieEvery < 0 {
+		return usageError("--die-every négative")
 	}
 	if *hitTarget > math.MaxUint32 {
 		return usageError("--hit-target hors bornes (%d)", *hitTarget)
@@ -210,6 +217,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 
 		HitInterval: *hitInterval,
 		HitTarget:   uint32(*hitTarget),
+		DieEvery:    *dieEvery,
 
 		StrictTimeout: *strictTimeout,
 	}

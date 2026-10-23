@@ -1,3 +1,4 @@
-# Debout 2 s, puis mort (Death) : l'avatar s'effondre en ragdoll et ne bouge plus.
+# Debout 2 s, puis mort (Death{2}) : depuis la v14 (story 3.7), l'invité est « à terre » ; l'hôte
+# répond Respawn et replace l'avatar 2 m devant son héros (plus de ragdoll).
 pause 30
 mort 2

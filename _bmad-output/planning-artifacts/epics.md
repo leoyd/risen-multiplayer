@@ -625,3 +625,5 @@ So that une mort ne mette pas fin à la partie à deux (FR-12).
 **Given** la mort du héros de l’hôte
 **When** elle arrive
 **Then** elle reste native et met fin à la session (AD-11), sans changement.
+
+*Note (implémentation 3.7, protocole v14) :* `Respawn` = type 25, `{NetId u32, x, y, z, lacet f32, tick u32}`, dans les deux sens : ordre de l’hôte (2 m devant son héros, `tick` 0) et accusé de l’invité (`tick` = premier tick de snapshot qui porte la nouvelle pose). `Death{2}` = « à terre » : plus de ragdoll de l’avatar chez l’hôte. Question 13 tranchée par l’accusé (snapshots du `NetId` 2 ignorés jusqu’à lui, puis ceux de tick inférieur). Replis : 10 s sans `Respawn` chez l’invité (PV rendus sur place), 5 s sans accusé chez l’hôte (snapshots repris). Question 9 : **limite documentée**, une mort native (chute, eau profonde) n’est pas interceptée ; l’invité envoie `Death{2}`, refuse le `Respawn`, et la session finit à son rechargement (le critère « sans fin de session » n’est pas tenu dans ce cas). Les détours `DownOrDeadBy*` sont posés en session comme filet, facultatifs.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hôte de session Linux (session_host : core/session + net::Transport) face au faux invité Go
-# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c, 3.3, 3.4, 3.4a et 3.5 : preuve du comportement de l'hôte sans le jeu.
+# (tools/fake-guest), stories 1.4, 1.5, 2.2, 2.3, 2.4, 3.2, 3.2b, 3.2c, 3.3, 3.4, 3.4a, 3.5, 3.6 et 3.7 : preuve du comportement de l'hôte sans le jeu.
 # Usage : session_fake_guest.sh <session_host> <dossier tools/fake-guest>
 set -uo pipefail
 
@@ -263,8 +263,10 @@ if start_host gestes $p 30000; then
     order=$(grep -E "PlayAvatar(Motion|Param)" "$h" | sed -E 's/.*« (Hero_[A-Za-z]+) ».*/\1/; s/.*PlayAvatarParam.*/Param/' | tr '\n' ,)
     if [[ $order == "Hero_Run,Hero_Jump,Param,Hero_Attack," ]]; then ok "gestes : dans l'ordre (réglage compris)"; else ko "gestes : ordre $order"; fi
     expect_log "gestes : réglage de locomotion rejoué" "$h" "PlayAvatarParam NetId 2 type 0 nature 0 valeur 1.000000"
-    expect_log "gestes : mort de l'avatar" "$h" "AvatarDeath NetId 2"
-    expect_log "gestes : Death reçu" "$h" "Death reçu : avatar 2 (invité) en ragdoll"
+    # Story 3.7 (v14) : Death{2} = invité à terre ; plus de ragdoll, l'hôte répond Respawn.
+    expect_count "gestes : pas de ragdoll de l'avatar" "$h" "AvatarDeath NetId 2" 0
+    expect_log "gestes : Death reçu (à terre)" "$h" "Death reçu : invité à terre, Respawn à envoyer"
+    expect_log "gestes : Respawn envoyé" "$h" "Respawn envoyé : invité replacé"
     expect_count "gestes : rien d'ignoré" "$h" "Motion d'AniId" 0
 fi
 
@@ -516,6 +518,33 @@ if start_host coups_subis $p 30000 1 --npcs 1 --hit-guest-ms 500; then
         ko "coups subis : $received HitOnGuest reçus pour $sent envoyés (4 au moins, écart ≤ 1 attendu)"
     fi
     expect_log "coups subis : bilan de l'invité" "$g" "HitOnGuest reçus=[1-9]"
+fi
+
+# --- Story 3.7 : invité à terre toutes les secondes : Respawn de l'hôte, accusé de l'invité -----
+p=$((base_port + 22))
+if start_host respawn $p 30000; then
+    h=$work/respawn.host.log
+    g=$work/respawn.guest.log
+    "$guest" --host 127.0.0.1 --port $p --die-every 1s --duration 4s --quit > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "réapparition : invité" 0 $rc "$g"
+    expect_log "réapparition : Death reçu par l'hôte" "$h" "Death reçu : invité à terre, Respawn à envoyer"
+    expect_log "réapparition : Respawn envoyé" "$h" "Respawn envoyé : invité replacé"
+    expect_log "réapparition : confirmée par l'invité" "$h" "réapparition confirmée par l'invité (tick [1-9]"
+    expect_log "réapparition : Respawn reçu par l'invité" "$g" "<- Respawn netid=2 pose="
+    expect_log "réapparition : accusé envoyé" "$g" "-> Respawn accusé tick="
+    expect_count "réapparition : jamais de ragdoll" "$h" "AvatarDeath" 0
+    # À chaque mort : un Respawn ; une confirmation par Respawn, sauf peut-être le dernier (Death{2}
+    # envoyé juste avant le départ de l'invité à 4 s : Respawn sans accusé).
+    deaths=$(grep -c "Death reçu : invité à terre" "$h")
+    sent=$(grep -c "Respawn envoyé : invité replacé" "$h")
+    confirmed=$(grep -c "réapparition confirmée par l'invité" "$h")
+    if [[ $deaths -ge 2 && $sent -eq $deaths && ( $confirmed -eq $sent || $confirmed -eq $((sent - 1)) ) ]]; then
+        ok "réapparition : $deaths morts, $sent Respawn, $confirmed confirmations"
+    else
+        ko "réapparition : $deaths morts, $sent Respawn, $confirmed confirmations (≥ 2, Respawn = morts, confirmations = Respawn ou Respawn − 1 attendus)"
+        sed 's/^/    /' "$h"
+    fi
 fi
 
 # --- Story 3.4a : jeu de l'hôte en pause 7 s (cinématique, chargement) : pas de timeout ------

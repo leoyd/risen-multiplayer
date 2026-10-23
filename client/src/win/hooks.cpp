@@ -5,6 +5,7 @@
 #include "game/entity.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/guest_health.h"
 #include "sync/hits.h"
 #include "sync/probe.h"
 #include "sync/probe_j2.h"
@@ -28,7 +29,7 @@ game::SwitchFadeOutFn g_original_switch_fade_out = nullptr;
 game::WrapperStopMotionFn g_original_wrapper_stop_motion = nullptr;
 game::RoutineOnProcessFn g_original_routine_on_process = nullptr;  // spike J2 (Num4)
 game::ScriptFn g_original_kill = nullptr;                           // spike J2 (Num6)
-game::ScriptFn g_original_down_or_dead[3] = {};                     // spike J2 (Num6, 5ᵉ test)
+game::ScriptFn g_original_down_or_dead[3] = {};  // spike J2 (Num6, 5ᵉ test) ; session (story 3.7) : sonde et session sont exclusives
 using DamageDoDamageFn = bool (*)(void* damage_ps, void* target);
 DamageDoDamageFn g_original_damage = nullptr;                       // story 3.5 (Q8)
 bool g_initialized = false;
@@ -103,6 +104,16 @@ long long detour_kill(void* spu, void* self, void* other, long long arg) {
 template <int Which>
 long long detour_down_or_dead(void* spu, void* self, void* other, long long arg) {
     if (sync::probe_j2::intercept_down_or_dead(Which, spu, other)) return 0;
+    return g_original_down_or_dead[Which](spu, self, other, arg);
+}
+
+// Story 3.7 (AD-11, AD-12) : filet de la mise à terre de l'invité. Un coup natif mortel resté sur
+// son héros (point d'accroche des dégâts absent, damage_hook = 0) est annulé par sync/guest_health
+// (héros à 1 PV, mise à terre), qui rend true : le détour rend alors 0 sans appeler l'original.
+// Même thread qu'OnProcess (exception AD-2 documentée).
+template <int Which>
+long long detour_down_or_dead_session(void* spu, void* self, void* other, long long arg) {
+    if (sync::guest_health::on_down_or_dead(Which, spu, other)) return 0;
     return g_original_down_or_dead[Which](spu, self, other, arg);
 }
 
@@ -290,6 +301,31 @@ bool install_session(bool damage_hook) {
     } else {
         log::warn("[hooks] dégâts inactifs : point d'accroche impossible (gCDamage_PS::DoDamage)");
     }
+    // Story 3.7 : détours DownOrDeadBy* de session, facultatifs (Script_Game.dll déjà chargée par le
+    // jeu) : sans eux, la session continue, sans filet si le point d'accroche des dégâts manque.
+    bool down_or_dead = false;
+    std::string down_or_dead_reason;
+    const char* script_game_missing = nullptr;
+    if (game::resolve_script_game(script_game_missing)) {
+        down_or_dead =
+            create(game::down_or_dead_address(0), reinterpret_cast<void*>(&detour_down_or_dead_session<0>),
+                   reinterpret_cast<void**>(&g_original_down_or_dead[0]), "DownOrDeadByMeleeWeapon") &&
+            create(game::down_or_dead_address(1), reinterpret_cast<void*>(&detour_down_or_dead_session<1>),
+                   reinterpret_cast<void**>(&g_original_down_or_dead[1]), "DownOrDeadByProjectile") &&
+            create(game::down_or_dead_address(2), reinterpret_cast<void*>(&detour_down_or_dead_session<2>),
+                   reinterpret_cast<void**>(&g_original_down_or_dead[2]), "DownOrDeadByInferno");
+        if (!down_or_dead) {
+            down_or_dead_reason = "MH_CreateHook a échoué";
+            // Un détour créé seul resterait désactivé avec les autres : on retire ceux qui ont réussi.
+            for (int i = 0; i < 3; ++i) MH_RemoveHook(game::down_or_dead_address(i));
+        }
+    } else {
+        down_or_dead_reason = std::string(script_game_missing != nullptr ? script_game_missing : "?") + " introuvable";
+    }
+    if (!down_or_dead) {
+        log::warn("[hooks] DownOrDeadBy* inactifs : " + down_or_dead_reason +
+                  " (coup natif mortel non intercepté si le point d'accroche des dégâts manque)");
+    }
     s = MH_EnableHook(MH_ALL_HOOKS);
     if (s != MH_OK) {
         log::error(std::string("[hooks] session inactive : MH_EnableHook : ") + MH_StatusToString(s));
@@ -299,6 +335,7 @@ bool install_session(bool damage_hook) {
     log::info("[hooks] hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, "
               "gCScriptRoutine_PS::OnProcess)");
     if (damage) log::info("[hooks] point d'accroche des dégâts posé (gCDamage_PS::DoDamage)");
+    if (down_or_dead) log::info("[hooks] détours DownOrDeadBy* de session posés (mise à terre de l'invité)");
     watchdog::start();
     return true;
 }

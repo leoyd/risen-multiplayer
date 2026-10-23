@@ -96,6 +96,13 @@ bool has_log(const Output& out, const std::string& needle) {
     return false;
 }
 
+bool has_log_at(const Output& out, Level level, const std::string& needle) {
+    for (const auto& l : out.logs) {
+        if (l.level == level && l.text.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
 // Reject{reason} envoyé à `to` dans `out`.
 bool sent_reject(const Output& out, const Endpoint& to, std::uint8_t reason) {
     for (const auto* s : commands_of<Send>(out)) {
@@ -1581,6 +1588,28 @@ Session host_with_clock() {
     return s;
 }
 
+// Story 3.7 : chez l'hôte, Death{2} ne met plus l'avatar en ragdoll ; seul l'invité applique encore
+// la mort v5 (Death{1}). Invité en session (t0 = 100), avatar de l'hôte créé à 1100, horloge calée
+// comme host_with_clock : temps affiché à `now` = now − 1200 − 150.
+Session guest_with_clock() {
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), {});
+    g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    const Output out = g.tick(1100, loaded_world(), reliable(encode_r(spawn_of(proto::kHostNetId))));
+    CHECK_EQ(commands_of<SpawnAvatar>(out).size(), 1u);
+    for (std::uint32_t tick = 0; tick < 4; ++tick) {
+        g.tick(1200 + tick * 50, loaded_world(), snapshot_in(snapshot_bytes(tick, proto::kHostNetId, 0.0f)));
+    }
+    return g;
+}
+
+// Motion ou réglage venu de l'hôte (NetId 1), pour guest_with_clock.
+proto::Motion host_motion(std::uint16_t ani_id, std::uint32_t ms, std::uint8_t type = 0) {
+    proto::Motion m = peer_motion(ani_id, ms, type);
+    m.net_id = proto::kHostNetId;
+    return m;
+}
+
 std::vector<Input> reliable2(const proto::ReliableMessage& a, const proto::ReliableMessage& b) {
     return {ReliableIn{encode_r(a)}, ReliableIn{encode_r(b)}};
 }
@@ -1699,7 +1728,7 @@ TEST("animations : un Motion à plus d'1 s d'avance part aussitôt, sans bloquer
     CHECK_EQ(commands_of<PlayAvatarMotion>(out).size(), 2u);
 }
 
-TEST("mort : IsDead passe à 1 en session → Death une fois par mort ; hors session → rien") {
+TEST("mort : IsDead passe à 1 en session → Death une fois (verrou 3.7 jusqu'au Respawn) ; hors session → rien") {
     Session g(guest_settings());
     g.tick(0, loaded_world(), {});
     g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
@@ -1708,10 +1737,20 @@ TEST("mort : IsDead passe à 1 en session → Death une fois par mort ; hors ses
     Output out = g.tick(200, dead, {});
     const auto d = sent_of<proto::Death>(out);
     CHECK(d.size() == 1 && d[0].net_id == proto::kGuestNetId);
+    CHECK(has_log_at(out, Level::Warn, "[sync] mort native du héros (chute, eau profonde ?) : Death envoyé ; "
+                                       "réapparition impossible, la session finira au rechargement"));
+    CHECK(g.guest_down());
     CHECK(sent_of<proto::Death>(g.tick(300, dead, {})).empty());  // même mort
     CHECK(g.state() == State::InSession);                         // l'invité mort reste en session
     CHECK(sent_of<proto::Death>(g.tick(400, loaded_world(), {})).empty());  // retour à la vie
-    CHECK_EQ(sent_of<proto::Death>(g.tick(500, dead, {})).size(), 1u);      // nouvelle mort
+    out = g.tick(500, dead, {});                                            // nouvelle mort, encore à terre
+    CHECK(sent_of<proto::Death>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "Death déjà envoyé"));
+    g.tick(600, loaded_world(), {});
+    // Respawn reçu (héros revenu à la vie) : verrou levé, une nouvelle mort renvoie Death.
+    g.tick(700, loaded_world(), reliable(encode_r(proto::Respawn{proto::kGuestNetId, 1, 2, 3, 0, 0})));
+    CHECK(!g.guest_down());
+    CHECK_EQ(sent_of<proto::Death>(g.tick(800, dead, {})).size(), 1u);
     Session idle(guest_settings());
     idle.tick(0, loaded_world(), {});
     CHECK(sent_of<proto::Death>(idle.tick(100, dead, {})).empty());  // Connecting
@@ -1727,10 +1766,10 @@ TEST("mort : un ragdoll sans mort n'envoie rien (aucune entrée ragdoll) ; mort 
     CHECK(sent_session_end(out, 3));
 }
 
-TEST("mort : Death du pair → AvatarDeath à l'instant d'affichage, puis plus de MoveAvatar ni d'animation") {
-    Session s = host_with_clock();  // dernier snapshot : tick 3 (150 ms) ; affiché = now − 1350
-    s.tick(1360, loaded_world(), reliable2(proto::AniName{0, "A"}, peer_motion(0, 400, 2)));  // en attente
-    Output out = s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+TEST("mort : Death du pair (invité, Death{1}) → AvatarDeath à l'instant d'affichage, puis plus de MoveAvatar ni d'animation") {
+    Session s = guest_with_clock();  // dernier snapshot : tick 3 (150 ms) ; affiché = now − 1350
+    s.tick(1360, loaded_world(), reliable2(proto::AniName{0, "A"}, host_motion(0, 400, 2)));  // en attente
+    Output out = s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId})));
     CHECK(commands_of<AvatarDeath>(out).empty());  // affiché 50 < 150 : pas encore
     CHECK(!commands_of<MoveAvatar>(out).empty());
     CHECK(!s.avatar_dead());
@@ -1739,16 +1778,16 @@ TEST("mort : Death du pair → AvatarDeath à l'instant d'affichage, puis plus d
     CHECK_EQ(commands_of<AvatarDeath>(out).size(), 1u);
     CHECK(commands_of<MoveAvatar>(out).empty());
     CHECK(s.avatar_dead());
-    out = s.tick(1510, loaded_world(), reliable2(peer_motion(0, 0, 2), proto::Death{proto::kGuestNetId}));
+    out = s.tick(1510, loaded_world(), reliable2(host_motion(0, 0, 2), proto::Death{proto::kHostNetId}));
     CHECK(commands_of<PlayAvatarMotion>(out).empty() && commands_of<AvatarDeath>(out).empty());
     CHECK(has_log(out, "avatar déjà mort"));
     for (std::uint64_t t = 1500; t < 4000; t += 250) CHECK(commands_of<PlayAvatarMotion>(s.tick(t, loaded_world(), {})).empty());
     // Despawn puis Spawn : vivant à nouveau.
-    s = host_with_clock();
-    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
-    s.tick(1410, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
+    s = guest_with_clock();
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId})));
+    s.tick(1410, loaded_world(), reliable2(proto::Despawn{proto::kHostNetId}, spawn_of(proto::kHostNetId)));
     CHECK(!s.avatar_dead());
-    CHECK(has_log(s.tick(1420, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId}))), "pas l'avatar du pair"));
+    CHECK(has_log(s.tick(1420, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId}))), "pas l'avatar du pair"));
 }
 
 TEST("animations côté invité : Motion envoyé sous NetId 2, Motion de l'hôte rejoué sur l'avatar 1") {
@@ -1925,12 +1964,16 @@ TEST("locomotion : MotionParam sans avatar, d'un autre NetId ou avatar mort → 
     proto::MotionParam other = peer_param(0, 0, 1.0f);
     other.net_id = proto::kHostNetId;
     CHECK(commands_of<PlayAvatarParam>(s.tick(1400, loaded_world(), reliable(encode_r(other)))).empty());
-    s.tick(1410, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    // Avatar mort : chez l'invité seulement depuis la story 3.7 (Death{1}).
+    s = guest_with_clock();
+    proto::MotionParam from_host = peer_param(0, 0, 1.0f);
+    from_host.net_id = proto::kHostNetId;
+    s.tick(1410, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId})));
     s.tick(1500, loaded_world(), {});  // mort appliquée
     CHECK(s.avatar_dead());
-    CHECK(commands_of<PlayAvatarParam>(s.tick(1510, loaded_world(), reliable(encode_r(peer_param(0, 0, 1.0f))))).empty());
+    CHECK(commands_of<PlayAvatarParam>(s.tick(1510, loaded_world(), reliable(encode_r(from_host)))).empty());
     // Despawn puis Spawn : le réglage reçu pendant la mort n'a pas été gardé en attente.
-    s.tick(1520, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
+    s.tick(1520, loaded_world(), reliable2(proto::Despawn{proto::kHostNetId}, spawn_of(proto::kHostNetId)));
     CHECK(commands_of<PlayAvatarParam>(s.tick(1530, loaded_world(), {})).empty());
 }
 
@@ -2072,11 +2115,11 @@ TEST("arme : Weapon sans avatar, d'un autre NetId ou avatar mort → ignoré (de
     c.tick(1410, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));  // en attente
     c.tick(1420, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
     for (std::uint64_t t = 1430; t < 3000; t += 100) CHECK(commands_of<AvatarWeapon>(c.tick(t, loaded_world(), {})).empty());
-    Session d = host_with_clock();
-    d.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    Session d = guest_with_clock();  // story 3.7 : avatar mort chez l'invité seulement (Death{1})
+    d.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId})));
     d.tick(1500, loaded_world(), {});  // ragdoll appliqué
     CHECK(d.avatar_dead());
-    out = d.tick(1510, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));
+    out = d.tick(1510, loaded_world(), reliable(encode_r(proto::Weapon{proto::kHostNetId, "It_1H_Sword"})));
     CHECK(has_log(out, "avatar mort"));
     CHECK(commands_of<AvatarWeapon>(d.tick(3000, loaded_world(), {})).empty());
 }
@@ -2091,9 +2134,9 @@ TEST("arme : Weapon tronqué → message fiable illisible, ignoré") {
 }
 
 TEST("arme : Weapon reçu pendant qu'un Death attend l'affichage → ignoré (debug), jamais appliqué") {
-    Session s = host_with_clock();  // affiché = now − 1350 ; Death appliqué à 1500
-    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
-    const Output out = s.tick(1410, loaded_world(), reliable(encode_r(proto::Weapon{proto::kGuestNetId, "It_1H_Sword"})));
+    Session s = guest_with_clock();  // affiché = now − 1350 ; Death{1} appliqué à 1500 (story 3.7 : invité)
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId})));
+    const Output out = s.tick(1410, loaded_world(), reliable(encode_r(proto::Weapon{proto::kHostNetId, "It_1H_Sword"})));
     bool debug = false;
     for (const auto& l : out.logs) {
         if (l.text.find("Weapon reçu") != std::string::npos && l.text.find("mort de l'avatar en attente") != std::string::npos) {
@@ -2368,13 +2411,13 @@ TEST("armure : Armor sans avatar, d'un autre NetId, avatar mort ou mort en atten
     c.tick(1410, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));  // en attente
     c.tick(1420, loaded_world(), reliable2(proto::Despawn{proto::kGuestNetId}, spawn_of(proto::kGuestNetId)));
     for (std::uint64_t t = 1430; t < 3000; t += 100) CHECK(commands_of<AvatarArmor>(c.tick(t, loaded_world(), {})).empty());
-    Session d = host_with_clock();
-    d.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
-    out = d.tick(1410, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));
+    Session d = guest_with_clock();  // story 3.7 : avatar mort chez l'invité seulement (Death{1})
+    d.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId})));
+    out = d.tick(1410, loaded_world(), reliable(encode_r(proto::Armor{proto::kHostNetId, "It_Armor_Inquisitor"})));
     CHECK(has_log(out, "mort de l'avatar en attente"));
     d.tick(1500, loaded_world(), {});  // ragdoll appliqué
     CHECK(d.avatar_dead());
-    out = d.tick(1510, loaded_world(), reliable(encode_r(proto::Armor{proto::kGuestNetId, "It_Armor_Inquisitor"})));
+    out = d.tick(1510, loaded_world(), reliable(encode_r(proto::Armor{proto::kHostNetId, "It_Armor_Inquisitor"})));
     CHECK(has_log(out, "avatar mort"));
     CHECK(commands_of<AvatarArmor>(d.tick(3000, loaded_world(), {})).empty());
 }
@@ -3554,17 +3597,6 @@ TEST("mort PNJ 3.4b invité : snapshot plus récent reçu après le Death → mo
 
 namespace {
 
-bool has_log_at(const Output& out, Level level, const std::string& needle) {
-    for (const auto& l : out.logs) {
-        if (l.level == level && l.text.find(needle) != std::string::npos) return true;
-    }
-    return false;
-}
-
-std::string tail_of(const std::string& line, std::size_t n) {
-    return line.size() >= n ? line.substr(line.size() - n) : line;
-}
-
 }  // namespace
 
 TEST("coups 3.5 invité : LocalHit sur une réplique vivante → HitRequest fiable, Info, compté envoyé") {
@@ -3680,7 +3712,7 @@ TEST("coups subis 3.6 hôte : LocalHitOnGuest en session → HitOnGuest fiable, 
                      "[sync] coup sur l'avatar invité (source PNJ 1000) : HitOnGuest envoyé, dégâts bruts 18"));
     const std::string line = host_stats_line(s, 1100);
     const std::string tail = "coups subis : HitOnGuest envoyés 1, reçus 0, ignorés 0";
-    CHECK_EQ(tail_of(line, tail.size()), tail);
+    CHECK(line.find(tail + " ; à terre : ") != std::string::npos);
 }
 
 TEST("coups subis 3.6 hôte : source inconnue (0) → HitOnGuest{0, D}, journalisé « inconnue »") {
@@ -3709,7 +3741,7 @@ TEST("coups subis 3.6 invité : LocalHitOnGuest chez l'invité → rien envoyé,
     CHECK(has_log_at(out, Level::Debug, "[sync] coup sur l'avatar invité (source PNJ 1000) : ignoré (pas hôte)"));
     const std::string line = guest_stats_line(g, 500);
     const std::string tail = "coups subis : HitOnGuest envoyés 0, reçus 0, ignorés 1";
-    CHECK_EQ(tail_of(line, tail.size()), tail);
+    CHECK(line.find(tail + " ; à terre : ") != std::string::npos);
 }
 
 TEST("coups subis 3.6 invité : HitOnGuest reçu en session → ApplyHitOnGuest{1000, 18}, compté reçu") {
@@ -3720,7 +3752,7 @@ TEST("coups subis 3.6 invité : HitOnGuest reçu en session → ApplyHitOnGuest{
     CHECK(g.state() == State::InSession);
     const std::string line = guest_stats_line(g, 500);
     const std::string tail = "coups subis : HitOnGuest envoyés 0, reçus 1, ignorés 0";
-    CHECK_EQ(tail_of(line, tail.size()), tail);
+    CHECK(line.find(tail + " ; à terre : ") != std::string::npos);
 }
 
 TEST("coups subis 3.6 hôte : HitOnGuest reçu → aucune commande, Warn, compté ignoré") {
@@ -3731,5 +3763,271 @@ TEST("coups subis 3.6 hôte : HitOnGuest reçu → aucune commande, Warn, compt�
     CHECK(s.state() == State::InSession);
     const std::string line = host_stats_line(s, 1100);
     const std::string tail = "coups subis : HitOnGuest envoyés 0, reçus 0, ignorés 1";
-    CHECK_EQ(tail_of(line, tail.size()), tail);
+    CHECK(line.find(tail + " ; à terre : ") != std::string::npos);
+}
+
+// --- Story 3.7 : à terre et réapparition de l'invité ----------------------------------------------
+
+namespace {
+
+std::vector<Input> heartbeat_in() { return reliable(encode_r(proto::Heartbeat{})); }
+
+std::vector<Input> respawn_in(float x, float y, float z, float yaw, std::uint32_t tick = 0,
+                              std::uint32_t net_id = proto::kGuestNetId) {
+    return reliable(encode_r(proto::Respawn{net_id, x, y, z, yaw, tick}));
+}
+
+// Bilan des 5 s, à partir de « à terre : ».
+std::string down_tail(const std::string& line) {
+    const auto at = line.find("à terre : ");
+    return at == std::string::npos ? std::string() : line.substr(at);
+}
+
+}  // namespace
+
+TEST("à terre 3.7 invité : LocalDown en session → Death{2} une fois, Info ; deuxième → rien, Debug, ignoré") {
+    Session g = guest_in_session();
+    g.tick(300, loaded_world(), heartbeat_in());  // activité de l'hôte : pas de timeout avant le bilan
+    Output out = g.tick(400, loaded_world(), {LocalDown{kDownCauseHitOnGuest}});
+    const auto d = sent_of<proto::Death>(out);
+    CHECK(d.size() == 1 && d[0].net_id == proto::kGuestNetId);
+    CHECK(has_log_at(out, Level::Info, "[sync] héros à terre (HitOnGuest) : Death envoyé, attente du Respawn"));
+    CHECK(g.guest_down());
+    out = g.tick(450, loaded_world(), {LocalDown{kDownCauseMelee}});
+    CHECK(sent_of<proto::Death>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "[sync] héros à terre (DownOrDeadByMeleeWeapon) : déjà à terre, ignoré"));
+    const std::string line = guest_stats_line(g, 500);
+    CHECK_EQ(down_tail(line), std::string("à terre : Death 1, Respawn envoyés 0, reçus 0, accusés 0, ignorés 1, "
+                                          "snapshots périmés 0"));
+}
+
+TEST("à terre 3.7 invité : LocalDown hors session ou chez l'hôte → rien envoyé") {
+    Session g(guest_settings());
+    g.tick(0, loaded_world(), {});
+    CHECK(g.state() == State::Connecting);
+    Output out = g.tick(10, loaded_world(), {LocalDown{kDownCauseInferno}});
+    CHECK(commands_of<SendReliable>(out).empty());
+    CHECK(!g.guest_down());
+    Session s = host_with_avatar();
+    out = s.tick(1200, loaded_world(), {LocalDown{kDownCauseHitOnGuest}});
+    CHECK(sent_of<proto::Death>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignoré (pas invité)"));
+}
+
+TEST("à terre 3.7 invité : HitOnGuest reçu à terre → pas d'ApplyHitOnGuest, Debug, coups subis ignorés") {
+    Session g = guest_in_session();
+    g.tick(400, loaded_world(), {LocalDown{kDownCauseHitOnGuest}});
+    const Output out = g.tick(410, loaded_world(), reliable(encode_r(proto::HitOnGuest{1000, 18})));
+    CHECK(commands_of<ApplyHitOnGuest>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignoré (héros à terre)"));
+    const std::string line = guest_stats_line(g, 500);
+    CHECK(line.find("coups subis : HitOnGuest envoyés 0, reçus 0, ignorés 1 ; ") != std::string::npos);
+}
+
+TEST("à terre 3.7 invité : Respawn valide → RespawnHero{pose, téléport}, accusé tick courant + 1, plus à terre") {
+    Session g = guest_in_session();  // t0 = 100
+    g.tick(300, loaded_world(), heartbeat_in());
+    g.tick(400, loaded_world(), {LocalDown{kDownCauseHitOnGuest}});
+    const Output out = g.tick(420, loaded_world(), respawn_in(300.0f, -50.5f, 2200.0f, -1.5f));  // tick 6
+    const auto r = commands_of<RespawnHero>(out);
+    CHECK(r.size() == 1 && r[0]->teleport && r[0]->pose.x == 300.0f && r[0]->pose.z == 2200.0f &&
+          r[0]->pose.yaw == -1.5f);
+    const auto acks = sent_of<proto::Respawn>(out);
+    CHECK(acks.size() == 1 && acks[0].net_id == proto::kGuestNetId && acks[0].x == 300.0f &&
+          acks[0].y == -50.5f && acks[0].z == 2200.0f && acks[0].yaw == -1.5f && acks[0].tick == 7u);
+    CHECK(has_log_at(out, Level::Info, "[sync] Respawn reçu : héros replacé (300.0, -50.5, 2200.0) lacet=-1.500, "
+                                       "PV pleins ; accusé envoyé (tick 7)"));
+    CHECK(!g.guest_down());
+    // Plus à terre : un HitOnGuest blesse de nouveau, une mise à terre renvoie Death.
+    CHECK_EQ(commands_of<ApplyHitOnGuest>(g.tick(430, loaded_world(), reliable(encode_r(proto::HitOnGuest{0, 5})))).size(), 1u);
+    CHECK_EQ(sent_of<proto::Death>(g.tick(440, loaded_world(), {LocalDown{kDownCauseHitOnGuest}})).size(), 1u);
+    const std::string line = guest_stats_line(g, 500);
+    CHECK_EQ(down_tail(line), std::string("à terre : Death 2, Respawn envoyés 0, reçus 1, accusés 1, ignorés 0, "
+                                          "snapshots périmés 0"));
+}
+
+TEST("à terre 3.7 invité : Respawn hors état (pas à terre, NetId ≠ 2, pose non finie, mort native) → rien, Warn") {
+    Session g = guest_in_session();
+    Output out = g.tick(400, loaded_world(), respawn_in(1, 2, 3, 0));
+    CHECK(commands_of<RespawnHero>(out).empty() && sent_of<proto::Respawn>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "ignoré (héros pas à terre)"));
+    g.tick(410, loaded_world(), {LocalDown{kDownCauseHitOnGuest}});
+    out = g.tick(420, loaded_world(), respawn_in(1, 2, 3, 0, 0, proto::kHostNetId));
+    CHECK(commands_of<RespawnHero>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "ignoré (NetId autre que 2)"));
+    out = g.tick(430, loaded_world(), respawn_in(std::nanf(""), 2, 3, 0));
+    CHECK(commands_of<RespawnHero>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "ignoré (pose non finie)"));
+    CHECK(g.guest_down());
+    World dead = loaded_world();
+    dead.dead = true;
+    out = g.tick(440, dead, respawn_in(1, 2, 3, 0));
+    CHECK(commands_of<RespawnHero>(out).empty() && sent_of<proto::Respawn>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "pas de relève d'un mort"));
+    CHECK(has_log_at(out, Level::Warn, "mort native du héros (chute, eau profonde ?) : Death déjà envoyé"));
+    CHECK(sent_of<proto::Death>(out).empty());  // verrou : déjà envoyé par la mise à terre
+    out = g.tick(450, dead, respawn_in(1, 2, 3, 0));
+    CHECK(commands_of<RespawnHero>(out).empty());
+    const std::string line = guest_stats_line(g, 500);
+    CHECK_EQ(down_tail(line), std::string("à terre : Death 1, Respawn envoyés 0, reçus 0, accusés 0, ignorés 5, "
+                                          "snapshots périmés 0"));
+}
+
+TEST("à terre 3.7 invité : repli 10 s sans Respawn → RespawnHero sur place, Warn ; Respawn tardif ignoré") {
+    Session g = guest_in_session();
+    g.tick(400, loaded_world(), {LocalDown{kDownCauseProjectile}});
+    for (std::uint64_t t = 1000; t < 10400; t += 1000) {
+        CHECK(commands_of<RespawnHero>(g.tick(t, loaded_world(), heartbeat_in())).empty());
+    }
+    CHECK(commands_of<RespawnHero>(g.tick(10399, loaded_world(), {})).empty());
+    Output out = g.tick(10400, loaded_world(), {});
+    const auto r = commands_of<RespawnHero>(out);
+    CHECK(r.size() == 1 && !r[0]->teleport);
+    CHECK(has_log_at(out, Level::Warn, "[sync] pas de Respawn de l'hôte depuis 10 s : PV rendus sur place"));
+    CHECK(!g.guest_down());
+    CHECK(g.state() == State::InSession);
+    out = g.tick(10500, loaded_world(), respawn_in(1, 2, 3, 0));
+    CHECK(commands_of<RespawnHero>(out).empty() && sent_of<proto::Respawn>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "ignoré (héros pas à terre)"));
+}
+
+TEST("à terre 3.7 invité : mort native → Death une fois, pas de repli à 10 s ; Ended remet à zéro") {
+    Session g = guest_in_session();
+    World dead = loaded_world();
+    dead.dead = true;
+    Output out = g.tick(400, dead, {});
+    CHECK_EQ(sent_of<proto::Death>(out).size(), 1u);
+    CHECK(sent_of<proto::Death>(g.tick(450, dead, {LocalDown{kDownCauseMelee}})).empty());
+    for (std::uint64_t t = 1000; t <= 12000; t += 1000) {
+        CHECK(commands_of<RespawnHero>(g.tick(t, dead, heartbeat_in())).empty());
+    }
+    CHECK(g.guest_down());
+    g.tick(12100, dead, reliable(encode_r(proto::SessionEnd{2})));
+    CHECK(g.state() == State::Ended);
+    CHECK(!g.guest_down());
+}
+
+TEST("à terre 3.7 hôte : Death{2} → pas d'AvatarDeath ; Respawn{2, devant l'hôte, 0} et MoveAvatar à cette pose") {
+    Session s = host_with_clock();
+    const Output out = s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    CHECK(has_log_at(out, Level::Info, "[sync] Death reçu : invité à terre, Respawn à envoyer"));
+    CHECK(commands_of<AvatarDeath>(out).empty());
+    const World w = loaded_world();
+    const Pose expected = guest_pose_near(Pose{w.x, w.y, w.z, w.yaw});
+    const auto sent = sent_of<proto::Respawn>(out);
+    CHECK(sent.size() == 1 && sent[0].net_id == proto::kGuestNetId && sent[0].tick == 0u && sent[0].x == expected.x &&
+          sent[0].y == expected.y && sent[0].z == expected.z && sent[0].yaw == expected.yaw);
+    const auto moves = commands_of<MoveAvatar>(out);
+    CHECK(moves.size() == 1 && moves[0]->net_id == proto::kGuestNetId && moves[0]->pose.x == expected.x &&
+          moves[0]->pose.z == expected.z && moves[0]->pose.yaw == expected.yaw);
+    CHECK(has_log_at(out, Level::Info, "[sync] Respawn envoyé : invité replacé "));
+    CHECK(s.respawn_waiting() && !s.respawn_pending());
+    for (std::uint64_t t = 1450; t < 3000; t += 50) CHECK(commands_of<AvatarDeath>(s.tick(t, loaded_world(), {})).empty());
+    CHECK(!s.avatar_dead());
+}
+
+TEST("à terre 3.7 hôte : pose de l'hôte illisible → Respawn différé au premier tick de pose lisible") {
+    Session s = host_with_clock();
+    World blind = loaded_world();
+    blind.pose_ok = false;
+    Output out = s.tick(1400, blind, reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    CHECK(sent_of<proto::Respawn>(out).empty());
+    CHECK(s.respawn_pending());
+    CHECK(sent_of<proto::Respawn>(s.tick(1450, blind, {})).empty());
+    out = s.tick(1500, loaded_world(), {});
+    CHECK_EQ(sent_of<proto::Respawn>(out).size(), 1u);
+    CHECK(s.respawn_waiting());
+}
+
+TEST("à terre 3.7 hôte : Death{2} en attente d'accusé ou sans avatar → ignoré, Warn") {
+    Session s = host_with_clock();
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    Output out = s.tick(1410, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    CHECK(sent_of<proto::Respawn>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "[sync] Death reçu (NetId 2 (invité)) : ignoré (réapparition déjà en cours)"));
+    std::uint32_t conv = 0;
+    Session none = hosting_with_a(conv);
+    out = none.tick(1100, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    CHECK(sent_of<proto::Respawn>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "ignoré (pas d'avatar)"));
+    CHECK(!none.respawn_pending());
+}
+
+TEST("à terre 3.7 hôte : snapshots de l'invité ignorés en attente d'accusé, avatar laissé à la pose du Respawn") {
+    Session s = host_with_clock();  // ticks 0 à 3 reçus
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    for (std::uint32_t tick = 4; tick < 20; ++tick) {
+        const Output out = s.tick(1200 + tick * 50, loaded_world(),
+                                  snapshot_in(snapshot_bytes(tick, proto::kGuestNetId, 999.0f)));
+        CHECK(commands_of<MoveAvatar>(out).empty());
+    }
+    const std::string line = host_stats_line(s, 2300);
+    CHECK(down_tail(line).find("Death 1, Respawn envoyés 1, reçus 0, accusés 0, ignorés 0, snapshots périmés 16") !=
+          std::string::npos);
+}
+
+TEST("à terre 3.7 hôte : accusé tick 42 → fin d'attente ; entrées de tick < 42 ignorées, ≥ 42 interpolées") {
+    Session s = host_with_clock();
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    Output out = s.tick(1500, loaded_world(), respawn_in(1, 2, 3, 0, 42));
+    CHECK(has_log_at(out, Level::Info, "[sync] réapparition confirmée par l'invité (tick 42)"));
+    CHECK(!s.respawn_waiting());
+    // Snapshot parti avant l'accusé mais arrivé après : périmé.
+    out = s.tick(3240, loaded_world(), snapshot_in(snapshot_bytes(41, proto::kGuestNetId, 999.0f)));
+    CHECK(commands_of<MoveAvatar>(out).empty());
+    out = s.tick(3270, loaded_world(), snapshot_in(snapshot_bytes(42, proto::kGuestNetId, 500.0f)));
+    out = s.tick(3320, loaded_world(), snapshot_in(snapshot_bytes(43, proto::kGuestNetId, 510.0f)));
+    bool moved = false;
+    for (std::uint64_t t = 3330; t < 3600; t += 20) {
+        const Output frame = s.tick(t, loaded_world(), {});
+        for (const auto* m : commands_of<MoveAvatar>(frame)) {
+            moved = true;
+            CHECK(m->pose.x >= 500.0f && m->pose.x < 999.0f);  // jamais l'ancienne position
+        }
+    }
+    CHECK(moved);
+    const std::string line = host_stats_line(s, 3700);
+    CHECK(down_tail(line).find("Death 1, Respawn envoyés 1, reçus 0, accusés 1, ignorés 0, snapshots périmés 1") !=
+          std::string::npos);
+}
+
+TEST("à terre 3.7 hôte : accusé hors attente ou de NetId ≠ 2 → ignoré, Warn") {
+    Session s = host_with_clock();
+    Output out = s.tick(1400, loaded_world(), respawn_in(1, 2, 3, 0, 42));
+    CHECK(has_log_at(out, Level::Warn, "ignoré (aucune réapparition en attente d'accusé)"));
+    s.tick(1410, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    out = s.tick(1420, loaded_world(), respawn_in(1, 2, 3, 0, 42, 7));
+    CHECK(has_log_at(out, Level::Warn, "ignoré (NetId autre que 2)"));
+    CHECK(s.respawn_waiting());
+}
+
+TEST("à terre 3.7 hôte : repli 5 s sans accusé → snapshots de l'invité repris, Warn") {
+    Session s = host_with_clock();
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    for (std::uint64_t t = 1500; t < 6400; t += 500) s.tick(t, loaded_world(), heartbeat_in());
+    CHECK(s.respawn_waiting());
+    const Output out = s.tick(6400, loaded_world(), heartbeat_in());
+    CHECK(has_log_at(out, Level::Warn, "[sync] pas d'accusé de Respawn depuis 5 s : snapshots de l'invité repris"));
+    CHECK(!s.respawn_waiting());
+    // Entrées acceptées de nouveau (tick minimal 0).
+    s.tick(6450, loaded_world(), snapshot_in(snapshot_bytes(105, proto::kGuestNetId, 700.0f)));
+    s.tick(6500, loaded_world(), snapshot_in(snapshot_bytes(106, proto::kGuestNetId, 710.0f)));
+    bool moved = false;
+    for (std::uint64_t t = 6510; t < 6800; t += 20) moved |= !commands_of<MoveAvatar>(s.tick(t, loaded_world(), {})).empty();
+    CHECK(moved);
+}
+
+TEST("à terre 3.7 hôte : retrait de l'avatar ou fin de session → réapparition oubliée") {
+    Session s = host_with_clock();
+    s.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    CHECK(s.respawn_waiting());
+    s.tick(1410, loaded_world(), reliable(encode_r(proto::Despawn{proto::kGuestNetId})));
+    CHECK(!s.respawn_waiting() && !s.respawn_pending());
+    Session p = host_with_clock();
+    World blind = loaded_world();
+    blind.pose_ok = false;
+    p.tick(1400, blind, reliable(encode_r(proto::Death{proto::kGuestNetId})));
+    CHECK(p.respawn_pending());
+    p.tick(1410, blind, reliable(encode_r(proto::SessionEnd{1})));
+    CHECK(p.state() == State::Ended && !p.respawn_pending());
 }
