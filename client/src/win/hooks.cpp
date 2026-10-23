@@ -70,12 +70,12 @@ void detour_routine_on_process_session(void* routine_ps) {
     if (!sync::anim_filter().blocks_routine(routine_ps)) g_original_routine_on_process(routine_ps);
 }
 
-// Story 3.5 (Q8) : point d'accroche des dégâts, gCDamage_PS::DoDamage(eCEntity*). Bloquer = rendre
-// false sans appeler l'original (HitTargets saute alors l'effet d'impact) ; en cas de doute,
-// sync/hits laisse passer.
+// Story 3.5 (Q8) : point d'accroche des dégâts, gCDamage_PS::DoDamage(eCEntity*). sync/hits décide :
+// laisser (original), bloquer en rendant true (HitTargets joue l'effet d'impact, sans dégâts) ou
+// false (pas d'effet), ou mesurer un coup sur l'avatar (original appelé, PV rendus). En cas de
+// doute, sync/hits laisse passer.
 bool detour_damage(void* damage_ps, void* target) {
-    if (sync::hits::on_damage(damage_ps, target)) return false;
-    return g_original_damage(damage_ps, target);
+    return sync::hits::on_damage(damage_ps, target, g_original_damage);
 }
 
 // Spike J2, Num6 : un Kill du héros devient Defeat (même thread, mêmes arguments). Seule

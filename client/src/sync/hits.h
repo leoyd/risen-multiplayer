@@ -11,16 +11,21 @@
 //      HitOnGuest blessent, par sync/guest_health) ;
 //   4. hôte, agresseur = avatar de l'invité (registre, rôle Avatar) : bloqué, rien d'émis (seuls
 //      les HitRequest blessent) ;
-//   4b. hôte, cible = avatar de l'invité : bloqué (invulnérable). Héros de l'hôte ou agresseur nul :
-//      rien d'émis ; sinon dégâts bruts lus sur le PS (game::damage_raw) et {source, dégâts} mis en
-//      file (LocalHitOnGuest, HitOnGuest de la frame) ;
+//   4b. hôte, cible = avatar de l'invité. Héros de l'hôte ou agresseur nul : bloqué, rien d'émis ;
+//      sinon coup mesuré : avatar remis à ses PV max, original appelé (scripts de dégâts du jeu,
+//      armure de l'avatar comprise), perte de PV mise en file {source, dégâts} (LocalHitOnGuest,
+//      HitOnGuest de la frame), PV d'avant rendus. Mise à terre ou mort de l'avatar annulée par
+//      sync/guest_health (measured_target) ;
 //   5. sinon → laissé.
+// Un coup bloqué rend true sans appeler l'original (effet d'impact du jeu, sans dégâts), sauf le
+// tir ami et l'agresseur nul (4b), et l'avatar qui frappe le héros de l'hôte (4), qui rendent false.
 // En cas de doute (agresseur illisible, exception), le coup est laissé, sauf s'il vise le héros
 // invité (3b) ou l'avatar invité chez l'hôte (4b) : l'agresseur est alors tenu pour nul et le coup
 // reste bloqué (sans HitOnGuest), ces règles ne dépendant que de la cible. Des dégâts bruts
-// illisibles laissent le coup sur l'avatar bloqué, sans HitOnGuest. Le détour ne fait que lire le
-// registre, des files sous verrou court et des atomiques : ni attente, ni réseau, ni appel au jeu
-// hors des accesseurs (game::damage_aggressor, game::damage_raw).
+// Des PV d'avatar illisibles laissent le coup sur l'avatar bloqué, sans HitOnGuest. Le détour ne
+// fait que lire le registre, des files sous verrou court et des atomiques : ni attente, ni réseau.
+// Appels au jeu : l'accesseur game::damage_aggressor, et pour un coup mesuré (4b, même thread
+// qu'OnProcess) les PV de l'avatar (lecture, SetHitPoints fixé avant et après).
 //
 // Frame (thread principal, AD-2) : `publish` (héros, rôle, état de session), `drain` (LocalHit,
 // LocalHitOnGuest et LocalHitsBlocked vers la session), `apply` (hôte : ApplyHit).
@@ -35,8 +40,12 @@
 
 namespace mp::sync::hits {
 
-// Détour : true = bloquer (l'appelant rend false sans appeler l'original). Ne lève jamais.
-bool on_damage(void* damage_ps, void* target) noexcept;
+// Détour : rend le résultat de gCDamage_PS::DoDamage pour ce coup, en appelant `original` s'il est
+// laissé ou mesuré. Ne lève jamais (hors exception de l'original lui-même).
+using DamageFn = bool (*)(void* damage_ps, void* target);
+bool on_damage(void* damage_ps, void* target, DamageFn original) noexcept;
+// Avatar dont un coup est en cours de mesure sur ce thread, sinon nul (détours DownOrDeadBy*).
+void* measured_target();
 
 // Frame : héros local (Entity::GetPlayer, eCEntity*), rôle et état « en session » vus par le
 // détour. Le passage à « en session » remet à zéro le diagnostic de session, la file et les

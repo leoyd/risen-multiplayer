@@ -8,10 +8,13 @@
 //   3b. invité, cible = son héros : bloqué quel que soit l'agresseur, rien en file (seuls les
 //      HitOnGuest blessent) ;
 //   4. hôte, agresseur = avatar de l'invité : bloqué, rien en file ;
-//   4b. hôte, cible = avatar de l'invité : bloqué (invulnérable). Héros de l'hôte → pas de tir ami ;
-//      agresseur nul → rien ; sinon HitOnGuest à émettre (source = NetId du PNJ capturé, sinon 0) ;
+//   4b. hôte, cible = avatar de l'invité. Héros de l'hôte → bloqué (pas de tir ami) ; agresseur nul
+//      → bloqué, rien ; sinon coup **mesuré** : l'original s'applique sur l'avatar, la perte de PV
+//      part en HitOnGuest (source = NetId du PNJ capturé, sinon 0) et les PV sont rendus ;
 //   5. sinon → laissé.
-// S'y ajoutent deux calculs purs : dégâts bruts d'un coup (hôte) et PV du héros invité après un
+// Un coup bloqué rend en principe true sans appeler l'original (`impact`) : le jeu joue l'effet
+// d'impact (sang, son) sans dégâts. Seuls le tir ami et l'agresseur nul (4b) rendent false.
+// S'y ajoutent deux calculs purs : dégâts d'un coup mesuré (hôte) et PV du héros invité après un
 // HitOnGuest (invité, maintien à 1 PV jusqu'à la story 3.7).
 #pragma once
 
@@ -31,7 +34,7 @@ enum class Reason : std::uint8_t {
     GuestAvatar,     // 4. bloqué, agresseur = avatar invité chez l'hôte
     GuestHeroByReplica,  // 3b. bloqué, une réplique frappe le héros invité
     GuestHeroOther,      // 3b. bloqué, autre agresseur sur le héros invité
-    AvatarHit,           // 4b. bloqué, HitOnGuest à émettre
+    AvatarHit,           // 4b. mesuré, HitOnGuest à émettre
     AvatarFriendly,      // 4b. bloqué, héros de l'hôte sur l'avatar (pas de tir ami)
     AvatarNoAggressor,   // 4b. bloqué, agresseur nul, sans HitOnGuest
 };
@@ -51,9 +54,11 @@ struct Inputs {
 };
 
 struct Decision {
-    bool block = false;
+    bool block = false;              // original non appelé
+    bool impact = false;             // bloqué : rendre true (effet d'impact sans dégâts), sinon false
+    bool measure = false;            // 4b : original appelé, perte de PV de l'avatar mesurée puis rendue
     std::uint32_t queue_net_id = 0;  // ≠ 0 : NetId à mettre en file (HitRequest)
-    bool hit_on_guest = false;       // 4b : HitOnGuest à émettre (dégâts bruts lus par l'appelant)
+    bool hit_on_guest = false;       // 4b : HitOnGuest à émettre (dégâts mesurés par l'appelant)
     std::uint32_t source_net_id = 0; // 4b : NetId du PNJ agresseur, 0 = source inconnue
     Reason reason = Reason::Pass;
 };
@@ -71,9 +76,10 @@ struct GuestHp {
 bool considered(bool guard, bool in_session, HitRole role);
 // Règles 1 à 5.
 Decision decide(const Inputs& in);
-// Dégâts bruts (hôte) : (amount + bonus) × multiplier du gCDamage_PS, arrondi au plus proche ;
-// non fini ou ≤ 0 → 0 ; plafonné à kMaxRawDamage. Avant toute protection (pas d'armure en J2).
-std::uint32_t raw_damage(long amount, long bonus, float multiplier);
+// Dégâts d'un coup mesuré sur l'avatar (hôte) : PV avant − PV après ; ≤ 0 → 0 ; plafonné à
+// kMaxRawDamage. Les PV avant sont les PV max (fixés le temps du coup) : la perte n'est pas bornée
+// par les PV affichés de l'avatar. Armure de l'avatar (celle de l'invité) comprise.
+std::uint32_t measured_damage(int hp_before, int hp_after);
 // damage = 0 → pas d'écriture ; hp ≤ 1 → pas d'écriture, held ; hp − damage ≤ 0 → 1, held ;
 // sinon hp − damage.
 GuestHp guest_hp_after(int hp, std::uint32_t damage);

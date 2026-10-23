@@ -28,3 +28,14 @@ Autour de `PSDamage::DoDamage`, l'hôte lit la cible actuelle de l'avatar (`PSNp
 la remplace par le PNJ frappé (`PSNpc::SetCurrentTarget`), puis la rétablit. `SetCurrentTarget`
 (Script.dll, `0x18022b0a0`) ne fait que construire un `eCEntityProxy` et appeler
 `gCNPC_PS::SetCurrentTarget` : aucun autre effet observé dans le désassemblage.
+
+## Effet d'impact et dégâts des monstres (même jour)
+
+- Après `gCDamage_PS::DoDamage` → vrai, `gCCombatMoveMelee::HitTargets` (`0x1807d5c61`) appelle
+  l'effet d'impact (`0x1807d63a0`, avec le PS `0x60` de la cible) et ajuste le minutage du coup ;
+  rien d'autre. Un détour qui rend vrai sans appeler l'original garde donc l'effet sans dégâts.
+- Dégâts des monstres : leur `DamageScript` n'est pas `DoSwordDamage`. `DoSpecialMonsterDamage`
+  (`0x1800d98c0`) multiplie `PropertyDamageAmount` par `PropertyDamageMultiplier`, d'autres scripts
+  utilisent les compétences de l'agresseur (`PSSkills::GetTotal`). `(Amount + Bonus) × Multiplier`
+  du PS reçu par le détour valait 0 pour tous les coups observés (Nautilus, Vautours). D'où la
+  mesure sur l'avatar plutôt qu'un calcul par script.

@@ -150,7 +150,7 @@ graph TD
     - **Invité, son héros frappe une réplique** → bloqué, émet `HitRequest{NetId cible}`.
     - **Invité, une réplique frappe son héros** → bloqué ; les dégâts n’arrivent que par `HitOnGuest`. Story 3.6 : **tout** coup natif sur le héros invité est bloqué, quel que soit l’agresseur (un PNJ non apparié ne le blesse plus).
     - **Hôte, l’avatar invité frappe un PNJ** → bloqué ; les dégâts n’arrivent que par `HitRequest`.
-    - **Hôte, un PNJ frappe l’avatar invité** → bloqué (l’avatar est **invulnérable**), émet `HitOnGuest{NetId source, dégâts bruts}` (avant la protection de l’invité). Story 3.6 :
+    - **Hôte, un PNJ frappe l’avatar invité** → **mesuré** (correctif du 2026-10-23, remplace les dégâts bruts ci-dessous, nuls pour les monstres) : avatar remis à ses PV max, coup natif appliqué (scripts du jeu, armure de l’avatar comprise ; mise à terre ou mort annulée dans les détours `DownOrDeadBy*`), perte de PV émise dans `HitOnGuest{NetId source, dégâts}`, PV d’avant rendus. L’avatar ne perd donc jamais de PV au bilan. Un coup bloqué rend `true` sans appeler l’original (effet d’impact sans dégâts), sauf tir ami et agresseur nul. Texte d’origine, story 3.6 :
       - **dégâts bruts** = `(GetDamageAmount + GetDamageBonus) × GetDamageMultiplier` du `gCDamage_PS` reçu par le point d’accroche, arrondis, plafonnés à 1 000 000. **Pas d’armure en J2** : l’invité les retire tels quels ;
       - **source** = `NetId` de l’agresseur s’il est un PNJ capturé, sinon **0** (source inconnue : PNJ non animé, projectile) ; elle ne sert qu’au journal ;
       - **pas de tir ami** : le héros de l’hôte ne blesse pas l’avatar (bloqué, rien d’émis), comme l’avatar ne blesse pas le héros de l’hôte. Un agresseur nul : bloqué, rien d’émis.

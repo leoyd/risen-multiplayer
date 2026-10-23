@@ -38,7 +38,7 @@ std::atomic<std::uint32_t> g_frame_thread{0};
 // Diagnostic, remis à zéro à chaque entrée en session.
 std::atomic<bool> g_first_pass_logged{false};
 std::atomic<bool> g_aggressor_warned{false};
-std::atomic<bool> g_raw_warned{false};  // story 3.6 : dégâts bruts illisibles
+std::atomic<bool> g_raw_warned{false};  // PV de l'avatar illisibles : coup non mesuré
 std::atomic<unsigned> g_blocked{0};
 
 // File des NetId frappés par le héros de l'invité, et répliques mortes : verrou court.
@@ -57,10 +57,24 @@ bool g_was_in_session = false;  // frame seulement
 thread_local bool t_applying = false;
 
 struct ApplyGuard {
-    ApplyGuard() { t_applying = true; }
-    ~ApplyGuard() { t_applying = false; }
+    ApplyGuard() : saved_(t_applying) { t_applying = true; }
+    ~ApplyGuard() { t_applying = saved_; }
     ApplyGuard(const ApplyGuard&) = delete;
     ApplyGuard& operator=(const ApplyGuard&) = delete;
+
+private:
+    bool saved_;
+};
+
+// Avatar dont un coup est en cours de mesure (hôte, règle 4b) : lu par les détours DownOrDeadBy*
+// (même thread), qui annulent alors la mise à terre ou la mort de l'avatar.
+thread_local void* t_measured = nullptr;
+
+// Résultat du détour pour un coup : laissé, bloqué (rend false ou true), ou mesuré (4b).
+enum class Action { Pass, Block, BlockImpact, Measure };
+struct Outcome {
+    Action action = Action::Pass;
+    std::uint32_t source = 0;  // Measure : NetId du PNJ agresseur, 0 = inconnu
 };
 
 std::string hex_ptr(const void* p) {
@@ -111,10 +125,10 @@ void queue_guest_hit(std::uint32_t source, std::uint32_t damage) {
     if (g_guest_hits.size() < kMaxQueued) g_guest_hits.push_back({source, damage});
 }
 
-bool decide(void* damage_ps, void* target) {
+Outcome decide(void* damage_ps, void* target) {
     const auto role = static_cast<HitRole>(g_role.load());
     const bool in_session = g_in_session.load();
-    if (!hit_rules::considered(t_applying, in_session, role)) return false;  // règles 1 et 2
+    if (!hit_rules::considered(t_applying, in_session, role)) return {};  // règles 1 et 2
     const std::uint32_t thread = GetCurrentThreadId();
     if (!g_first_pass_logged.exchange(true)) {
         log::info("[sync] dégâts : 1er passage au point d'accroche (thread " + std::to_string(thread) +
@@ -154,24 +168,10 @@ bool decide(void* damage_ps, void* target) {
     const hit_rules::Decision d = hit_rules::decide(in);
     if (aggressor_unreadable && d.reason != hit_rules::Reason::GuestHeroByReplica &&
         d.reason != hit_rules::Reason::GuestHeroOther && d.reason != hit_rules::Reason::AvatarNoAggressor) {
-        return false;  // en cas de doute, on laisse passer (3.5)
+        return {};  // en cas de doute, on laisse passer (3.5)
     }
     const bool block = d.block;
     if (d.queue_net_id != 0) queue_hit(d.queue_net_id);
-    // Story 3.6, règle 4b : dégâts bruts du coup sur l'avatar, lus seulement s'il faut émettre.
-    bool raw_ok = false;
-    std::uint32_t raw = 0;
-    if (d.hit_on_guest) {
-        long amount = 0, bonus = 0;
-        float multiplier = 0.0f;
-        raw_ok = game::damage_raw(damage_ps, amount, bonus, multiplier);
-        if (raw_ok) {
-            raw = hit_rules::raw_damage(amount, bonus, multiplier);
-            queue_guest_hit(d.source_net_id, raw);
-        } else if (!g_raw_warned.exchange(true)) {
-            log::warn("[sync] dégâts : dégâts bruts illisibles (SEH) : coup sur l'avatar bloqué sans HitOnGuest");
-        }
-    }
     std::string reason;  // coup bloqué : fin de la ligne Info
     switch (d.reason) {
         case hit_rules::Reason::HitRequest: reason = "(HitRequest)"; break;
@@ -180,10 +180,7 @@ bool decide(void* damage_ps, void* target) {
         case hit_rules::Reason::GuestAvatar: reason = "(seuls les HitRequest blessent)"; break;
         case hit_rules::Reason::GuestHeroByReplica:
         case hit_rules::Reason::GuestHeroOther: reason = "(seuls les HitOnGuest blessent)"; break;
-        case hit_rules::Reason::AvatarHit:
-            reason = raw_ok ? "(HitOnGuest, dégâts bruts " + std::to_string(raw) + ")"
-                            : std::string("(dégâts bruts illisibles, sans HitOnGuest)");
-            break;
+        case hit_rules::Reason::AvatarHit: break;  // mesuré : journalisé par measure()
         case hit_rules::Reason::AvatarFriendly: reason = "(pas de tir ami)"; break;
         case hit_rules::Reason::AvatarNoAggressor: reason = "(agresseur nul, sans HitOnGuest)"; break;
         case hit_rules::Reason::Pass: break;
@@ -197,20 +194,79 @@ bool decide(void* damage_ps, void* target) {
         (target_found || aggressor_found || (hero != nullptr && (target == hero || aggressor == hero)))) {
         log::debug("[sync] dégâts : agresseur " + hex_ptr(aggressor) + " (" +
                    role_text(aggressor, aggressor_found, ta, hero) + ") cible " + hex_ptr(target) + " (" +
-                   role_text(target, target_found, tt, hero) + ") -> " + (block ? "bloqué" : "laissé"));
+                   role_text(target, target_found, tt, hero) + ") -> " +
+                   (block ? "bloqué" : (d.measure ? "mesuré" : "laissé")));
     }
-    return block;
+    Outcome out;
+    if (d.measure) {
+        out.action = Action::Measure;
+        out.source = d.source_net_id;
+    } else if (block) {
+        out.action = d.impact ? Action::BlockImpact : Action::Block;
+    }
+    return out;
+}
+
+// Règle 4b (hôte) : le coup s'applique sur l'avatar, remis à ses PV max le temps du coup ; la perte
+// de PV part en HitOnGuest, puis les PV d'avant sont rendus. Une mise à terre ou une mort de
+// l'avatar pendant le coup est annulée par les détours DownOrDeadBy* (measured_target). PV
+// illisibles : coup bloqué avec effet d'impact, sans HitOnGuest.
+bool measure(void* damage_ps, void* target, std::uint32_t source, DamageFn original) {
+    const game::Entity avatar{target};
+    int before = 0, max = 0;
+    if (!game::get_hit_points(avatar, before) || !game::get_hit_points_max(avatar, max) || max <= 0 ||
+        !game::set_hit_points(avatar, max, game::kSkillModifierSet)) {
+        if (!g_raw_warned.exchange(true)) {
+            log::warn("[sync] dégâts : PV de l'avatar illisibles : coup sur l'avatar bloqué sans HitOnGuest "
+                      "(une fois par session)");
+        }
+        return true;
+    }
+    bool result = false;
+    {
+        ApplyGuard guard;  // coups imbriqués laissés
+        t_measured = target;
+        result = original(damage_ps, target);
+        t_measured = nullptr;
+    }
+    int after = max;
+    const bool after_ok = game::get_hit_points(avatar, after);
+    game::set_hit_points(avatar, before, game::kSkillModifierSet);
+    const std::uint32_t damage = after_ok ? hit_rules::measured_damage(max, after) : 0;
+    if (damage > 0) queue_guest_hit(source, damage);
+    log::info("[sync] coup sur l'avatar invité mesuré (source " +
+              (source != 0 ? "PNJ " + std::to_string(source) : std::string("inconnue")) + ") : DoDamage -> " +
+              (result ? "1" : "0") + ", dégâts " + (after_ok ? std::to_string(damage) : std::string("illisibles")) +
+              (damage > 0 ? " (HitOnGuest)" : " (rien d'émis)") + ", PV de l'avatar rendus à " +
+              std::to_string(before));
+    return result;
 }
 
 }  // namespace
 
-bool on_damage(void* damage_ps, void* target) noexcept {
+bool on_damage(void* damage_ps, void* target, DamageFn original) noexcept {
+    Outcome o;
     try {
-        return decide(damage_ps, target);
+        o = decide(damage_ps, target);
     } catch (...) {
-        return false;  // en cas de doute, on laisse passer
+        o = Outcome{};  // en cas de doute, on laisse passer
     }
+    switch (o.action) {
+        case Action::Block: return false;
+        case Action::BlockImpact: return true;  // effet d'impact joué par l'appelant, sans dégâts
+        case Action::Measure:
+            try {
+                return measure(damage_ps, target, o.source, original);
+            } catch (...) {
+                t_measured = nullptr;
+                return true;
+            }
+        case Action::Pass: break;
+    }
+    return original(damage_ps, target);
 }
+
+void* measured_target() { return t_measured; }
 
 void publish(void* hero, Role role, bool in_session, std::uint32_t frame_thread) {
     g_frame_thread.store(frame_thread);

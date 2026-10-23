@@ -65,7 +65,15 @@ void apply_hit(std::uint32_t source, std::uint32_t damage) {
 }
 
 bool on_down_or_dead(int which, void* spu, void* other) noexcept {
-    if (which < 0 || which > 2 || !hits::guest_in_session()) return false;
+    if (which < 0 || which > 2) return false;
+    // Hôte : coup mesuré sur l'avatar invité (sync/hits, règle 4b) : sa mise à terre ou sa mort est
+    // annulée, ses PV sont rendus après la mesure.
+    if (void* measured = hits::measured_target(); measured != nullptr) {
+        void* victim = nullptr;
+        const bool read = other != nullptr ? game::read_entity_ptr(other, victim) : game::spu_other_entity(spu, victim);
+        return read && victim == measured;
+    }
+    if (!hits::guest_in_session()) return false;
     void* hero = hits::hero();
     if (hero == nullptr) return false;
     void* victim = nullptr;

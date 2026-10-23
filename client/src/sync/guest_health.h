@@ -23,8 +23,9 @@ namespace mp::sync::guest_health {
 // laisse le héros à 1 PV et note une mise à terre (cause HitOnGuest).
 void apply_hit(std::uint32_t source, std::uint32_t damage);
 
-// Détour DownOrDeadBy{MeleeWeapon,Projectile,Inferno} (`which` = 0, 1, 2), en session chez
-// l'invité seulement. Victime = *(void**)other, ou GetOtherEntity(spu) si `other` est nul. Victime
+// Détour DownOrDeadBy{MeleeWeapon,Projectile,Inferno} (`which` = 0, 1, 2). Hôte : victime = avatar
+// dont un coup est en cours de mesure (hits::measured_target) → true (mise à terre ou mort annulée).
+// Sinon, en session chez l'invité seulement. Victime = *(void**)other, ou GetOtherEntity(spu) si `other` est nul. Victime
 // = héros et PV ≤ 0 : PV remis à 1, mise à terre notée (cause 1 + which), true (le détour rend 0
 // sans appeler l'original). Sinon, ou sur échec : false (original appelé). Ne lève jamais.
 bool on_down_or_dead(int which, void* spu, void* other) noexcept;

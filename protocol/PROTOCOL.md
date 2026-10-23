@@ -223,14 +223,16 @@ en reçoit un l'ignore.
 | Champ | Type | Contrainte |
 |---|---|---|
 | `source_net_id` | `u32` | NetId du PNJ agresseur (≥ 1000), **0** = source inconnue — valeurs émises par l'hôte, indicatives |
-| `damage` | `u32` | dégâts bruts du coup, avant toute protection (0 à 1 000 000) — valeurs émises par l'hôte, indicatives |
+| `damage` | `u32` | dégâts du coup, mesurés sur l'avatar chez l'hôte (0 à 1 000 000) — valeurs émises par l'hôte, indicatives |
 
 Ces bornes décrivent ce qu'émet l'hôte ; elles ne sont **pas vérifiées au décodage** (aucun
 `BadValue`) : toute valeur `u32` se décode.
 
 Taille : 9 octets. Hôte → invité seulement : un monstre a touché l'avatar de l'invité chez l'hôte.
-Les dégâts bruts valent `(DamageAmount + DamageBonus) × DamageMultiplier` du `gCDamage_PS` de
-l'arme qui frappe, arrondis au plus proche. L'invité les retire aux PV de son héros (§8, « Coups
+Les dégâts sont la perte de PV de l'avatar quand l'hôte laisse le coup natif s'appliquer sur lui
+(scripts de dégâts du jeu, armure de l'avatar comprise ; avatar remis à ses PV max le temps du
+coup, puis à ses PV d'avant). Avant 2026-10-23 (même v13), c'était `(DamageAmount + DamageBonus) ×
+DamageMultiplier` de l'arme, nul pour les monstres. L'invité les retire aux PV de son héros (§8, « Coups
 subis par l'invité ») ; un hôte qui en reçoit un l'ignore. `source_net_id` ne sert qu'au journal.
 
 ### `Respawn` (25) — fiable — v14
@@ -1131,11 +1133,12 @@ d'appels.
   - Un invité qui reçoit `HitRequest` l'ignore. Pas de limite de cadence.
 - **Coups subis par l'invité** (v13, story 3.6) : l'hôte fait autorité sur les combats ; les PV du
   héros de l'invité ne baissent que par `HitOnGuest`.
-  - **Hôte** : l'avatar de l'invité est invulnérable. Tout coup natif sur lui est bloqué. Si
-    l'agresseur est le héros de l'hôte (pas de tir ami) ou nul, rien n'est émis ; sinon l'hôte émet
-    `HitOnGuest{source, dégâts bruts}`, une fois par coup, avec `source` = `NetId` du PNJ agresseur
-    s'il est annoncé, sinon 0. Les dégâts bruts sont pris avant toute protection (pas d'armure en
-    J2). Hors `InSession`, rien n'est émis. Les PV de l'avatar ne servent jamais à détecter un coup.
+  - **Hôte** : l'avatar de l'invité ne perd jamais de PV au bilan. Un coup natif du héros de l'hôte
+    (pas de tir ami) ou d'un agresseur nul est bloqué, rien n'est émis. Sinon le coup est **mesuré** :
+    l'avatar est remis à ses PV max, le coup natif s'applique (sa mise à terre ou sa mort est
+    annulée), la perte de PV est envoyée dans `HitOnGuest{source, dégâts}`, une fois par coup, puis
+    les PV d'avant sont rendus. `source` = `NetId` du PNJ agresseur s'il est annoncé, sinon 0. Une
+    perte nulle n'émet rien. Hors `InSession`, rien n'est émis.
   - **Invité** : tout coup natif sur son héros est bloqué, quel que soit l'agresseur. Un
     `HitOnGuest` reçu en session retire `damage` aux PV de son héros ; `damage = 0` ne change rien.
     Un coup mortel laisse le héros à **1 PV** et le met à terre (v14, « Mort et réapparition de

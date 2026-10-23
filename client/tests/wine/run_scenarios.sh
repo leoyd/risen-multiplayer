@@ -152,7 +152,7 @@ done
 
 # Story 3.3 : symboles de resolve_npc présents dans les DLL du jeu (Script, Engine, Game) ;
 # story 3.4b : PSRoutine::PropertyAIMode (lecture et operator=) ; story 3.5 : resolve_damage ;
-# story 3.6 : getters des dégâts bruts (resolve_damage) ; story 3.7 : PSSkills::GetHitPointsMax (resolve_npc).
+# story 3.5 (correctif) : PSNpc::Get/SetCurrentTarget (resolve_damage) ; story 3.7 : PSSkills::GetHitPointsMax (resolve_npc).
 for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Script.dll|?UpdateEntityLists@Entity@@KAXXZ' \
     'Script.dll|?IsPlayer@Entity@@QEBA_NXZ' 'Script.dll|?GetHitPoints@PSSkills@@QEBAHXZ' \
     'Script.dll|?GetHitPointsMax@PSSkills@@QEBAHXZ' \
@@ -167,9 +167,8 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Game.dll|?GetAgressor@gCDamage_PS@@QEBAAEBVeCEntityProxy@@XZ' \
     'Engine.dll|?GetEntity@eCEntityProxy@@QEAAPEAVeCEntity@@XZ' \
     'Script.dll|?DoDamage@PSDamage@@QEAA_NAEAVEntity@@0@Z' \
-    'Game.dll|?GetDamageAmount@gCDamage_PS@@QEBAAEBJXZ' \
-    'Game.dll|?GetDamageBonus@gCDamage_PS@@QEBAAEBJXZ' \
-    'Game.dll|?GetDamageMultiplier@gCDamage_PS@@QEBAAEBMXZ'; do
+    'Script.dll|?GetCurrentTarget@PSNpc@@QEBA?AVEntity@@XZ' \
+    'Script.dll|?SetCurrentTarget@PSNpc@@QEAAXAEBVEntity@@@Z'; do
     dll=${entry%%|*}
     sym=${entry#*|}
     if grep -qaF -- "$sym" "$risen_bin/$dll"; then

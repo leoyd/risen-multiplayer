@@ -310,3 +310,15 @@ Status: done
 - Hypothèses H1 à H6 non vérifiées.
 - La garde de réentrance laisse passer un coup imbriqué sur l'avatar (D7).
 - Un `HitOnGuest` arrivé à la toute première frame après un chargement est ignoré, avec un Warn « pas de héros ».
+
+## Correctif après test en jeu (2026-10-23)
+
+Test à deux instances : 30 coups de monstres sur l'avatar, tous `dégâts bruts 0` ; l'invité ne
+perdait jamais de PV. Les monstres frappent avec leur propre `gCDamage_PS`, dont le montant vaut 0 :
+leurs dégâts sont calculés par des scripts (`DoFistDamage`, `DoSpecialMonsterDamage`, …). Décision
+de l'utilisateur : chez l'hôte, le coup d'un monstre sur l'avatar est **mesuré** (avatar remis à ses
+PV max, coup natif appliqué, mise à terre ou mort annulée, perte de PV envoyée dans `HitOnGuest`,
+PV d'avant rendus). L'armure de l'invité compte (l'avatar la porte). `raw_damage` et
+`game::damage_raw` sont retirés ; protocole inchangé (v13/v14, sens de `damage` seul). Même jour :
+un coup bloqué rend `true` sans appeler l'original, pour garder l'effet d'impact du jeu (sang, son),
+sauf tir ami et agresseur nul. Détail : `docs/re/degats-hote.md`.

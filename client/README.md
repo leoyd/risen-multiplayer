@@ -684,27 +684,31 @@ Prérequis : recompiler, copier `client/build/Script_Multiplayer.dll` dans `bin/
 **À valider en jeu** : testé au banc (Linux, faux invité ; banc Wine : symboles des getters sur la
 vraie Game.dll) seulement. Protocole **v13** (`HitOnGuest`, type 23). Même détour que la 3.5
 (`damage_hook = 1`), aucun nouveau hook.
-- **Hôte** : l'avatar de l'invité est **invulnérable**. Tout coup natif sur lui est bloqué :
-  - d'un monstre : `[sync] coup natif bloqué : PNJ N -> avatar invité (HitOnGuest, dégâts bruts D)`,
-    puis `[sync] coup sur l'avatar invité (source PNJ N) : HitOnGuest envoyé, dégâts bruts D`. Un
-    agresseur hors registre (PNJ non animé, projectile) donne `source inconnue` (NetId 0) ;
-  - du héros de l'hôte : `… -> avatar invité (pas de tir ami)`, rien d'émis ;
+- **Hôte** : un coup natif sur l'avatar de l'invité est **mesuré** (correctif du 2026-10-23 : les
+  dégâts bruts de l'arme valaient 0 pour les monstres) :
+  - d'un monstre : l'avatar est remis à ses PV max, le coup s'applique (scripts du jeu, armure de
+    l'avatar comprise ; mise à terre ou mort annulée), puis
+    `[sync] coup sur l'avatar invité mesuré (source PNJ N) : DoDamage -> 1, dégâts D (HitOnGuest), PV de l'avatar rendus à P`
+    et `[sync] coup sur l'avatar invité (source PNJ N) : HitOnGuest envoyé, dégâts bruts D` (D = dégâts
+    mesurés). Un agresseur hors registre (PNJ non animé, projectile) donne `source inconnue` ;
+  - du héros de l'hôte : `coup natif bloqué : … -> avatar invité (pas de tir ami)`, rien d'émis ;
   - d'un agresseur nul : `… (agresseur nul, sans HitOnGuest)`, rien d'émis.
 
-  Dégâts bruts = `(GetDamageAmount + GetDamageBonus) × GetDamageMultiplier` du PS du coup, arrondis,
-  sans armure (J2). Illisibles (SEH) : Warn une fois par session `dégâts bruts illisibles (SEH) :
-  coup sur l'avatar bloqué sans HitOnGuest`. Les PV de l'avatar ne sont ni lus ni écrits.
+  PV de l'avatar illisibles : Warn une fois par session `PV de l'avatar illisibles : coup sur
+  l'avatar bloqué sans HitOnGuest`.
 - **Invité** : tout coup natif sur son héros est bloqué, quel que soit l'agresseur
   (`coup natif bloqué : PNJ N -> héros (seuls les HitOnGuest blessent)`). Un `HitOnGuest` reçu est
   appliqué par `sync/guest_health`, seul écrivain des PV du héros (`SetHitPoints` fixé) :
   `[sync] HitOnGuest (source PNJ N) appliqué : dégâts bruts D, PV a -> b`. Un coup mortel laisse le
-  héros à 1 PV et le met à terre (story 3.7, section suivante). Pas de recul ni d'effet d'impact
-  chez l'invité.
+  héros à 1 PV et le met à terre (story 3.7, section suivante). Pas de recul chez l'invité.
+- **Effet d'impact** (correctif du 2026-10-23) : un coup natif bloqué rend `true` sans appeler
+  l'original, donc le jeu joue l'effet d'impact (sang, son) sans dégâts. Exceptions qui rendent
+  `false` (pas d'effet) : tir ami entre l'hôte et l'avatar, agresseur nul.
 - Bilan `[sync] snapshots (5 s)` : en fin de ligne, `coups subis : HitOnGuest envoyés …, reçus …,
   ignorés …` (hôte : envoyés ; invité : reçus ; un `HitOnGuest` reçu par l'hôte est ignoré, Warn).
 
 Prérequis : comme la 3.5 (`log_level = debug`, `damage_hook = 1`, overlay Steam désactivé, faux
-invité reconstruit). Si `dégâts inactifs` nomme un des trois getters `GetDamage*`, rapporter la ligne.
+invité reconstruit). Si `dégâts inactifs` nomme un symbole, rapporter la ligne.
 
 1. **Une machine, hôte + faux invité** (`fake-guest --host 127.0.0.1 --duration 180s --echo`), avatar
    près d'un camp hostile. Attendu chez l'hôte : `coup natif bloqué : PNJ N -> avatar invité

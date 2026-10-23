@@ -2,9 +2,6 @@
 #include "sync/hit_rules.h"
 #include "test.h"
 
-#include <cmath>
-#include <limits>
-
 using mp::sync::EntityRole;
 using mp::sync::TrackedEntity;
 using namespace mp::sync::hit_rules;
@@ -78,7 +75,7 @@ TEST("règles des dégâts 2 : hors session ou rôle inconnu → laissé") {
 
 TEST("règles des dégâts 3 : invité, son héros sur une réplique vivante → bloqué, NetId en file") {
     const Decision d = decide(guest_hits_replica());
-    CHECK(d.block);
+    CHECK(d.block && d.impact && !d.measure);
     CHECK_EQ(d.queue_net_id, 1000u);
     CHECK(d.reason == Reason::HitRequest);
 }
@@ -107,11 +104,11 @@ TEST("règles des dégâts 3 : invité, autre agresseur (avatar de l'hôte, nul)
 
 TEST("règles des dégâts 4 : hôte, agresseur avatar invité → bloqué, rien en file (cible quelconque)") {
     Decision d = decide(host_avatar_hits());
-    CHECK(d.block && d.queue_net_id == 0 && d.reason == Reason::GuestAvatar);
+    CHECK(d.block && d.impact && d.queue_net_id == 0 && d.reason == Reason::GuestAvatar);
     Inputs in = host_avatar_hits();
-    in.target = &g_hero;  // héros de l'hôte : pas de tir ami
+    in.target = &g_hero;  // héros de l'hôte : pas de tir ami, pas d'effet d'impact
     d = decide(in);
-    CHECK(d.block && d.reason == Reason::GuestAvatar);
+    CHECK(d.block && !d.impact && d.reason == Reason::GuestAvatar);
 }
 
 TEST("règles des dégâts 5 : sinon laissé (héros de l'hôte sur un PNJ, PNJ sur le héros de l'hôte)") {
@@ -183,22 +180,22 @@ bool blocked_silent(const Decision& d, Reason r) {
 
 }  // namespace
 
-TEST("règles des dégâts 4b : hôte, PNJ capturé frappe l'avatar → bloqué, HitOnGuest source 1000") {
+TEST("règles des dégâts 4b : hôte, PNJ capturé frappe l'avatar → mesuré, HitOnGuest source 1000") {
     const Decision d = decide(host_npc_hits_avatar());
-    CHECK(d.block);
+    CHECK(!d.block && d.measure);
     CHECK(d.hit_on_guest);
     CHECK_EQ(d.source_net_id, 1000u);
     CHECK_EQ(d.queue_net_id, 0u);
     CHECK(d.reason == Reason::AvatarHit);
 }
 
-TEST("règles des dégâts 4b : hôte, agresseur hors registre frappe l'avatar → bloqué, HitOnGuest source 0") {
+TEST("règles des dégâts 4b : hôte, agresseur hors registre frappe l'avatar → mesuré, HitOnGuest source 0") {
     Inputs in = host_npc_hits_avatar();
     in.aggressor = &g_other;
     in.aggressor_found = false;
     in.aggressor_entry = TrackedEntity{};
     const Decision d = decide(in);
-    CHECK(d.block && d.hit_on_guest && d.reason == Reason::AvatarHit);
+    CHECK(!d.block && d.measure && d.hit_on_guest && d.reason == Reason::AvatarHit);
     CHECK_EQ(d.source_net_id, 0u);
 }
 
@@ -208,6 +205,7 @@ TEST("règles des dégâts 4b : hôte, son héros frappe l'avatar → bloqué, r
     in.aggressor_found = false;
     in.aggressor_entry = TrackedEntity{};
     CHECK(blocked_silent(decide(in), Reason::AvatarFriendly));
+    CHECK(!decide(in).impact && !decide(in).measure);
     // Héros connu du registre seulement (rôle LocalHero).
     in.hero = nullptr;
     in.aggressor_found = true;
@@ -221,6 +219,7 @@ TEST("règles des dégâts 4b : hôte, agresseur nul sur l'avatar → bloqué, r
     in.aggressor_found = false;
     in.aggressor_entry = TrackedEntity{};
     CHECK(blocked_silent(decide(in), Reason::AvatarNoAggressor));
+    CHECK(!decide(in).impact && !decide(in).measure);
     in.hero = nullptr;  // héros pas encore publié : agresseur nul reste « nul », pas « tir ami »
     CHECK(blocked_silent(decide(in), Reason::AvatarNoAggressor));
 }
@@ -242,6 +241,7 @@ TEST("règles des dégâts 4 avant 4b : hôte, avatar qui se frappe lui-même �
 
 TEST("règles des dégâts 3b : invité, réplique frappe son héros → bloqué, rien en file") {
     CHECK(blocked_silent(decide(guest_replica_hits_hero()), Reason::GuestHeroByReplica));
+    CHECK(decide(guest_replica_hits_hero()).impact);
 }
 
 TEST("règles des dégâts 3b : invité, agresseur inconnu ou nul sur son héros → bloqué, rien") {
@@ -276,16 +276,12 @@ TEST("règles des dégâts 3b : invité, garde active ou hors session → laiss�
     CHECK(passes(decide(in)));
 }
 
-TEST("dégâts bruts : (10 + 2) × 1,5 = 18 ; négatif, NaN → 0 ; énorme → plafond") {
-    CHECK_EQ(raw_damage(10, 2, 1.5f), 18u);
-    CHECK_EQ(raw_damage(-10, 2, 1.0f), 0u);
-    CHECK_EQ(raw_damage(10, 2, -1.0f), 0u);
-    CHECK_EQ(raw_damage(0, 0, 1.0f), 0u);
-    CHECK_EQ(raw_damage(10, 2, std::nanf("")), 0u);
-    CHECK_EQ(raw_damage(10, 2, 1e12f), kMaxRawDamage);
-    CHECK_EQ(raw_damage(10, 2, std::numeric_limits<float>::infinity()), 0u);
-    CHECK_EQ(raw_damage(10, 0, 1.25f), 13u);  // 12,5 → arrondi au plus proche (13)
-    CHECK_EQ(raw_damage(10, 0, 1.24f), 12u);
+TEST("dégâts mesurés : 100 → 82 = 18 ; 100 → -30 = 130 ; gain ou égalité → 0 ; énorme → plafond") {
+    CHECK_EQ(measured_damage(100, 82), 18u);
+    CHECK_EQ(measured_damage(100, -30), 130u);  // PV sous 0 : la perte entière compte
+    CHECK_EQ(measured_damage(100, 100), 0u);
+    CHECK_EQ(measured_damage(100, 120), 0u);
+    CHECK_EQ(measured_damage(2000000, -2000000), kMaxRawDamage);
 }
 
 TEST("PV invité : (100, 18) → 82 ; (10, 18) → 1 held ; (1, 5) → rien, held ; (50, 0) → rien") {

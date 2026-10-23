@@ -14,8 +14,7 @@
 // Toutes les fonctions sont protégées par SEH et retournent false en cas d'échec. Thread
 // principal uniquement (hook OnProcess, AD-2), sauf `read_entity_ptr` (lecture mémoire seule),
 // `defeat` (exception documentée : appelée depuis le détour de Kill, même thread) et
-// `damage_aggressor` et `damage_raw` (accesseurs appelés depuis le détour des dégâts, stories 3.5
-// et 3.6).
+// `damage_aggressor` (accesseur appelé depuis le détour des dégâts, story 3.5).
 #pragma once
 
 #include "game/entity.h"
@@ -75,20 +74,15 @@ bool resolve_inventory(const char*& missing);
 bool resolve_npc(const char*& missing);
 // Story 3.5 (Q8) : dégâts de la session, bloc facultatif en tout ou rien : gCDamage_PS::DoDamage
 // (1 argument, cible du détour) et GetAgressor (Game.dll), eCEntityProxy::GetEntity (Engine.dll),
-// PSDamage::DoDamage (Script.dll) ; story 3.6 : gCDamage_PS::GetDamageAmount, GetDamageBonus et
-// GetDamageMultiplier (Game.dll) ; PSNpc::GetCurrentTarget et SetCurrentTarget (Script.dll). Un
-// échec laisse la session sans dégâts synchronisés (déroge à
-// AD-3 pour ce seul bloc). False et `missing` au premier échec.
+// PSDamage::DoDamage, PSNpc::GetCurrentTarget et SetCurrentTarget (Script.dll). Un échec laisse la
+// session sans dégâts synchronisés (déroge à AD-3 pour ce seul bloc). False et `missing` au premier
+// échec.
 bool resolve_damage(const char*& missing);
 bool damage_resolved();
 void* damage_hook_address();  // gCDamage_PS::DoDamage(eCEntity*), après resolve_damage (sinon nul)
 // Agresseur d'un coup : eCEntityProxy::GetEntity(gCDamage_PS::GetAgressor(damage_ps)), sous SEH.
 // Appelé depuis le détour des dégâts (accesseurs sans effet de bord). `out` peut être nul.
 bool damage_aggressor(const void* damage_ps, void*& out);
-// Story 3.6 : dégâts bruts d'un coup, lus sur le gCDamage_PS (GetDamageAmount, GetDamageBonus,
-// GetDamageMultiplier), sous SEH. Appelé depuis le détour des dégâts (accesseurs sans effet de bord).
-// Le calcul est fait par sync/hit_rules::raw_damage. False (sorties à 0) en cas d'échec.
-bool damage_raw(const void* damage_ps, long& amount, long& bonus, float& multiplier);
 // PSNpc::GetCurrentTarget / SetCurrentTarget (après resolve_damage), sous SEH, frame seulement.
 // Le script CanDoMeleeDamage n'accepte le coup d'un agresseur autre que le joueur que si sa cible
 // actuelle est l'entité frappée : l'hôte la fixe sur l'avatar invité le temps d'un HitRequest.

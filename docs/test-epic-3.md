@@ -412,8 +412,8 @@ Durée : environ 1 h. Un scénario de jeu dans l’ordre. Chaque étape dit ce q
   Stone m’envoie alors les lignes `[sync] dégâts : agresseur …` (§8).
 
 **B6. Stone est frappé (3.6).** Stone se laisse attaquer par un monstre.
-- Léo, log : `[sync] coup natif bloqué : PNJ N -> avatar invité (HitOnGuest, dégâts bruts D)`,
-  puis `[sync] coup sur l'avatar invité (source PNJ N) : HitOnGuest envoyé, dégâts bruts D`.
+- Léo, log (correctif du 2026-10-23, coup mesuré) : `[sync] coup sur l'avatar invité mesuré (source PNJ N) : DoDamage -> 1, dégâts D (HitOnGuest), PV de l'avatar rendus à P`,
+  puis `[sync] coup sur l'avatar invité (source PNJ N) : HitOnGuest envoyé, dégâts bruts D` (D > 0).
 - Stone, log : `[sync] HitOnGuest (source PNJ N) appliqué : dégâts bruts D, PV a -> b`. Peut-être
   aussi `[sync] coup natif bloqué : PNJ N -> héros (seuls les HitOnGuest blessent)` (noter s’il
   apparaît : hypothèse H4 de la 3.6).
