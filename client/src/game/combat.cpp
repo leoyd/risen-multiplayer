@@ -269,12 +269,16 @@ DamageAbi g_dmg;
 bool g_dmg_resolved = false;
 
 // Attaques natives des répliques (story 3.8) : bloc facultatif, résolu en tout ou rien.
+// Story 3.8 : arme naturelle d'une créature (PSCombatSystem::GetRightFistItem, Template par sret).
+using TemplateRetFn = Template* (*)(const Entity* self, Template* sret);
+constexpr const char* kGetRightFistItem = "?GetRightFistItem@PSCombatSystem@@QEBA?AVTemplate@@XZ";
 struct NativeAttackAbi {
     CombatMoveFn get_last_attack_move = nullptr;
     CombatMoveFn get_current_move = nullptr;
     GetEntityRetFn get_current_target = nullptr;  // sret
     CombatSetTargetFn set_current_target = nullptr;
     StartMoveFn start_move = nullptr;
+    TemplateRetFn get_right_fist_item = nullptr;  // sret, à détruire (destroy_template)
 };
 NativeAttackAbi g_atk;
 bool g_atk_resolved = false;
@@ -448,7 +452,8 @@ bool resolve_native_attacks(const char*& missing) {
                     lookup(script, kGetCurrentMove, a.get_current_move, missing) &&
                     lookup(script, kCombatGetCurrentTarget, a.get_current_target, missing) &&
                     lookup(script, kCombatSetCurrentTarget, a.set_current_target, missing) &&
-                    lookup(script, kStartMove, a.start_move, missing);
+                    lookup(script, kStartMove, a.start_move, missing) &&
+                    lookup(script, kGetRightFistItem, a.get_right_fist_item, missing);
     if (!ok) return false;
     g_atk = a;
     g_atk_resolved = true;
@@ -513,6 +518,18 @@ bool combat_start_move(const Entity& e, int move, bool& out) {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = false;
+        return false;
+    }
+}
+
+bool combat_right_fist_item(const Entity& e, Template& out) {
+    out.proxy = nullptr;
+    if (!g_atk_resolved || e.ptr == nullptr) return false;
+    __try {
+        g_atk.get_right_fist_item(&e, &out);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out.proxy = nullptr;
         return false;
     }
 }

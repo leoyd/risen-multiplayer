@@ -188,7 +188,8 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Script.dll|?GetCurrentMove@PSCombatSystem@@QEBA?AW4gECombatMove@@XZ' \
     'Script.dll|?GetCurrentTarget@PSCombatSystem@@QEBA?AVEntity@@XZ' \
     'Script.dll|?SetCurrentTarget@PSCombatSystem@@QEAA_NAEBVEntity@@@Z' \
-    'Script.dll|?StartMove@PSCombatSystem@@QEBA_NW4gECombatMove@@@Z'; do
+    'Script.dll|?StartMove@PSCombatSystem@@QEBA_NW4gECombatMove@@@Z' \
+    'Script.dll|?GetRightFistItem@PSCombatSystem@@QEBA?AVTemplate@@XZ'; do
     dll=${entry%%|*}
     sym=${entry#*|}
     if grep -qaF -- "$sym" "$risen_bin/$dll"; then

@@ -544,9 +544,30 @@ void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target) {
         }
         return;
     }
+    // Test du 2026-10-24 : StartMove -> 0 sur toutes les répliques. Le mouvement est cherché dans le
+    // style de combat de l'arme tenue ; une créature à l'IA figée n'a jamais sorti son arme naturelle.
+    // Main vide : arme naturelle (GetRightFistItem) cherchée dans l'inventaire et tenue, puis nouvel essai.
+    std::string retry;
+    if (!started) {
+        int held = -1;
+        game::get_right_hold_stack(r.entity, held);
+        retry = ", main " + std::to_string(held);
+        if (held < 0) {
+            game::Template fist;
+            int stack = -1;
+            const bool fist_ok = game::combat_right_fist_item(r.entity, fist) && fist.proxy != nullptr;
+            if (fist_ok) game::find_stack_index(r.entity, fist, stack);
+            if (fist.proxy != nullptr) game::destroy_template(fist);
+            bool held_ok = false;
+            if (stack >= 0) game::hold_right_stack(r.entity, stack, held_ok);
+            if (held_ok) game::combat_start_move(r.entity, static_cast<int>(move), started);
+            retry += std::string(", arme naturelle ") + (fist_ok ? "pile " + std::to_string(stack) : "absente") +
+                     ", HoldRightStack -> " + (held_ok ? "1" : "0") + ", StartMove -> " + (started ? "1" : "0");
+        }
+    }
     log::debug(what + " : SetCurrentTarget -> " +
                (aim.ptr == nullptr ? std::string("(effacée) ") : std::string()) + (target_set ? "1" : "0") +
-               ", StartMove -> " + (started ? "1" : "0"));
+               ", StartMove -> " + (started ? "1" : "0") + retry);
 }
 
 void detect_attacks(void* hero, std::vector<cs::Input>& out) {
@@ -578,6 +599,17 @@ void detect_attacks(void* hero, std::vector<cs::Input>& out) {
             TrackedEntity entry;
             const bool found = aim.ptr != nullptr && anim_filter().find_by_entity(aim.ptr, entry);
             target = hit_rules::attack_target_net_id(aim.ptr, hero, avatar_entity, found, entry);
+        }
+        if (log::debug_enabled()) {  // test du 2026-10-24 : arme tenue par le PNJ au début de l'attaque
+            int held = -1;
+            game::Entity item;
+            std::string name;
+            if (game::get_right_hold_stack(c.entity, held) && held >= 0 && game::get_right_hold_item(c.entity, item) &&
+                item.ptr != nullptr) {
+                game::get_entity_name(item, name);
+            }
+            log::debug(who(net_id) + " : attaque (mouvement " + std::to_string(last) + "), main " + std::to_string(held) +
+                       (name.empty() ? std::string() : " « " + name + " »"));
         }
         out.push_back(cs::LocalNpcAttack{net_id, static_cast<std::uint32_t>(last), target});
     }

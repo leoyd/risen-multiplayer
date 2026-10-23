@@ -110,6 +110,8 @@ bool combat_current_target(const Entity& e, Entity& out); // PSCombatSystem::Get
 // PSCombatSystem::SetCurrentTarget(const Entity&) et StartMove(gECombatMove) : `out` = retour du jeu.
 bool combat_set_current_target(const Entity& e, const Entity& target, bool& out);
 bool combat_start_move(const Entity& e, int move, bool& out);
+// PSCombatSystem::GetRightFistItem : arme naturelle (créature) ; `out` à détruire (destroy_template).
+bool combat_right_fist_item(const Entity& e, Template& out);
 // Kill, Defeat et DownOrDeadBy* (Script_Game.dll), facultatifs : module déjà chargé par le jeu,
 // jamais par nous (sonde J2, et depuis la story 3.7 les détours DownOrDeadBy* de session). False et
 // `missing` (module ou symbole) en cas d'échec.
