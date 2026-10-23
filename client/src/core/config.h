@@ -34,6 +34,10 @@ struct Config {
     // Story 3.5 : détour des dégâts (gCDamage_PS::DoDamage) posé en session. 0 = pas de détour
     // (repli si le test en jeu crashe) ; les HitRequest reçus par l'hôte restent appliqués.
     bool damage_hook = true;
+    // Story 3.8 : attaques natives des répliques (NpcAttack, protocole v15). 0 = ni envoi (hôte) ni
+    // application (invité), coups natifs sur le héros invité tous bloqués : interrupteur de
+    // diagnostic, comportement de la story 3.6 (recul générique seul).
+    bool native_attacks = true;
     // Overlay à l'écran (rôle, pseudo, état de session), détour de IDirect3DDevice9::Present.
     // 0 = pas de détour.
     bool overlay = true;
@@ -56,7 +60,7 @@ struct ConfigResult {
 // Champs : role (host|guest, obligatoire), host_ip (validé en invité seulement),
 // port (vide = défaut), nickname, guest_equipment (liste de templates, core/equipment.h), probe (0|1, vide = défaut 0),
 // log_level (debug|info, insensible à la casse, vide = défaut info), damage_hook (0|1, vide = défaut 1),
-// overlay (0|1, vide = défaut 1).
+// native_attacks (0|1, vide = défaut 1), overlay (0|1, vide = défaut 1).
 ConfigResult parse_config(std::string_view text);
 
 }  // namespace mp

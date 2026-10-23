@@ -627,3 +627,22 @@ So that une mort ne mette pas fin à la partie à deux (FR-12).
 **Then** elle reste native et met fin à la session (AD-11), sans changement.
 
 *Note (implémentation 3.7, protocole v14) :* `Respawn` = type 25, `{NetId u32, x, y, z, lacet f32, tick u32}`, dans les deux sens : ordre de l’hôte (2 m devant son héros, `tick` 0) et accusé de l’invité (`tick` = premier tick de snapshot qui porte la nouvelle pose). `Death{2}` = « à terre » : plus de ragdoll de l’avatar chez l’hôte. Question 13 tranchée par l’accusé (snapshots du `NetId` 2 ignorés jusqu’à lui, puis ceux de tick inférieur). Replis : 10 s sans `Respawn` chez l’invité (PV rendus sur place), 5 s sans accusé chez l’hôte (snapshots repris). Question 9 : **limite documentée**, une mort native (chute, eau profonde) n’est pas interceptée ; l’invité envoie `Death{2}`, refuse le `Respawn`, et la session finit à son rechargement (le critère « sans fin de session » n’est pas tenu dans ce cas). Les détours `DownOrDeadBy*` sont posés en session comme filet, facultatifs.
+
+### Story 3.8 : Attaques natives des répliques (retour visuel des coups chez l’invité)
+
+As a invité,
+I want voir les coups des monstres sur mon héros comme dans le jeu solo (sang, recul adapté, flash),
+So that le combat à deux se lise sans écart visible avec l’hôte, sans que les dégâts aient deux sources.
+
+**Acceptance Criteria:**
+
+**Given** deux instances en session
+**When** un monstre frappe l’invité
+**Then** l’invité voit sang, recul adapté et flash comme l’hôte
+**And** ses PV ne baissent que du `HitOnGuest`.
+
+**Given** `native_attacks = 0`
+**When** un monstre frappe l’invité
+**Then** le comportement est celui de la story 3.6 (recul générique).
+
+*Note (implémentation 3.8, protocole v15) :* `NpcAttack` = type 29 (le 26 proposé par la spec est `MotionParam`), `{NetId u32, mouvement u32, cible u32}`, hôte → invité. L’hôte détecte le début d’une attaque de chaque PNJ capturé (`PSCombatSystem::GetLastAttackMove` / `GetCurrentMove`) ; l’invité, au même instant d’affichage que le dernier snapshot de la réplique, appelle `SetCurrentTarget` puis `StartMove` sur la réplique. Le coup natif qui en résulte sur son héros est cosmétique (PV rendus, mise à terre annulée) ; le recul générique de la 3.6 ne reste qu’en repli (aucun coup cosmétique depuis 500 ms). Hypothèses à vérifier en jeu : `StartMove` mène jusqu’à `HitTargets` sur une réplique à l’IA figée et à l’animation locale bloquée, `GetLastAttackMove` change à chaque attaque.

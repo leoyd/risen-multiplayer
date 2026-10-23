@@ -6,7 +6,12 @@
 //   3. invité, cible = réplique de PNJ : bloqué ; NetId mis en file seulement si l'agresseur est son
 //      héros et la réplique vivante ;
 //   3b. invité, cible = son héros : bloqué quel que soit l'agresseur, rien en file (seuls les
-//      HitOnGuest blessent) ;
+//      HitOnGuest blessent). Story 3.8 : agresseur = réplique et attaques natives actives → coup
+//      **cosmétique** : l'original s'applique (effet d'impact, script de dégâts : recul, flash), puis
+//      les PV d'avant sont rendus, mise à terre ou mort annulée (comme la mesure de l'hôte). Héros à
+//      terre (story 3.7) : bloqué avec effet d'impact, comme en 3.6 ;
+//   3c. invité, attaques natives actives, cible = avatar de l'hôte (story 3.8 : une réplique peut
+//      désormais l'attaquer) : bloqué, rien en file ; effet d'impact, sauf tir ami de son héros ;
 //   4. hôte, agresseur = avatar de l'invité : bloqué, rien en file ;
 //   4b. hôte, cible = avatar de l'invité. Héros de l'hôte → bloqué (pas de tir ami) ; agresseur nul
 //      → bloqué, rien ; sinon coup **mesuré** : l'original s'applique sur l'avatar, la perte de PV
@@ -14,8 +19,9 @@
 //   5. sinon → laissé.
 // Un coup bloqué rend en principe true sans appeler l'original (`impact`) : le jeu joue l'effet
 // d'impact (sang, son) sans dégâts. Seuls le tir ami et l'agresseur nul (4b) rendent false.
-// S'y ajoutent deux calculs purs : dégâts d'un coup mesuré (hôte) et PV du héros invité après un
-// HitOnGuest (invité, maintien à 1 PV jusqu'à la story 3.7).
+// S'y ajoutent des calculs purs : dégâts d'un coup mesuré (hôte), PV du héros invité après un
+// HitOnGuest (invité, maintien à 1 PV), et pour la story 3.8 la détection d'un début d'attaque
+// (hôte), la traduction de sa cible en NetId et le recul de repli (invité).
 #pragma once
 
 #include <cstdint>
@@ -34,6 +40,8 @@ enum class Reason : std::uint8_t {
     GuestAvatar,     // 4. bloqué, agresseur = avatar invité chez l'hôte
     GuestHeroByReplica,  // 3b. bloqué, une réplique frappe le héros invité
     GuestHeroOther,      // 3b. bloqué, autre agresseur sur le héros invité
+    GuestHeroCosmetic,   // 3b (story 3.8). cosmétique : une réplique frappe le héros invité, PV rendus
+    HostAvatarOnGuest,   // 3c (story 3.8). bloqué : coup natif sur l'avatar de l'hôte chez l'invité
     AvatarHit,           // 4b. mesuré, HitOnGuest à émettre
     AvatarFriendly,      // 4b. bloqué, héros de l'hôte sur l'avatar (pas de tir ami)
     AvatarNoAggressor,   // 4b. bloqué, agresseur nul, sans HitOnGuest
@@ -51,12 +59,15 @@ struct Inputs {
     bool aggressor_found = false;  // find_by_entity(aggressor)
     TrackedEntity aggressor_entry;
     bool replica_dead = false;  // la réplique cible est morte (sync/npc::die)
+    bool native_attacks = false;  // story 3.8 : attaques natives actives (coups des répliques cosmétiques)
+    bool hero_down = false;       // story 3.8 : héros invité à terre (sync/guest_health) : pas de cosmétique
 };
 
 struct Decision {
     bool block = false;              // original non appelé
     bool impact = false;             // bloqué : rendre true (effet d'impact sans dégâts), sinon false
     bool measure = false;            // 4b : original appelé, perte de PV de l'avatar mesurée puis rendue
+    bool cosmetic = false;           // 3b (story 3.8) : original appelé, PV du héros invité rendus
     std::uint32_t queue_net_id = 0;  // ≠ 0 : NetId à mettre en file (HitRequest)
     bool hit_on_guest = false;       // 4b : HitOnGuest à émettre (dégâts mesurés par l'appelant)
     std::uint32_t source_net_id = 0; // 4b : NetId du PNJ agresseur, 0 = source inconnue
@@ -85,5 +96,38 @@ std::uint32_t measured_damage(int hp_before, int hp_after, bool player_party);
 // damage = 0 → pas d'écriture ; hp ≤ 1 → pas d'écriture, held ; hp − damage ≤ 0 → 1, held ;
 // sinon hp − damage.
 GuestHp guest_hp_after(int hp, std::uint32_t damage);
+
+// Story 3.8 (D1), hôte : dernier état lu du système de combat d'un PNJ capturé.
+struct AttackState {
+    bool known = false;   // première lecture faite
+    int current = 0;      // PSCombatSystem::GetCurrentMove
+    int last_attack = 0;  // PSCombatSystem::GetLastAttackMove
+    // LastAttackMove a changé avant que CurrentMove l'atteigne : l'entrée de CurrentMove dans ce
+    // mouvement est la même attaque, déjà annoncée (pas de second début).
+    bool announced = false;
+};
+// Met `state` à jour avec la lecture de la frame. Vrai si une attaque commence : déjà lu, dernier
+// mouvement d'attaque non nul, et soit il a changé, soit le mouvement en cours redevient égal au
+// dernier mouvement d'attaque après avoir valu autre chose, sauf si cette entrée suit le changement
+// de LastAttackMove qui l'a déjà annoncée. La première lecture n'émet rien.
+bool attack_started(AttackState& state, int current, int last_attack);
+// Story 3.8 (D1), hôte : NetId de la cible d'une attaque. Nulle → 0 ; héros de l'hôte → 1 ; avatar
+// de l'invité → 2 ; PNJ capturé du registre → son NetId ; sinon 0.
+std::uint32_t attack_target_net_id(const void* target, const void* hero, const void* avatar, bool found,
+                                   const TrackedEntity& entry);
+// Story 3.8 (D4, différé), invité : un HitOnGuest non mortel met en attente un recul générique
+// (StartStumble) ; il est annulé si un coup cosmétique touche le héros dans les kCosmeticWindowMs
+// avant ou après le HitOnGuest, sinon joué kCosmeticWindowMs après lui. Un HitOnGuest plus récent
+// remplace l'attente.
+constexpr std::uint64_t kCosmeticWindowMs = 500;
+struct PendingStumble {
+    bool active = false;
+    std::uint32_t source = 0;   // NetId du PNJ agresseur
+    std::uint64_t hit_ms = 0;   // application du HitOnGuest (horloge QPC, ms)
+};
+enum class StumbleStep { Idle, Wait, Play, Cancel };
+// `any_cosmetic` : un coup cosmétique a touché le héros dans la session, le dernier à `last_cosmetic_ms`.
+StumbleStep stumble_step(const PendingStumble& p, std::uint64_t now_ms, bool any_cosmetic,
+                         std::uint64_t last_cosmetic_ms);
 
 }  // namespace mp::sync::hit_rules

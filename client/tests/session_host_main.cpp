@@ -31,7 +31,9 @@
 // retire 10 PV simulés au PNJ visé (octet 0 du GUID), visibles dans les snapshots suivants.
 // Coups subis par l'invité (story 3.6) : --hit-guest-ms N injecte en session, toutes les N ms, un
 // LocalHitOnGuest{1000 si --npcs ≥ 1, sinon 0, 18 dégâts bruts}, comme le détour des dégâts de la
-// DLL quand un monstre frappe l'avatar.
+// DLL quand un monstre frappe l'avatar. Story 3.8 : avec --npcs ≥ 1, chaque coup est précédé d'un
+// LocalNpcAttack{1000, 11, 2} (début d'attaque du PNJ 1000 sur l'avatar), comme sync/npc::detect_attacks ;
+// la session l'ignore (compté) une fois le PNJ mort.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -297,6 +299,9 @@ int main(int argc, char** argv) {
         // Story 3.6 : coup d'un monstre sur l'avatar invité, bloqué par le détour (simulé).
         if (hit_guest_ms > 0 && session.state() == State::InSession && in_session && now >= next_guest_hit) {
             next_guest_hit = now + static_cast<std::uint64_t>(hit_guest_ms);
+            if (npc_count >= 1) {  // story 3.8
+                inputs.push_back(LocalNpcAttack{mp::protocol::kFirstNpcNetId, 11u, mp::protocol::kGuestNetId});
+            }
             inputs.push_back(LocalHitOnGuest{npc_count >= 1 ? mp::protocol::kFirstNpcNetId : 0u, 18u});
         }
         in_session = session.state() == State::InSession;

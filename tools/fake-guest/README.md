@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v14 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v15 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, `ErrBadValue`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -68,14 +68,18 @@ Empreintes du `Hello` : celles de `hello.bin` (Risen Steam x64, janvier 2023). �
 | `--dup-hello` | chaque `Hello` part deux fois (l'hôte doit renvoyer le même `Welcome`), et un `Hello` supplémentaire part en session, une fois le premier heartbeat échangé et acquitté (l'hôte doit l'ignorer) |
 | `--bad-version` | envoie le `Hello` de `hello_future.bin` (version 0xFFFF) : l'hôte doit répondre `Reject{1}` |
 | `--strict-timeout` | (story 3.4a) le timeout de 5 s n'est repoussé que par les **messages** de l'hôte (contrôle, messages fiables rendus par KCP, snapshots), pas par chaque datagramme : les acquittements KCP d'un hôte au jeu figé ne maintiennent plus la session. Sert à vérifier les heartbeats de secours de l'hôte pendant une pause du jeu |
-| `--hit-interval DUR` | (story 3.5) envoie un `HitRequest` (v12) à cette cadence, ex. `1s` (défaut 0 : aucun) ; journalise `-> HitRequest PNJ netid=N`, et le bilan final `Bilan coups : HitRequest envoyés=… HitOnGuest reçus=…` |
+| `--hit-interval DUR` | (story 3.5) envoie un `HitRequest` (v12) à cette cadence, ex. `1s` (défaut 0 : aucun) ; journalise `-> HitRequest PNJ netid=N`, et le bilan final `Bilan coups : HitRequest envoyés=… HitOnGuest reçus=… NpcAttack reçus=…` |
 | `--hit-target N` | (story 3.5) NetId visé par `--hit-interval` (défaut 0 : premier PNJ présent et vivant, NetId croissant ; rien s'il n'y en a pas). Le NetId n'est pas vérifié : `--hit-target 1500` teste le refus de l'hôte (`NetId inconnu`) |
 | `--die-every DUR` | (story 3.7) envoie `Death{2}` (« à terre », v14) DUR après l'entrée en session, puis DUR après chaque `Respawn` reçu, ex. `10s` (défaut 0 : jamais) ; journalise `-> Death netid=2 (à terre, --die-every)` |
 
 Coups subis (v13, story 3.6) : sans option, chaque `HitOnGuest` reçu de l'hôte est journalisé
 `<- HitOnGuest source=N dégâts=D` (source 0 = inconnue) et compté, jamais appliqué. Le bilan final
-`Bilan coups : HitRequest envoyés=… HitOnGuest reçus=…` s'affiche dès qu'il en a reçu un (ou avec
-`--hit-interval`).
+`Bilan coups : HitRequest envoyés=… HitOnGuest reçus=… NpcAttack reçus=…` s'affiche dès qu'il en a
+reçu un (ou avec `--hit-interval`).
+
+Attaques des PNJ (v15, story 3.8) : chaque `NpcAttack` reçu de l'hôte est journalisé
+`<- NpcAttack netid=N move=M cible=C` (cible 1 = héros de l'hôte, 2 = avatar de l'invité, ≥ 1000 = PNJ,
+0 = aucune) et compté au bilan `Bilan coups`, jamais appliqué.
 
 À terre et réapparition (v14, story 3.7) : chaque `Respawn` de l'hôte est journalisé
 `<- Respawn netid=2 pose=(x, y, z, lacet)` ; sa pose devient la pose simulée de l'invité (ancre du

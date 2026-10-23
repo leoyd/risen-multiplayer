@@ -165,6 +165,14 @@ ConfigResult parse_config(std::string_view text) {
             } else {
                 return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
             }
+        } else if (key == "native_attacks") {
+            if (value.empty() || value == "1") {
+                r.config.native_attacks = true;  // `native_attacks =` : valeur par défaut
+            } else if (value == "0") {
+                r.config.native_attacks = false;
+            } else {
+                return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
+            }
         } else if (key == "overlay") {
             if (value.empty() || value == "1") {
                 r.config.overlay = true;  // `overlay =` : valeur par défaut

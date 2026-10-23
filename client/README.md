@@ -774,6 +774,56 @@ Prérequis : comme la 3.6, plus `cd tools/fake-guest && go build`.
 6. **Deux machines, chute ou eau profonde** : Warn `mort native du héros …`, `Respawn` refusé, fin de
    session au rechargement de l'invité, aucun crash (H5).
 
+### Attaques natives des répliques (story 3.8, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité ; banc Wine : symboles `PSCombatSystem` et
+lignes d'installation) seulement. Protocole **v15** (`NpcAttack`, type 29). But : chez l'invité, les
+coups des monstres ont le rendu natif (sang, son, recul adapté, flash `OverlayHit`), les dégâts
+restant ceux de l'hôte (`HitOnGuest`).
+- **Hôte, détection** : à chaque frame, pour chaque PNJ capturé (les 8 animés), lecture de
+  `PSCombatSystem::GetLastAttackMove` et `GetCurrentMove` ; un début d'attaque (dernier mouvement
+  d'attaque changé, ou mouvement en cours redevenu égal à lui) donne `[sync] attaque du PNJ N
+  (mouvement M, cible C) : NpcAttack envoyé`, cible `1` héros de l'hôte, `2` avatar invité, NetId
+  d'un PNJ capturé, `0` sinon. En debug, chaque transition : `[sync] PNJ N : combat (CurrentMove,
+  LastAttackMove) = (a, b)[ : début d'attaque]` (hypothèse H3).
+- **Invité, application** : au même instant d'affichage que le dernier snapshot de la réplique,
+  `PSCombatSystem::SetCurrentTarget(cible)` puis `StartMove(M)` sur la réplique, hors garde de rejeu
+  (IA de routine toujours figée, animation locale bloquée). Debug : `[sync] PNJ N : attaque native
+  (mouvement M, cible C) : SetCurrentTarget -> 1, StartMove -> 1` (H1). Un SEH : Warn une fois par
+  session.
+- **Invité, coup cosmétique** : le coup natif d'une réplique sur le héros n'est plus bloqué ; il
+  s'applique pour son rendu, puis les PV d'avant sont rendus (mise à terre ou mort annulée dans
+  `DownOrDeadBy*`) : `[sync] coup cosmétique de la réplique PNJ N sur le héros : DoDamage -> 1, PV
+  a -> b, rendus à a` (H2). Le recul générique de la 3.6 (`StartStumble`) n'est joué, à un
+  `HitOnGuest` non mortel, 500 ms après lui, et seulement si aucun coup cosmétique n'a touché le
+  héros dans les 500 ms avant ou après (Debug `recul joué par un coup cosmétique` sinon). Héros à
+  terre : coups des répliques bloqués comme en 3.6. Désaccords acceptés : sang sans perte de PV (coup
+  local touché, coup de l'hôte raté), ou perte de PV avec le recul de repli (l'inverse).
+- **Installation** : `[hooks] attaques natives des répliques résolues (PSCombatSystem::StartMove)`,
+  ou `désactivées (native_attacks = 0)`, ou Warn `inactives : …` (symbole introuvable, pas de
+  point d'accroche des dégâts, ou détours `DownOrDeadBy*` absents) : la session tourne alors comme en
+  3.6. Invité à `native_attacks = 0` face à un hôte qui les envoie : une ligne Info par session.
+- Clé `native_attacks` (défaut `1`) : à `0`, ni envoi ni application de `NpcAttack` (reçus ignorés et
+  comptés), tout coup natif sur le héros invité est bloqué : **interrupteur de diagnostic**,
+  comportement de la 3.6.
+- Bilan `[sync] snapshots (5 s)` : en fin de ligne, `attaques natives : NpcAttack envoyés …,
+  appliqués …, ignorés …` (hôte : envoyés ; invité : appliqués ; les deux : ignorés).
+
+Prérequis : comme la 3.7 (`log_level = debug`, faux invité reconstruit).
+
+1. **Installation** : la ligne `attaques natives des répliques résolues` dans les deux logs.
+2. **Une machine, hôte + faux invité** (`fake-guest --host 127.0.0.1 --duration 180s --echo`), avatar
+   près d'un camp hostile : chez l'hôte, `NpcAttack envoyé` à chaque attaque d'un monstre sur l'avatar
+   (cible 2), et les transitions `combat (CurrentMove, LastAttackMove)` en debug ; chez le faux
+   invité, `<- NpcAttack netid=N move=M cible=2`. Une attaque sans `NpcAttack` : rapporter les lignes
+   de transition (H3).
+3. **Deux machines** (`tools/installer-local.sh`, puis `~/Games/lancer-risen-coop.sh`) : un monstre
+   frappe l'invité. Chez l'invité : `StartMove -> 1`, `coup cosmétique …, rendus à a`, sang, recul et
+   flash à l'écran ; la jauge ne baisse que par `HitOnGuest … appliqué`. `StartMove -> 0` ou aucun
+   `coup cosmétique` : rapporter les lignes (H1, H2) ; le recul de repli reste joué.
+4. **Deux machines, `native_attacks = 0`** chez l'invité : comportement de la 3.6 (`coup natif bloqué
+   : PNJ N -> héros`, recul générique).
+
 ### Overlay à l'écran (rôle et état de session)
 
 Une ligne permanente en haut à gauche de l'image dit quelle fenêtre est l'hôte et laquelle est

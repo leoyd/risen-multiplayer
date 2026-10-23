@@ -137,6 +137,8 @@ type sessionResult struct {
 	DownDeathsTx int // Death{2} envoyés par --die-every
 	RespawnsRx   int // Respawn (ordres) reçus de l'hôte
 	RespawnAcks  int // accusés Respawn envoyés
+	// Attaques natives des répliques (v15, story 3.8) : journalisées, jamais appliquées.
+	NpcAttacksRx int // NpcAttack reçus
 	EndReason    string
 }
 
@@ -807,6 +809,9 @@ func (g *guest) drain() (sessionResult, bool) {
 		case protocol.HitOnGuest:
 			g.res.HitsOnGuestRx++
 			g.log.printf("<- HitOnGuest source=%d dégâts=%d", m.Source, m.Damage)
+		case protocol.NpcAttack:
+			g.res.NpcAttacksRx++
+			g.log.printf("<- NpcAttack netid=%d move=%d cible=%d", m.NetId, m.Move, m.Target)
 		case protocol.Respawn:
 			g.respawn(m)
 		case protocol.SessionEnd:
@@ -1060,8 +1065,9 @@ func (g *guest) npcSummary() {
 
 func (g *guest) end(code int, reason string) sessionResult {
 	g.npcSummary()
-	if g.cfg.HitInterval > 0 || g.res.HitsOnGuestRx > 0 {
-		g.log.printf("Bilan coups : HitRequest envoyés=%d HitOnGuest reçus=%d", g.res.HitsTx, g.res.HitsOnGuestRx)
+	if g.cfg.HitInterval > 0 || g.res.HitsOnGuestRx > 0 || g.res.NpcAttacksRx > 0 {
+		g.log.printf("Bilan coups : HitRequest envoyés=%d HitOnGuest reçus=%d NpcAttack reçus=%d", g.res.HitsTx,
+			g.res.HitsOnGuestRx, g.res.NpcAttacksRx)
 	}
 	if g.cfg.DieEvery > 0 || g.res.RespawnsRx > 0 {
 		g.log.printf("Bilan à terre : Death envoyés=%d Respawn reçus=%d accusés=%d", g.res.DownDeathsTx,

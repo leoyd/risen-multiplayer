@@ -252,6 +252,28 @@ TEST("config : damage_hook invalide -> erreur nommant le champ") {
     }
 }
 
+TEST("config : native_attacks absent -> 1 par défaut ; 0, 1, vide") {
+    CHECK(parse_config("role=host\n").config.native_attacks);
+    const auto zero = parse_config("role=guest\nhost_ip=1.2.3.4\nnative_attacks = 0\n");
+    CHECK(zero.ok);
+    CHECK(!zero.config.native_attacks);
+    const auto one = parse_config("role=host\nnative_attacks = 1\n");
+    CHECK(one.ok);
+    CHECK(one.config.native_attacks);
+    const auto empty = parse_config("role=host\nnative_attacks =\n");
+    CHECK(empty.ok);
+    CHECK(empty.config.native_attacks);
+    CHECK(empty.warnings.empty());
+}
+
+TEST("config : native_attacks invalide -> erreur nommant le champ") {
+    for (const char* v : {"2", "oui", "true", "-1"}) {
+        const auto r = parse_config(std::string("role=host\nnative_attacks=") + v + "\n");
+        CHECK(!r.ok);
+        CHECK_EQ(r.error_field, std::string("native_attacks"));
+    }
+}
+
 TEST("config : overlay absent -> 1 par défaut ; 0, 1, vide") {
     CHECK(parse_config("role=host\n").config.overlay);
     const auto zero = parse_config("role=host\noverlay = 0\n");

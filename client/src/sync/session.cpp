@@ -71,6 +71,7 @@ std::uintptr_t g_last_world_player = 0;
 std::uint64_t g_keepalives_seen = 0;
 std::uint64_t g_keepalive_capped_seen = 0;
 Role g_role = Role::Host;  // story 3.5 : rôle publié au détour des dégâts
+bool g_native_attacks = false;  // story 3.8 : native_attacks = 1 et bloc des attaques natives résolu
 
 std::uint64_t now_ms() {
     LARGE_INTEGER t{};
@@ -269,6 +270,10 @@ void execute(cs::Output out) {
                 guest_health::apply_hit(ag->source, ag->damage);
                 continue;
             }
+            if (const auto* an = std::get_if<cs::ApplyNpcAttack>(&cmd)) {  // story 3.8 : chez l'invité
+                npc::attack(an->net_id, an->move, an->target);
+                continue;
+            }
             if (const auto* rh = std::get_if<cs::RespawnHero>(&cmd)) {  // story 3.7 : chez l'invité
                 guest_health::respawn(rh->pose, rh->teleport);
                 continue;
@@ -433,6 +438,10 @@ void frame() {
     // Story 3.3 : répliques (et, story 3.4, PNJ animés de l'hôte) revérifiées une fois par frame,
     // avant leurs commandes ; appels de routine bloqués (IA figée), pour le bilan debug.
     if (npc::count() != 0) npc::validate();
+    // Story 3.8, hôte : débuts d'attaque des PNJ capturés, entités tout juste revérifiées.
+    if (g_role == Role::Host && g_native_attacks && world.loaded() && g_session->state() == cs::State::InSession) {
+        npc::detect_attacks(reinterpret_cast<void*>(world.player), g_inputs);
+    }
     world.routine_blocked = sync::anim_filter().take_routine_blocked();
     execute(g_session->tick(now, world, g_inputs));
     // Story 3.5 : héros, rôle et état vus par le détour des dégâts (hors session dès Ended).
@@ -466,6 +475,11 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
     s.equipment = config.guest_equipment;
     s.mod_version = mod_version;
     s.fingerprint = fingerprint;
+    // Story 3.8 : attaques natives seulement si la config les veut et que win/hooks a résolu leur bloc
+    // (détour des dégâts posé) ; sinon comportement de la story 3.6.
+    g_native_attacks = config.native_attacks && game::native_attacks_resolved();
+    s.native_attacks = g_native_attacks;
+    hits::set_native_attacks(g_native_attacks);
     LARGE_INTEGER t{};
     QueryPerformanceCounter(&t);
     s.seed = static_cast<std::uint64_t>(t.QuadPart) ^ (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32) ^

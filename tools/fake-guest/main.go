@@ -23,7 +23,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v14, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v15, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte (--strict-timeout : sans message).
 
@@ -46,6 +46,8 @@ et compté au bilan (HitOnGuest reçus=), jamais appliqué.
 À terre (v14) : --die-every <durée> envoie Death{2} cette durée après l'entrée en session, puis
 cette durée après chaque Respawn reçu. Chaque Respawn de l'hôte est journalisé « <- Respawn netid=2
 pose=(x, y, z, lacet) », devient la pose simulée et reçoit son accusé (« -> Respawn accusé tick=T »).
+Attaques des PNJ (v15) : chaque NpcAttack de l'hôte est journalisé « <- NpcAttack netid=N move=M
+cible=C » et compté au bilan (NpcAttack reçus=), jamais appliqué.
 --duration se compte à partir de l'entrée en session ; Ctrl-C vaut --quit.
 
 Codes de sortie :

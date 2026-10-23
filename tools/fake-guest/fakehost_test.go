@@ -47,6 +47,8 @@ type hostConfig struct {
 	HitOnGuestEvery int64
 	// Story 3.7 : Death{2} reçu → Respawn{2, respawnPose, 0} (ordre de réapparition).
 	RespawnOnDeath bool
+	// Story 3.8 : > 0 : NpcAttack{1005, 11, 2} tous les N ticks de snapshot (50 ms), à partir du tick N.
+	NpcAttackEvery int64
 }
 
 // Story 3.7 : pose des Respawn de l'hôte simulé.
@@ -91,6 +93,7 @@ type hostRecord struct {
 	hits         []uint32           // NetId des HitRequest reçus (v12)
 	hitsOnGuest  int                // HitOnGuest envoyés à l'invité (v13)
 	respawnsSent int                // Respawn (ordres) envoyés à l'invité (v14)
+	npcAttacks   int                // NpcAttack envoyés à l'invité (v15)
 	respawnAcks  []protocol.Respawn // accusés reçus de l'invité (v14)
 	weapons      []protocol.Weapon  // reçus de l'invité (v7)
 	armors       []protocol.Armor   // reçus de l'invité (v8)
@@ -495,6 +498,12 @@ func (h *simHost) tick() {
 			h.sendReliable(protocol.HitOnGuest{Source: protocol.FirstNpcNetId, Damage: 18})
 			h.mu.Lock()
 			h.rec.hitsOnGuest++
+			h.mu.Unlock()
+		}
+		if h.cfg.NpcAttackEvery > 0 && tick > 0 && tick%h.cfg.NpcAttackEvery == 0 {
+			h.sendReliable(protocol.NpcAttack{NetId: 1005, Move: 11, Target: protocol.GuestNetId})
+			h.mu.Lock()
+			h.rec.npcAttacks++
 			h.mu.Unlock()
 		}
 		entities := []protocol.SnapshotEntity{{NetId: protocol.HostNetId, X: 1 + float32(tick), Y: 2, Z: 3, Yaw: 0.5}}

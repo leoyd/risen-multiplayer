@@ -67,3 +67,30 @@ n'est pas appliquée (limite : sans effet au réglage par défaut).
   (Script.dll) sur son héros à chaque `HitOnGuest` non mortel, attaquant = réplique du PNJ source.
   La variante sans mouvement rendait faux : elle interroge le mouvement de combat en cours de
   l'attaquant (`gCCombatSystem_PS+0x90`), qu'une réplique (IA figée) n'a pas.
+
+## Attaques natives des répliques (story 3.8)
+
+Constat (test du 2026-10-23) : chez l'invité, une réplique ne fait que rejouer les animations de
+l'hôte ; son système de combat ne lance aucun mouvement, `HitTargets` n'est jamais appelé : aucun
+coup natif d'un PNJ sur le héros invité, donc ni sang, ni son, ni recul adapté, ni flash.
+
+Fonctions de `PSCombatSystem` utilisées (Script.dll, Steam x64 de janvier 2023). Toutes refont
+`GetPropertySet(0x60)` sur l'entité et relaient au `gCCombatSystem_PS` par un saut indirect ; sans
+ce PS, elles rendent 0, faux ou `Entity::None` :
+- `GetLastAttackMove` (`0x18021e370`, non const) et `GetCurrentMove` (`0x18021f700`) : rendent un
+  `gECombatMove` (enum, EAX) ;
+- `GetCurrentTarget` (`0x18021f810`) : `Entity` par valeur (sret en RDX) ;
+- `SetCurrentTarget(const Entity&)` (`0x18021f8b0`) : passe `*(eCEntity**)` au PS, rend un booléen ;
+- `StartMove(gECombatMove)` (`0x18021f520`) : passe le mouvement (EDX) au PS, rend un booléen.
+
+Mécanisme : l'hôte détecte le début d'une attaque d'un PNJ capturé (dernier mouvement d'attaque
+changé, ou mouvement en cours redevenu égal à lui) et l'envoie (`NpcAttack`, protocole v15) ;
+l'invité appelle `SetCurrentTarget` puis `StartMove` sur la réplique. Le coup natif qui en résulte
+sur son héros passe par le point d'accroche des dégâts : il est appliqué pour son rendu (effet
+d'impact, script de dégâts : recul, `OverlayHit`), puis les PV d'avant sont rendus ; la mise à terre
+ou la mort est annulée dans `DownOrDeadBy*` comme pour la mesure de l'hôte.
+
+Hypothèses à trancher en jeu (journal debug) : H1, `StartMove` sur une réplique à l'IA de routine
+figée fait progresser le mouvement jusqu'à `HitTargets` ; H2, la détection de coup ne dépend pas de
+l'animation locale (bloquée par le registre) ; H3, `GetLastAttackMove` change à chaque attaque
+(sinon seule la transition de `GetCurrentMove` compte).

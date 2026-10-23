@@ -241,3 +241,13 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-overlay-role.md`
   summary: Si Risen présente par `IDirect3DSwapChain9::Present`, détourner aussi cette entrée (medium, non vérifié).
   evidence: à trancher au premier test en jeu : `[overlay] détours posés` sans `[overlay] premier dessin` dans le log.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-8-attaques-natives-repliques.md`
+  summary: Tester sous Linux le coup cosmétique (PV rendus, annulation DownOrDeadBy*) et le repli de recul côté appelant, en sortant la logique de sync/hits et sync/guest_health.
+  evidence: code DLL seul, le banc Wine ne déclenche aucun coup ; vérifié seulement en jeu.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-8-attaques-natives-repliques.md`
+  summary: Vérifier qu'un coup cosmétique ne laisse pas d'effet autre que les PV sur le héros invité (statuts, poison, endurance) (medium, non vérifié).
+  evidence: seul les PV sont rendus après l'original ; à observer en jeu sur un monstre à effet.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-8-attaques-natives-repliques.md`
+  summary: Mettre à jour epic-3-context.md et AD-11 (exception d'écriture des PV du héros invité par sync/hits pour les coups cosmétiques).
+  evidence: le contexte compilé et la spine ne mentionnent pas encore la 3.8 ; à faire à la clôture de l'epic 3.

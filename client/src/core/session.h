@@ -89,6 +89,12 @@
 // kRespawnAckTimeoutMs → snapshots repris. Une mort native reste à terre (session finie au
 // rechargement de l'invité).
 //
+// Attaques natives des répliques (story 3.8, protocole v15) : chez l'hôte, le début d'une attaque d'un
+// PNJ capturé (LocalNpcAttack, détecté par sync/npc) part en NpcAttack{NetId, mouvement, cible} si le
+// PNJ est annoncé et vivant. Chez l'invité, un NpcAttack d'une réplique vivante attend le même instant
+// d'affichage que son dernier snapshot reçu (comme un Death), puis donne ApplyNpcAttack, exécuté par
+// sync/npc (SetCurrentTarget, StartMove). Settings::native_attacks faux : ni envoi ni application.
+//
 // Robustesse (story 3.4a) : Start porte le Heartbeat encodé et ses délais, que le transport envoie
 // depuis son thread quand la frame ne le lit plus (pause du jeu). Chez l'invité, l'entrée de
 // snapshot d'un PNJ pas encore annoncé est gardée kEarlyNpcHoldMs puis appliquée à son Spawn.
@@ -144,6 +150,8 @@ struct Settings {
     std::string mod_version;                      // MP_MOD_VERSION
     std::array<ModuleFingerprint, 4> fingerprint{};  // Game, Engine, Script, SharedBase (les siennes)
     std::uint64_t seed = 0;                       // graine du tirage de `conv`
+    // Story 3.8 : NpcAttack envoyés (hôte) et appliqués (invité). Faux : ignorés et comptés.
+    bool native_attacks = true;
 };
 
 using core::Pose;
@@ -255,8 +263,15 @@ struct LocalDown {
     std::uint8_t cause = kDownCauseHitOnGuest;
 };
 const char* down_cause_name(std::uint8_t cause);  // "HitOnGuest", "DownOrDeadByMeleeWeapon"…
+// Story 3.8, hôte : un PNJ capturé `net_id` commence l'attaque `move` (gECombatMove brut) sur `target`
+// (1 héros de l'hôte, 2 avatar invité, ≥ 1000 PNJ, 0 = aucune) ; devient NpcAttack en session.
+struct LocalNpcAttack {
+    std::uint32_t net_id = 0;
+    std::uint32_t move = 0;
+    std::uint32_t target = 0;
+};
 using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor,
-                           LocalHit, LocalHitsBlocked, LocalHitOnGuest, LocalDown>;
+                           LocalHit, LocalHitsBlocked, LocalHitOnGuest, LocalDown, LocalNpcAttack>;
 
 // Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
 // (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
@@ -375,6 +390,13 @@ struct RespawnHero {
     Pose pose;
     bool teleport = true;
 };
+// Story 3.8, invité : la réplique `net_id` fixe sa cible (1 avatar de l'hôte, 2 son héros, ≥ 1000 la
+// réplique de ce NetId, 0 aucune) puis lance le mouvement `move` (sync/npc::attack).
+struct ApplyNpcAttack {
+    std::uint32_t net_id = 0;
+    std::uint32_t move = 0;
+    std::uint32_t target = 0;
+};
 // Invité : rejouer un Motion ou un réglage de l'hôte sur la réplique, sous ReplayGuard.
 struct PlayNpcMotion {
     std::uint32_t net_id = 0;
@@ -389,7 +411,7 @@ using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseRelia
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
                              ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath, ApplyHit,
-                             ApplyHitOnGuest, RespawnHero>;
+                             ApplyHitOnGuest, RespawnHero, ApplyNpcAttack>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -397,6 +419,7 @@ inline constexpr float kParamTimeEpsilon = 0.005f;  // écart minimal de durée 
 
 inline constexpr std::size_t kMaxPendingMotions = 256;  // Motion du pair en attente d'affichage
 inline constexpr std::size_t kMaxPendingCarried = 16;   // Weapon et Armor du pair en attente d'affichage
+inline constexpr std::size_t kMaxPendingAttacks = 8;    // story 3.8 : NpcAttack en attente, par réplique
 inline constexpr double kMaxMotionLeadMs = 1000.0;      // au-delà, un Motion « du futur » part aussitôt
 inline constexpr std::uint32_t kAniIdCount = 0x10000;   // AniId u16
 
@@ -503,6 +526,10 @@ private:
     // Story 3.6. Hôte : coup sur l'avatar invité (HitOnGuest). Invité : HitOnGuest reçu (ApplyHitOnGuest).
     void on_local_hit_on_guest(const LocalHitOnGuest& in, Output& out);
     void on_hit_on_guest(const protocol::HitOnGuest& m, Output& out);
+    // Story 3.8. Hôte : début d'attaque d'un PNJ capturé (NpcAttack). Invité : NpcAttack reçu (mis en
+    // attente d'affichage, puis ApplyNpcAttack).
+    void on_local_npc_attack(const LocalNpcAttack& in, Output& out);
+    void on_npc_attack(const protocol::NpcAttack& m, Output& out);
     // Story 3.7. Invité : mise à terre (LocalDown), Respawn reçu (ordre), repli. Hôte : Death{2} reçu,
     // envoi du Respawn dû, accusé reçu, repli ; filtre des entrées de snapshot du NetId 2.
     void on_local_down(std::uint64_t now, const LocalDown& in, Output& out);
@@ -657,6 +684,14 @@ private:
         bool death_pending = false;
         double death_at = 0.0;
         bool dead = false;
+        // Story 3.8 : NpcAttack reçus, appliqués quand le temps affiché atteint `at` (dernier snapshot
+        // reçu à la réception), après les gestes dus.
+        struct PendingAttack {
+            double at = 0.0;
+            std::uint32_t move = 0;
+            std::uint32_t target = 0;
+        };
+        std::deque<PendingAttack> attacks;
     };
     std::map<std::uint32_t, Replica> replicas_;
     struct NpcCounters {
@@ -683,6 +718,12 @@ private:
     struct GuestHitCounters {
         unsigned sent = 0, received = 0, ignored = 0;
     } guest_hits_;
+    // Story 3.8 : attaques natives. Hôte : NpcAttack envoyés ; invité : appliqués (ApplyNpcAttack) ; les
+    // deux : ignorés (LocalNpcAttack ou NpcAttack refusés, attente pleine, réplique morte entre-temps).
+    struct NpcAttackCounters {
+        unsigned sent = 0, applied = 0, ignored = 0;
+    } attacks_;
+    bool attacks_off_logged_ = false;  // invité : NpcAttack ignoré pour native_attacks = 0 déjà signalé (session)
     // Story 3.7 : à terre et réapparition. Invité : à terre (Death{2} envoyé), depuis quand, mort native
     // (IsDead) en cours et déjà signalée. Hôte : Respawn à envoyer, accusé attendu depuis
     // respawn_sent_at_, premier tick valide des entrées du NetId 2.

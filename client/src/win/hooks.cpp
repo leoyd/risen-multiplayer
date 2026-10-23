@@ -243,7 +243,7 @@ bool install_probe() {
     return true;
 }
 
-bool install_session(bool damage_hook) {
+bool install_session(bool damage_hook, bool native_attacks) {
     const char* missing = nullptr;
     if (!game::resolve_entities(missing)) {
         log::error(std::string("[hooks] session inactive : symbole introuvable : ") + missing);
@@ -335,6 +335,23 @@ bool install_session(bool damage_hook) {
     log::info("[hooks] hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, "
               "gCScriptRoutine_PS::OnProcess)");
     if (damage) log::info("[hooks] point d'accroche des dégâts posé (gCDamage_PS::DoDamage)");
+    // Story 3.8 : attaques natives des répliques, facultatives. Sans le détour des dégâts, le coup
+    // natif d'une réplique blesserait vraiment le héros invité, et sans les détours DownOrDeadBy* un
+    // coup cosmétique mortel le mettrait vraiment à terre : elles restent alors inactives.
+    if (!native_attacks) {
+        log::info("[hooks] attaques natives des répliques désactivées (native_attacks = 0)");
+    } else if (!damage) {
+        log::warn("[hooks] attaques natives des répliques inactives : pas de point d'accroche des dégâts "
+                  "(recul générique seul)");
+    } else if (!down_or_dead) {
+        log::warn("[hooks] attaques natives des répliques inactives : détours DownOrDeadBy* absents "
+                  "(recul générique seul)");
+    } else if (!game::resolve_native_attacks(missing)) {
+        log::warn(std::string("[hooks] attaques natives des répliques inactives : symbole introuvable : ") + missing +
+                  " (recul générique seul)");
+    } else {
+        log::info("[hooks] attaques natives des répliques résolues (PSCombatSystem::StartMove)");
+    }
     if (down_or_dead) log::info("[hooks] détours DownOrDeadBy* de session posés (mise à terre de l'invité)");
     watchdog::start();
     return true;

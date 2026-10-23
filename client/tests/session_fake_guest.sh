@@ -518,6 +518,10 @@ if start_host coups_subis $p 30000 1 --npcs 1 --hit-guest-ms 500; then
         ko "coups subis : $received HitOnGuest reçus pour $sent envoyés (4 au moins, écart ≤ 1 attendu)"
     fi
     expect_log "coups subis : bilan de l'invité" "$g" "HitOnGuest reçus=[1-9]"
+    # Story 3.8 : début d'attaque du PNJ 1000 avant chaque coup, tant qu'il vit (NpcAttack, v15).
+    expect_log "attaques natives : NpcAttack envoyé par l'hôte" "$h" "attaque du PNJ 1000 (mouvement 11, cible 2) : NpcAttack envoyé"
+    expect_log "attaques natives : NpcAttack reçu par l'invité" "$g" "<- NpcAttack netid=1000 move=11 cible=2"
+    expect_log "attaques natives : bilan de l'invité" "$g" "NpcAttack reçus=[1-9]"
 fi
 
 # --- Story 3.7 : invité à terre toutes les secondes : Respawn de l'hôte, accusé de l'invité -----

@@ -8,7 +8,11 @@
 //   3. invité, cible = réplique de PNJ (registre, rôle NpcReplica) : bloqué. Si l'agresseur est son
 //      héros et la réplique vivante, son NetId est mis en file (LocalHit, HitRequest de la frame) ;
 //   3b. invité, cible = son héros : bloqué quel que soit l'agresseur, rien en file (seuls les
-//      HitOnGuest blessent, par sync/guest_health) ;
+//      HitOnGuest blessent, par sync/guest_health). Story 3.8 : agresseur = réplique et attaques
+//      natives actives → coup cosmétique : original appelé (sang, recul, flash), PV d'avant rendus
+//      aussitôt, mise à terre ou mort annulée (measured_target) ;
+//   3c. invité, cible = avatar de l'hôte : bloqué, rien d'émis (story 3.8 : une réplique peut
+//      l'attaquer) ; effet d'impact sauf tir ami de son héros ;
 //   4. hôte, agresseur = avatar de l'invité (registre, rôle Avatar) : bloqué, rien d'émis (seuls
 //      les HitRequest blessent) ;
 //   4b. hôte, cible = avatar de l'invité. Héros de l'hôte ou agresseur nul : bloqué, rien d'émis ;
@@ -44,8 +48,17 @@ namespace mp::sync::hits {
 // laissé ou mesuré. Ne lève jamais (hors exception de l'original lui-même).
 using DamageFn = bool (*)(void* damage_ps, void* target);
 bool on_damage(void* damage_ps, void* target, DamageFn original) noexcept;
-// Avatar dont un coup est en cours de mesure sur ce thread, sinon nul (détours DownOrDeadBy*).
+// Avatar dont un coup est en cours de mesure (hôte), ou héros invité sous un coup cosmétique (invité,
+// story 3.8), sur ce thread ; sinon nul (détours DownOrDeadBy*).
 void* measured_target();
+// Story 3.8 : coups des répliques sur le héros invité rendus nativement (cosmétiques). Réglé une fois
+// par sync/session (native_attacks et bloc résolu) ; faux : règle 3b de la story 3.6.
+void set_native_attacks(bool on);
+bool native_attacks();
+// Story 3.8 (D4) : horloge QPC (ms) ; dernier coup cosmétique de la session sur le héros invité
+// (`ms`), false s'il n'y en a eu aucun.
+std::uint64_t now_ms();
+bool last_cosmetic(std::uint64_t& ms);
 
 // Frame : héros local (Entity::GetPlayer, eCEntity*), rôle et état « en session » vus par le
 // détour. Le passage à « en session » remet à zéro le diagnostic de session, la file et les

@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 14 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 15 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 14;
+inline constexpr std::uint16_t kProtocolVersion = 15;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -37,7 +37,7 @@ enum class Channel : std::uint8_t {
     Control = 2,   // hors KCP : Hello, Welcome, Reject
 };
 
-// Aucun type n'est plus réservé (v14) : un type absent de cette liste se décode en `UnknownType`.
+// Aucun type n'est réservé (depuis la v14) : un type absent de cette liste se décode en `UnknownType`.
 enum class MsgType : std::uint8_t {
     Hello = 1,
     Welcome = 2,
@@ -55,6 +55,7 @@ enum class MsgType : std::uint8_t {
     MotionParam = 26,  // v6 (story 2.4b)
     Weapon = 27,       // v7 (story 3.2)
     Armor = 28,        // v8 (story 3.2c)
+    NpcAttack = 29,    // v15 (story 3.8)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -207,6 +208,16 @@ struct Respawn {
     std::uint32_t tick = 0;
 };
 
+// Début d'une attaque d'un PNJ capturé de l'hôte (v15, story 3.8) : hôte → invité, fiable, 13 octets.
+// L'invité fixe la cible de la réplique et lance ce mouvement (PSCombatSystem::StartMove) : la
+// chaîne native du jeu produit le coup (sang, recul, flash), dont les dégâts restent ceux de
+// l'hôte (HitOnGuest). Le décodeur ne vérifie aucune valeur.
+struct NpcAttack {
+    std::uint32_t net_id = 0;         // NetId du PNJ attaquant (≥ kFirstNpcNetId)
+    std::uint32_t move = 0;           // gECombatMove brut (PSCombatSystem::GetLastAttackMove)
+    std::uint32_t target_net_id = 0;  // 1 héros de l'hôte, 2 avatar invité, ≥ 1000 PNJ, 0 = aucune / inconnue
+};
+
 // Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,
 // valeur, durée) ou SetPlaySpeed(type, valeur). Daté comme Motion, rejoué au même instant.
 enum class MotionParamKind : std::uint8_t {
@@ -247,7 +258,7 @@ struct Armor {
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
 using ReliableMessage =
     std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon, Armor,
-                 HitRequest, HitOnGuest, Respawn>;
+                 HitRequest, HitOnGuest, Respawn, NpcAttack>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,

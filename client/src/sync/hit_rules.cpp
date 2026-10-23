@@ -26,11 +26,25 @@ Decision decide(const Inputs& in) {
     }
     if (in.role == HitRole::Guest && in.target != nullptr &&
         (in.target == in.hero || (in.target_found && in.target_entry.role == EntityRole::LocalHero))) {
+        const bool by_replica =
+            in.aggressor != nullptr && in.aggressor_found && in.aggressor_entry.role == EntityRole::NpcReplica;
+        if (by_replica && in.native_attacks && !in.hero_down) {
+            d.cosmetic = true;  // 3b (story 3.8) : rendu natif du coup, PV rendus ensuite
+            d.reason = Reason::GuestHeroCosmetic;
+            return d;
+        }
         d.block = true;  // 3b. seuls les HitOnGuest blessent le héros invité
         d.impact = true;
-        d.reason = in.aggressor != nullptr && in.aggressor_found && in.aggressor_entry.role == EntityRole::NpcReplica
-                       ? Reason::GuestHeroByReplica
-                       : Reason::GuestHeroOther;
+        d.reason = by_replica ? Reason::GuestHeroByReplica : Reason::GuestHeroOther;
+        return d;
+    }
+    if (in.role == HitRole::Guest && in.native_attacks && in.target_found &&
+        in.target_entry.role == EntityRole::Avatar) {
+        d.block = true;  // 3c. l'avatar de l'hôte n'est jamais blessé chez l'invité
+        const bool friendly = (in.aggressor != nullptr && in.aggressor == in.hero) ||
+                              (in.aggressor_found && in.aggressor_entry.role == EntityRole::LocalHero);
+        d.impact = !friendly;  // pas d'effet sur un tir ami du héros invité
+        d.reason = Reason::HostAvatarOnGuest;
         return d;
     }
     if (in.role == HitRole::Host && in.aggressor_found && in.aggressor_entry.role == EntityRole::Avatar) {
@@ -85,6 +99,46 @@ GuestHp guest_hp_after(int hp, std::uint32_t damage) {
         r.new_hp = static_cast<int>(left);
     }
     return r;
+}
+
+bool attack_started(AttackState& state, int current, int last_attack) {
+    bool started = false;
+    if (state.known && last_attack != 0) {
+        if (last_attack != state.last_attack) {
+            started = true;
+            state.announced = current != last_attack;  // entrée de CurrentMove à venir : même attaque
+        } else if (current == last_attack && state.current != current) {
+            started = !state.announced;
+            state.announced = false;  // entrée consommée
+        }
+    } else if (last_attack == 0) {
+        state.announced = false;
+    }
+    state.known = true;
+    state.current = current;
+    state.last_attack = last_attack;
+    return started;
+}
+
+std::uint32_t attack_target_net_id(const void* target, const void* hero, const void* avatar, bool found,
+                                   const TrackedEntity& entry) {
+    if (target == nullptr) return 0;
+    if (target == hero) return 1;    // protocol::kHostNetId
+    if (target == avatar) return 2;  // protocol::kGuestNetId
+    if (found && entry.role == EntityRole::NpcCapture) return entry.net_id;
+    return 0;
+}
+
+StumbleStep stumble_step(const PendingStumble& p, std::uint64_t now_ms, bool any_cosmetic,
+                         std::uint64_t last_cosmetic_ms) {
+    if (!p.active) return StumbleStep::Idle;
+    if (any_cosmetic) {
+        const std::uint64_t gap =
+            last_cosmetic_ms >= p.hit_ms ? last_cosmetic_ms - p.hit_ms : p.hit_ms - last_cosmetic_ms;
+        if (gap < kCosmeticWindowMs) return StumbleStep::Cancel;  // recul adapté déjà joué (ou à venir)
+    }
+    if (now_ms >= p.hit_ms && now_ms - p.hit_ms >= kCosmeticWindowMs) return StumbleStep::Play;
+    return StumbleStep::Wait;
 }
 
 }  // namespace mp::sync::hit_rules

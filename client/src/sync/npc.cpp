@@ -6,6 +6,7 @@
 #include "game/motion_desc.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/hit_rules.h"
 #include "sync/hits.h"
 
 #include <chrono>
@@ -69,6 +70,12 @@ std::map<std::uint32_t, Wanted> g_wanted;
 constexpr std::chrono::seconds kCaptureRetry{1};
 std::set<std::uint32_t> g_capture_failed;  // « capture échouée » : une ligne par NetId et par session
 std::set<std::uint32_t> g_capture_lost;    // « PNJ animé perdu » : une ligne par NetId et par session
+
+// Story 3.8, hôte : dernier état du système de combat de chaque PNJ capturé (D1), oublié avec sa
+// capture. Invité : SEH d'une attaque native déjà signalé (une ligne par session).
+std::map<std::uint32_t, hit_rules::AttackState> g_attack_state;
+bool g_attack_error_logged = false;
+bool g_detect_error_logged = false;
 
 // NetId dont le GUID est introuvable (ou la réplique perdue) : une ligne par NetId et par session.
 std::set<std::uint32_t> g_missing;
@@ -344,6 +351,7 @@ void capture(std::uint32_t net_id, const protocol::Guid& guid) {
 
 void uncapture(std::uint32_t net_id) {
     g_wanted.erase(net_id);
+    g_attack_state.erase(net_id);  // story 3.8 : rentré dans le groupe, il repart de la première lecture
     auto it = g_captured.find(net_id);
     if (it == g_captured.end()) return;
     anim_filter().untrack(it->second.entity.ptr);  // AD-12 : le registre d'abord
@@ -427,6 +435,7 @@ void validate() {
             continue;
         }
         anim_filter().untrack(it->second.entity.ptr);
+        g_attack_state.erase(it->first);  // story 3.8
         if (g_capture_lost.insert(it->first).second) {
             log::warn(who(it->first) + " : PNJ animé perdu (GetEntity ne le retrouve plus) : nouvel essai chaque seconde");
         }
@@ -463,6 +472,9 @@ void release(std::uint32_t net_id) {
 }
 
 void release_all(const std::string& cause) {
+    g_attack_state.clear();  // story 3.8 : sans appel au jeu
+    g_attack_error_logged = false;
+    g_detect_error_logged = false;
     if (g_replicas.empty() && g_missing.empty() && g_captured.empty() && g_capture_failed.empty() &&
         g_wanted.empty() && g_capture_lost.empty() &&
         g_resources.empty() && g_failed_names.empty()) {
@@ -490,6 +502,85 @@ void release_all(const std::string& cause) {
     g_capture_lost.clear();
     g_resources.clear();  // ressources d'un monde peut-être détruit
     g_failed_names.clear();
+}
+
+void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target) {
+    auto it = g_replicas.find(net_id);
+    if (it == g_replicas.end() || it->second.dead) {
+        log::debug(who(net_id) + " : NpcAttack sans réplique vivante chez l'invité : ignoré");
+        return;
+    }
+    if (!game::native_attacks_resolved()) return;  // la session ne l'émet pas dans ce cas
+    Replica& r = it->second;
+    // Cible : 1 avatar de l'hôte, 2 héros local, ≥ 1000 réplique de ce NetId, sinon aucune.
+    game::Entity aim;
+    if (target == protocol::kHostNetId) {
+        aim.ptr = avatar::entity();
+    } else if (target == protocol::kGuestNetId) {
+        aim.ptr = hits::hero();
+    } else if (target >= protocol::kFirstNpcNetId) {
+        aim.ptr = replica_entity(target);
+    }
+    const std::string what = who(net_id) + " : attaque native (mouvement " + std::to_string(move) + ", cible " +
+                             std::to_string(target) + ")";
+    // Cible nulle ou introuvable : effacée (Entity nulle), sinon StartMove viserait l'ancienne cible
+    // de la réplique, peut-être le héros local.
+    bool target_set = false;
+    if (!game::combat_set_current_target(r.entity, aim, target_set)) {
+        if (!g_attack_error_logged) {
+            g_attack_error_logged = true;
+            log::warn(what + " : PSCombatSystem::SetCurrentTarget a levé une exception (SEH) : ignorée "
+                             "(une fois par session)");
+        }
+        return;
+    }
+    // Hors garde de rejeu : l'animation locale du mouvement reste bloquée par le registre (AD-8),
+    // l'animation visible est celle rejouée depuis l'hôte.
+    bool started = false;
+    if (!game::combat_start_move(r.entity, static_cast<int>(move), started)) {
+        if (!g_attack_error_logged) {
+            g_attack_error_logged = true;
+            log::warn(what + " : PSCombatSystem::StartMove a levé une exception (SEH) : ignorée (une fois par session)");
+        }
+        return;
+    }
+    log::debug(what + " : SetCurrentTarget -> " +
+               (aim.ptr == nullptr ? std::string("(effacée) ") : std::string()) + (target_set ? "1" : "0") +
+               ", StartMove -> " + (started ? "1" : "0"));
+}
+
+void detect_attacks(void* hero, std::vector<cs::Input>& out) {
+    if (g_captured.empty() || !game::native_attacks_resolved()) return;
+    void* const avatar_entity = avatar::entity();
+    for (const auto& [net_id, c] : g_captured) {
+        int current = 0, last = 0;
+        if (!game::combat_current_move(c.entity, current) || !game::combat_last_attack_move(c.entity, last)) {
+            if (!g_detect_error_logged) {
+                g_detect_error_logged = true;
+                log::warn(who(net_id) + " : PSCombatSystem illisible (SEH) : attaque non détectée à cette frame "
+                                        "(signalé une fois par session, tous PNJ confondus)");
+            }
+            continue;
+        }
+        hit_rules::AttackState& state = g_attack_state[net_id];
+        const hit_rules::AttackState before = state;
+        const bool started = hit_rules::attack_started(state, current, last);
+        // Hypothèses H1 à H3 (spec 3.8) : chaque transition (mouvement en cours, dernier mouvement
+        // d'attaque) d'un PNJ capturé, en debug.
+        if (log::debug_enabled() && (!before.known || before.current != current || before.last_attack != last)) {
+            log::debug(who(net_id) + " : combat (CurrentMove, LastAttackMove) = (" + std::to_string(current) + ", " +
+                       std::to_string(last) + ")" + (started ? " : début d'attaque" : ""));
+        }
+        if (!started) continue;
+        game::Entity aim;
+        std::uint32_t target = 0;
+        if (game::combat_current_target(c.entity, aim)) {
+            TrackedEntity entry;
+            const bool found = aim.ptr != nullptr && anim_filter().find_by_entity(aim.ptr, entry);
+            target = hit_rules::attack_target_net_id(aim.ptr, hero, avatar_entity, found, entry);
+        }
+        out.push_back(cs::LocalNpcAttack{net_id, static_cast<std::uint32_t>(last), target});
+    }
 }
 
 std::size_t count() { return g_replicas.size() + g_captured.size() + g_wanted.size(); }

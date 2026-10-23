@@ -73,6 +73,10 @@ expect_no_log "nominal : log_level=info, aucune ligne DEBUG" "$d" "DEBUG"
 # Story 3.5 (Q8) : point d'accroche des dégâts posé par défaut (damage_hook = 1), symboles résolus.
 expect_log "nominal : point d'accroche des dégâts posé" "$d" "\[hooks\] point d'accroche des dégâts posé (gCDamage_PS::DoDamage)"
 expect_no_log "nominal : dégâts actifs" "$d" "dégâts inactifs"
+# Story 3.8 : attaques natives des répliques exigeant aussi les détours DownOrDeadBy* ; le banc ne
+# charge pas Script_Game.dll : Warn nommé, session installée quand même (symboles vérifiés plus bas).
+expect_log "nominal : attaques natives inactives sans DownOrDeadBy*" "$d" "\[hooks\] attaques natives des répliques inactives : détours DownOrDeadBy\* absents"
+expect_no_log "nominal : attaques natives non résolues" "$d" "attaques natives des répliques résolues"
 # Story 3.7 : détours DownOrDeadBy* de session facultatifs ; le banc ne charge jamais Script_Game.dll :
 # Warn nommé, session installée quand même.
 expect_log "nominal : DownOrDeadBy* inactifs, cause nommée" "$d" \
@@ -96,6 +100,15 @@ run "damage_hook = 0" "$d"
 expect_log "damage_hook = 0 : détour non posé" "$d" "\[hooks\] point d'accroche des dégâts désactivé (damage_hook = 0)"
 expect_no_log "damage_hook = 0 : pas de détour" "$d" "point d'accroche des dégâts posé"
 expect_log "damage_hook = 0 : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, gCScriptRoutine_PS::OnProcess)"
+# Story 3.8 : sans détour des dégâts, pas d'attaques natives (le coup d'une réplique blesserait l'invité).
+expect_log "damage_hook = 0 : attaques natives inactives" "$d" "\[hooks\] attaques natives des répliques inactives : pas de point d'accroche des dégâts"
+
+# Story 3.8 : native_attacks = 0 : bloc non résolu, ligne Info, session installée quand même.
+d2=$(setup sans_attaques $'role = guest\nhost_ip = 192.168.1.10\nnative_attacks = 0')
+run "native_attacks = 0" "$d2"
+expect_log "native_attacks = 0 : désactivées" "$d2" "\[hooks\] attaques natives des répliques désactivées (native_attacks = 0)"
+expect_no_log "native_attacks = 0 : non résolues" "$d2" "attaques natives des répliques résolues"
+expect_log "native_attacks = 0 : session prête" "$d2" "\[sync\] session prête (rôle invité)"
 
 # Overlay à l'écran : posé par défaut (device factice sur le d3d9 du préfixe Wine) ; sans GPU, Warn
 # nommé et session intacte. overlay = 0 : aucun détour, ligne Info.
@@ -170,7 +183,12 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Script.dll|?GetCurrentTarget@PSNpc@@QEBA?AVEntity@@XZ' \
     'Script.dll|?SetCurrentTarget@PSNpc@@QEAAXAEBVEntity@@@Z' \
     'Script.dll|?GetPartyName@PSParty@@QEBA?AVbCString@@XZ' \
-    'Script.dll|?StartStumble@PSCombatSystem@@QEBA_NW4gECombatMove@@VEntity@@@Z' 'Script.dll|??0Entity@@QEAA@AEBV0@@Z'; do
+    'Script.dll|?StartStumble@PSCombatSystem@@QEBA_NW4gECombatMove@@VEntity@@@Z' 'Script.dll|??0Entity@@QEAA@AEBV0@@Z' \
+    'Script.dll|?GetLastAttackMove@PSCombatSystem@@QEAA?AW4gECombatMove@@XZ' \
+    'Script.dll|?GetCurrentMove@PSCombatSystem@@QEBA?AW4gECombatMove@@XZ' \
+    'Script.dll|?GetCurrentTarget@PSCombatSystem@@QEBA?AVEntity@@XZ' \
+    'Script.dll|?SetCurrentTarget@PSCombatSystem@@QEAA_NAEBVEntity@@@Z' \
+    'Script.dll|?StartMove@PSCombatSystem@@QEBA_NW4gECombatMove@@@Z'; do
     dll=${entry%%|*}
     sym=${entry#*|}
     if grep -qaF -- "$sym" "$risen_bin/$dll"; then

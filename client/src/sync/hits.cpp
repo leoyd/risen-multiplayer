@@ -5,6 +5,7 @@
 #include "game/entity.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/guest_health.h"
 #include "sync/hit_rules.h"
 #include "sync/npc.h"
 
@@ -40,6 +41,21 @@ std::atomic<bool> g_first_pass_logged{false};
 std::atomic<bool> g_aggressor_warned{false};
 std::atomic<bool> g_raw_warned{false};  // PV de l'avatar illisibles : coup non mesuré
 std::atomic<unsigned> g_blocked{0};
+// Story 3.8 : coups des répliques sur le héros invité rendus nativement (cosmétiques), réglé une fois
+// par sync/session ; dernier coup cosmétique (horloge QPC, ms) pour le recul de repli.
+std::atomic<bool> g_native_attacks{false};
+std::atomic<bool> g_cosmetic_warned{false};  // PV du héros illisibles : coup bloqué
+std::atomic<bool> g_restore_warned{false};   // PV du héros non rendus après un coup cosmétique
+std::atomic<bool> g_any_cosmetic{false};
+std::atomic<std::uint64_t> g_last_cosmetic_ms{0};
+
+std::uint64_t qpc_ms() {
+    LARGE_INTEGER f{}, t{};
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    if (f.QuadPart <= 0) return 0;
+    return static_cast<std::uint64_t>(t.QuadPart / f.QuadPart * 1000 + t.QuadPart % f.QuadPart * 1000 / f.QuadPart);
+}
 
 // File des NetId frappés par le héros de l'invité, et répliques mortes : verrou court.
 std::mutex g_mutex;
@@ -71,7 +87,7 @@ private:
 thread_local void* t_measured = nullptr;
 
 // Résultat du détour pour un coup : laissé, bloqué (rend false ou true), ou mesuré (4b).
-enum class Action { Pass, Block, BlockImpact, Measure };
+enum class Action { Pass, Block, BlockImpact, Measure, Cosmetic };
 struct Outcome {
     Action action = Action::Pass;
     std::uint32_t source = 0;  // Measure : NetId du PNJ agresseur, 0 = inconnu
@@ -165,9 +181,12 @@ Outcome decide(void* damage_ps, void* target) {
     // Réplique morte : lue seulement quand la règle 3 peut mettre son NetId en file.
     in.replica_dead = role == HitRole::Guest && target_found && tt.role == EntityRole::NpcReplica &&
                       aggressor != nullptr && aggressor == hero && is_dead(tt.net_id);
+    in.native_attacks = g_native_attacks.load();
+    in.hero_down = role == HitRole::Guest && guest_health::hero_down();  // story 3.7 : pas de cosmétique à terre
     const hit_rules::Decision d = hit_rules::decide(in);
     if (aggressor_unreadable && d.reason != hit_rules::Reason::GuestHeroByReplica &&
-        d.reason != hit_rules::Reason::GuestHeroOther && d.reason != hit_rules::Reason::AvatarNoAggressor) {
+        d.reason != hit_rules::Reason::GuestHeroOther && d.reason != hit_rules::Reason::AvatarNoAggressor &&
+        d.reason != hit_rules::Reason::HostAvatarOnGuest) {
         return {};  // en cas de doute, on laisse passer (3.5)
     }
     const bool block = d.block;
@@ -181,6 +200,8 @@ Outcome decide(void* damage_ps, void* target) {
         case hit_rules::Reason::GuestHeroByReplica:
         case hit_rules::Reason::GuestHeroOther: reason = "(seuls les HitOnGuest blessent)"; break;
         case hit_rules::Reason::AvatarHit: break;  // mesuré : journalisé par measure()
+        case hit_rules::Reason::GuestHeroCosmetic: break;  // cosmétique : journalisé par cosmetic()
+        case hit_rules::Reason::HostAvatarOnGuest: reason = "(avatar de l'hôte, l'hôte fait autorité)"; break;
         case hit_rules::Reason::AvatarFriendly: reason = "(pas de tir ami)"; break;
         case hit_rules::Reason::AvatarNoAggressor: reason = "(agresseur nul, sans HitOnGuest)"; break;
         case hit_rules::Reason::Pass: break;
@@ -195,12 +216,15 @@ Outcome decide(void* damage_ps, void* target) {
         log::debug("[sync] dégâts : agresseur " + hex_ptr(aggressor) + " (" +
                    role_text(aggressor, aggressor_found, ta, hero) + ") cible " + hex_ptr(target) + " (" +
                    role_text(target, target_found, tt, hero) + ") -> " +
-                   (block ? "bloqué" : (d.measure ? "mesuré" : "laissé")));
+                   (block ? "bloqué" : (d.measure ? "mesuré" : (d.cosmetic ? "cosmétique" : "laissé"))));
     }
     Outcome out;
     if (d.measure) {
         out.action = Action::Measure;
         out.source = d.source_net_id;
+    } else if (d.cosmetic) {
+        out.action = Action::Cosmetic;
+        out.source = ta.net_id;  // réplique agresseur (journal)
     } else if (block) {
         out.action = d.impact ? Action::BlockImpact : Action::Block;
     }
@@ -244,6 +268,45 @@ bool measure(void* damage_ps, void* target, std::uint32_t source, DamageFn origi
     return result;
 }
 
+// Règle 3b, coup cosmétique (invité, story 3.8) : le coup d'une réplique sur le héros s'applique pour
+// son rendu (effet d'impact, script de dégâts : recul adapté, OverlayHit), puis les PV d'avant sont
+// rendus ; une mise à terre ou une mort pendant le coup est annulée par les détours DownOrDeadBy*
+// (measured_target). Seuls les HitOnGuest blessent le héros. PV illisibles : coup bloqué avec effet
+// d'impact (comportement 3.6).
+bool cosmetic(void* damage_ps, void* target, std::uint32_t source, DamageFn original) {
+    const game::Entity hero{target};
+    int before = 0;
+    if (!game::get_hit_points(hero, before)) {
+        if (!g_cosmetic_warned.exchange(true)) {
+            log::warn("[sync] dégâts : PV du héros illisibles : coup de réplique bloqué sans rendu natif "
+                      "(une fois par session)");
+        }
+        g_blocked.fetch_add(1);
+        return true;
+    }
+    bool result = false;
+    {
+        ApplyGuard guard;  // coups imbriqués laissés
+        t_measured = target;
+        result = original(damage_ps, target);
+        t_measured = nullptr;
+    }
+    int after = before;
+    const bool after_ok = game::get_hit_points(hero, after);
+    const bool restored = game::set_hit_points(hero, before, game::kSkillModifierSet);
+    if (!restored && !g_restore_warned.exchange(true)) {
+        log::warn("[sync] dégâts : PV du héros non rendus après un coup cosmétique (SetHitPoints, SEH) : "
+                  "dégâts natifs gardés (une fois par session)");
+    }
+    g_last_cosmetic_ms.store(qpc_ms());
+    g_any_cosmetic.store(true);
+    log::info("[sync] coup cosmétique de la réplique PNJ " + std::to_string(source) + " sur le héros : DoDamage -> " +
+              (result ? "1" : "0") + ", PV " + std::to_string(before) + " -> " +
+              (after_ok ? std::to_string(after) : std::string("?")) +
+              (restored ? ", rendus à " + std::to_string(before) : std::string(", SetHitPoints a échoué (SEH)")));
+    return result;
+}
+
 }  // namespace
 
 bool on_damage(void* damage_ps, void* target, DamageFn original) noexcept {
@@ -263,6 +326,13 @@ bool on_damage(void* damage_ps, void* target, DamageFn original) noexcept {
                 t_measured = nullptr;
                 return true;
             }
+        case Action::Cosmetic:
+            try {
+                return cosmetic(damage_ps, target, o.source, original);
+            } catch (...) {
+                t_measured = nullptr;
+                return true;
+            }
         case Action::Pass: break;
     }
     return original(damage_ps, target);
@@ -278,6 +348,9 @@ void publish(void* hero, Role role, bool in_session, std::uint32_t frame_thread)
         g_first_pass_logged.store(false);
         g_aggressor_warned.store(false);
         g_raw_warned.store(false);
+        g_cosmetic_warned.store(false);
+        g_restore_warned.store(false);
+        g_any_cosmetic.store(false);
         g_blocked.store(0);
         std::lock_guard<std::mutex> lock(g_mutex);
         g_queue.clear();
@@ -294,6 +367,17 @@ void publish(void* hero, Role role, bool in_session, std::uint32_t frame_thread)
 }
 
 void* hero() { return g_hero.load(); }
+
+void set_native_attacks(bool on) { g_native_attacks.store(on); }
+
+bool native_attacks() { return g_native_attacks.load(); }
+
+std::uint64_t now_ms() { return qpc_ms(); }
+
+bool last_cosmetic(std::uint64_t& ms) {
+    ms = g_last_cosmetic_ms.load();
+    return g_any_cosmetic.load();
+}
 
 bool guest_in_session() {
     return g_in_session.load() && g_role.load() == static_cast<int>(HitRole::Guest);

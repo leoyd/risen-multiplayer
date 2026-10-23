@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 14
+# Protocole Risen Multiplayer — version 15
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -12,7 +12,8 @@ snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) 
 (`Death` d'un PNJ à la place du `Despawn` de mort, sans changement de format), la v12 (story 3.5)
 `HitRequest` (coup du héros de l'invité sur une réplique de PNJ), la v13 (story 3.6) `HitOnGuest`
 (coup d'un monstre sur l'avatar de l'invité, dégâts bruts), la v14 (story 3.7) `Respawn` (mise à
-terre et réapparition de l'invité, avec accusé ; `Death{2}` signifie désormais « à terre »).
+terre et réapparition de l'invité, avec accusé ; `Death{2}` signifie désormais « à terre »), la v15
+(story 3.8) `NpcAttack` (début d'une attaque d'un PNJ, rejouée nativement par la réplique de l'invité).
 
 ## 1. Règles générales
 
@@ -59,8 +60,9 @@ terre et réapparition de l'invité, avec accusé ; `Death{2}` signifie désorma
 | 22 | `HitRequest` | fiable | invité → hôte : coup du héros de l'invité sur une réplique de PNJ, appliqué par l'hôte (v12) |
 | 23 | `HitOnGuest` | fiable | hôte → invité : coup d'un monstre sur l'avatar de l'invité, dégâts bruts à retirer aux PV de son héros (v13) |
 | 25 | `Respawn` | fiable | hôte → invité : ordre de réapparition de l'invité ; invité → hôte : accusé, avec le premier tick de snapshot valide (v14) |
+| 29 | `NpcAttack` | fiable | hôte → invité : début d'une attaque d'un PNJ capturé (mouvement de combat et cible), lancée nativement par la réplique (v15) |
 
-Plus aucune valeur n'est réservée (v14). Toute autre valeur, et un type reçu sur le mauvais canal (ex.
+Aucune valeur n'est réservée (depuis la v14). Toute autre valeur, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
 mettre à jour ce document et d'incrémenter la version du protocole.
 
@@ -70,7 +72,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `14` en v14 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `15` en v15 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -252,6 +254,20 @@ Taille : 25 octets. Deux sens, même format :
 Le décodeur ne vérifie aucune valeur (aucun `BadValue`) : le récepteur ignore un `net_id` ≠ 2 ou
 une pose non finie (journalisé).
 
+### `NpcAttack` (29) — fiable — v15
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `net_id` | `u32` | PNJ attaquant (≥ 1000, annoncé par l'hôte) |
+| `mouvement` | `u32` | `gECombatMove` brut du jeu (`PSCombatSystem::GetLastAttackMove` de l'hôte) |
+| `cible` | `u32` | NetId de la cible de l'attaque chez l'hôte : `1` héros de l'hôte, `2` avatar de l'invité, ≥ 1000 PNJ annoncé, **0** = aucune ou inconnue |
+
+Taille : 13 octets. Hôte → invité seulement : un PNJ capturé de l'hôte commence une attaque.
+L'invité fixe la cible de la réplique et lance ce mouvement par son système de combat (§8, « Attaques
+natives des répliques ») : le coup qui en résulte n'est qu'un rendu (sang, recul, flash), les dégâts
+restent ceux de `HitOnGuest`. Le décodeur ne vérifie aucune valeur (aucun `BadValue`) ; un hôte qui
+en reçoit un l'ignore.
+
 ### `MotionParam` (26) — fiable — v6
 
 Un réglage de l'enveloppe EMotionFX (`eCWrapper_emfx3ActorInstance`) que Risen applique chaque
@@ -366,13 +382,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=14`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=15`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0e00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0f00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -382,7 +398,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `0e 00` | `version_protocole` = 14 |
+| 0x02 | `0f 00` | `version_protocole` = 15 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -550,6 +566,23 @@ v14 (story 3.7) : réapparition du héros de l'invité (`net_id=2`) en `(100.0, 
 | 0x0d | `00 00 48 c2` | `z` = -50.0 |
 | 0x11 | `00 00 c0 3f` | `lacet` = 1.5 |
 | 0x15 | `2a 00 00 00` | `tick` = 42 |
+
+#### `npc_attack.bin` — `NpcAttack` (fiable, sans octet de canal), 13 octets
+
+v15 (story 3.8) : le PNJ `net_id=1005` commence l'attaque `mouvement=11` sur l'avatar de l'invité
+(`cible=2`).
+
+<!-- vector: npc_attack.bin -->
+```text
+00000000: 1ded 0300 000b 0000 0002 0000 00         .............
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `1d` | `MsgType` NpcAttack (29) |
+| 0x01 | `ed 03 00 00` | `net_id` = 1005 (PNJ) |
+| 0x05 | `0b 00 00 00` | `mouvement` = 11 |
+| 0x09 | `02 00 00 00` | `cible` = 2 (avatar de l'invité) |
 
 #### `spawn.bin` — `Spawn` (fiable, sans octet de canal), 22 octets
 
@@ -789,11 +822,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 14.
+`Truncated` ; `peek_hello_version` → 15.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0e00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0f00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -803,7 +836,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0e00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 0f00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -873,7 +906,7 @@ type ; un type inconnu n'est pas lisible).
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité, la v15 les attaques natives des répliques. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -1139,7 +1172,9 @@ d'appels.
     annulée), la perte de PV est envoyée dans `HitOnGuest{source, dégâts}`, une fois par coup, puis
     les PV d'avant sont rendus. `source` = `NetId` du PNJ agresseur s'il est annoncé, sinon 0. Une
     perte nulle n'émet rien. Hors `InSession`, rien n'est émis.
-  - **Invité** : tout coup natif sur son héros est bloqué, quel que soit l'agresseur. Un
+  - **Invité** : tout coup natif sur son héros est bloqué, quel que soit l'agresseur (v15 : sauf le
+    coup d'une réplique, appliqué pour son rendu seulement puis annulé, « Attaques natives des
+    répliques »). Un
     `HitOnGuest` reçu en session retire `damage` aux PV de son héros ; `damage = 0` ne change rien.
     Un coup mortel laisse le héros à **1 PV** et le met à terre (v14, « Mort et réapparition de
     l'invité ») : il ne meurt jamais nativement. Un `HitOnGuest` reçu à terre est ignoré.
@@ -1175,6 +1210,33 @@ d'appels.
     replacé l'avatar, se réarme. Limite connue de la v14.
   - Tout cet état repart de zéro à l'entrée en session, au retrait de l'avatar et à la fin de
     session.
+- **Attaques natives des répliques** (v15, story 3.8) : rendu des coups des monstres chez l'invité ;
+  les dégâts restent ceux de `HitOnGuest`.
+  - **Hôte, détection** : à chaque frame, pour chaque PNJ capturé (groupe des 8 animés, « Animations
+    des PNJ »), il lit `PSCombatSystem::GetLastAttackMove` et `GetCurrentMove`. Une attaque commence
+    quand le dernier mouvement d'attaque change depuis la frame précédente, ou quand le mouvement en
+    cours redevient égal au dernier mouvement d'attaque après avoir valu autre chose ; un mouvement 0
+    n'est jamais émis, et la première lecture d'un PNJ ne fait que l'initialiser. Il envoie alors
+    `NpcAttack{NetId, mouvement, cible}` une fois, en session seulement, pour un `NetId` annoncé et pas
+    mort ; `cible` = `PSCombatSystem::GetCurrentTarget` traduite : héros de l'hôte → 1, avatar de
+    l'invité → 2, PNJ capturé → son `NetId`, sinon 0.
+  - **Invité, réception** : `NpcAttack` n'est accepté que d'une réplique annoncée, ni morte ni en
+    attente de mort ; sinon il est ignoré et compté. Il s'applique au même instant d'affichage que le
+    dernier snapshot reçu de cette réplique (aussitôt si aucun), après les gestes dus : cible 1 →
+    avatar de l'hôte, 2 → son héros, ≥ 1000 → la réplique de ce `NetId`, 0 (ou cible introuvable) →
+    aucune cible fixée ; `PSCombatSystem::SetCurrentTarget(cible)` puis `StartMove(mouvement)` sur la
+    réplique. L'animation visible reste celle rejouée depuis l'hôte (`Motion`).
+  - **Invité, coup qui en résulte** (« coup cosmétique ») : un coup natif d'une réplique sur son héros
+    est appliqué pour son rendu seulement (effet d'impact, script de dégâts : recul, flash), puis ses
+    PV d'avant sont rendus ; une mise à terre ou une mort pendant ce coup est annulée. Au bilan, ses PV
+    ne baissent que par `HitOnGuest`. Le recul générique de la v13 (`StartStumble`) n'est joué, à un
+    `HitOnGuest` non mortel, que 500 ms après lui et si aucun coup cosmétique n'a touché le héros dans
+    les 500 ms avant ou après (un `HitOnGuest` plus récent remplace l'attente). Héros à terre : coups
+    des répliques bloqués comme en v14. Un coup natif sur l'avatar de l'hôte chez l'invité (une réplique peut désormais
+    l'attaquer) est bloqué : l'hôte fait autorité sur ses PV.
+  - Clé de configuration `native_attacks = 0` (diagnostic) : ni envoi ni application de `NpcAttack`
+    (reçus ignorés et comptés), tout coup natif sur le héros invité est bloqué (comportement v14).
+  - Un hôte qui reçoit `NpcAttack` l'ignore (journalisé). Pas de limite de cadence.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -1189,4 +1251,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v14).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v15).

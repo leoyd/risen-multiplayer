@@ -21,6 +21,14 @@
 //     l'anime plus (seul le rejeu, sous ReplayGuard, passe). play / play_param rejouent les
 //     animations de l'hôte ; libérée, elle sort du registre et son moteur l'anime de nouveau.
 //
+// - Attaques natives (story 3.8, bloc facultatif game::resolve_native_attacks) :
+//   - hôte : detect_attacks lit à chaque frame, pour chaque PNJ capturé, GetLastAttackMove et
+//     GetCurrentMove (PSCombatSystem) ; un début d'attaque (règle pure sync::hit_rules::attack_started)
+//     devient LocalNpcAttack{NetId, mouvement, cible}, cible traduite en NetId (héros 1, avatar 2,
+//     PNJ capturé, sinon 0) ;
+//   - invité : attack fixe la cible de la réplique (SetCurrentTarget) puis lance le mouvement
+//     (StartMove), hors garde de rejeu : l'animation locale reste bloquée par le registre.
+//
 // Tout est appelé depuis la frame (hook OnProcess, AD-2). Les erreurs sont journalisées ;
 // aucune ne remonte.
 #pragma once
@@ -28,6 +36,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "core/session.h"
 
@@ -54,6 +63,15 @@ void die(std::uint32_t net_id);
 // est journalisé une fois par nom (Motion) ou par réplique (réglage).
 void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion);
 void play_param(std::uint32_t net_id, const protocol::MotionParam& param);
+// Story 3.8, invité : la réplique `net_id` vise `target` (1 avatar de l'hôte, 2 héros local, ≥ 1000
+// réplique de ce NetId, 0 ou introuvable : cible effacée, pour qu'une ancienne cible ne serve pas)
+// puis lance le mouvement `move`
+// (PSCombatSystem::SetCurrentTarget, StartMove). Réplique inconnue ou morte : ignoré. Un SEH est
+// journalisé une fois par session (Warn), le NpcAttack est alors sans effet.
+void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target);
+// Story 3.8, hôte : débuts d'attaque des PNJ capturés depuis la frame précédente → LocalNpcAttack.
+// `hero` = héros de l'hôte (cible 1). Sans effet si le bloc des attaques natives n'est pas résolu.
+void detect_attacks(void* hero, std::vector<core::session::Input>& out);
 // Story 3.4, hôte : inscrit (capture) ou retire (uncapture) le PNJ animé `net_id`.
 void capture(std::uint32_t net_id, const protocol::Guid& guid);
 void uncapture(std::uint32_t net_id);

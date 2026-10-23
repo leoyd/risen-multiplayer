@@ -95,6 +95,21 @@ bool party_name(const Entity& e, std::string& out);
 // PSCombatSystem::StartStumble(gECombatMove_Stumble, attaquant) sur `e` (après resolve_damage) :
 // réaction native au coup, orientée selon l'attaquant. `out` = retour du jeu. False sur SEH. Thread principal.
 bool start_stumble(const Entity& e, const Entity& attacker, bool& out);
+// Story 3.8 : attaques natives des répliques, bloc facultatif en tout ou rien (Script.dll) :
+// PSCombatSystem::GetLastAttackMove, GetCurrentMove, GetCurrentTarget (Entity rendue par valeur, sret
+// après this), SetCurrentTarget(const Entity&) et StartMove(gECombatMove). Toutes ne font que relayer
+// au gCCombatSystem_PS (PS 0x60) de l'entité, et rendent 0, faux ou Entity::None sans ce PS
+// (désassemblage, Steam x64 de janvier 2023). Un échec laisse la session sans NpcAttack
+// (comportement de la story 3.6). False et `missing` au premier échec.
+bool resolve_native_attacks(const char*& missing);
+bool native_attacks_resolved();
+// gECombatMove passé en int. Sous SEH, thread principal ; false si le bloc n'est pas résolu.
+bool combat_last_attack_move(const Entity& e, int& out);  // PSCombatSystem::GetLastAttackMove
+bool combat_current_move(const Entity& e, int& out);      // PSCombatSystem::GetCurrentMove
+bool combat_current_target(const Entity& e, Entity& out); // PSCombatSystem::GetCurrentTarget (nul : aucune)
+// PSCombatSystem::SetCurrentTarget(const Entity&) et StartMove(gECombatMove) : `out` = retour du jeu.
+bool combat_set_current_target(const Entity& e, const Entity& target, bool& out);
+bool combat_start_move(const Entity& e, int move, bool& out);
 // Kill, Defeat et DownOrDeadBy* (Script_Game.dll), facultatifs : module déjà chargé par le jeu,
 // jamais par nous (sonde J2, et depuis la story 3.7 les détours DownOrDeadBy* de session). False et
 // `missing` (module ou symbole) en cas d'échec.

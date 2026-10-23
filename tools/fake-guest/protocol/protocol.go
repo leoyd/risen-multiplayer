@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 14, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 15, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 14
+	ProtocolVersion   = 15
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -35,7 +35,7 @@ const (
 	ChannelControl  Channel = 2 // Hello, Welcome, Reject
 )
 
-// MsgType : plus aucun type réservé (v14) ; un type absent de la liste se décode en ErrUnknownType.
+// MsgType : aucun type réservé (depuis la v14) ; un type absent de la liste se décode en ErrUnknownType.
 type MsgType uint8
 
 const (
@@ -52,6 +52,7 @@ const (
 	TypeMotion      MsgType = 19 // v2
 	TypeDeath       MsgType = 24 // v5
 	TypeRespawn     MsgType = 25 // v14 (story 3.7)
+	TypeNpcAttack   MsgType = 29 // v15 (story 3.8)
 	TypeMotionParam MsgType = 26 // v6
 	TypeWeapon      MsgType = 27 // v7
 	TypeArmor       MsgType = 28 // v8
@@ -191,6 +192,15 @@ type HitOnGuest struct {
 	Damage uint32
 }
 
+// NpcAttack (v15, story 3.8) : début d'une attaque d'un PNJ capturé de l'hôte, hôte → invité. Move =
+// gECombatMove brut ; Target = 1 héros de l'hôte, 2 avatar invité, ≥ 1000 PNJ, 0 = aucune ou inconnue.
+// Le décodeur ne vérifie aucune valeur.
+type NpcAttack struct {
+	NetId  uint32
+	Move   uint32
+	Target uint32
+}
+
 // Respawn (v14, story 3.7) : réapparition de l'invité. Hôte → invité : ordre, NetId 2, pose où placer
 // le héros, Tick 0 (ignoré). Invité → hôte : accusé, même pose, Tick = premier tick de snapshot de
 // l'invité qui porte la nouvelle pose. Le décodeur ne vérifie aucune valeur.
@@ -288,6 +298,7 @@ func (Death) Type() MsgType       { return TypeDeath }
 func (HitRequest) Type() MsgType  { return TypeHitRequest }
 func (HitOnGuest) Type() MsgType  { return TypeHitOnGuest }
 func (Respawn) Type() MsgType     { return TypeRespawn }
+func (NpcAttack) Type() MsgType   { return TypeNpcAttack }
 func (MotionParam) Type() MsgType { return TypeMotionParam }
 func (Weapon) Type() MsgType      { return TypeWeapon }
 func (Armor) Type() MsgType       { return TypeArmor }
@@ -372,6 +383,10 @@ func (w *writer) message(m Message) {
 	case HitOnGuest:
 		w.u32(m.Source)
 		w.u32(m.Damage)
+	case NpcAttack:
+		w.u32(m.NetId)
+		w.u32(m.Move)
+		w.u32(m.Target)
 	case Respawn:
 		w.u32(m.NetId)
 		w.f32(m.X)
@@ -416,7 +431,8 @@ func EncodeControl(m Message) ([]byte, error) {
 }
 
 // EncodeReliable rend le message [MsgType][charge] d'un message fiable (Heartbeat, SessionEnd,
-// Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon, Armor, HitRequest, HitOnGuest, Respawn),
+// Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon, Armor, HitRequest, HitOnGuest, Respawn,
+// NpcAttack),
 // sans octet de canal.
 func EncodeReliable(m Message) ([]byte, error) {
 	switch m := m.(type) {
@@ -444,7 +460,7 @@ func EncodeReliable(m Message) ([]byte, error) {
 		if !validSpawn(m) {
 			return nil, ErrOutOfBounds
 		}
-	case Heartbeat, SessionEnd, Despawn, Death, HitRequest, HitOnGuest, Respawn:
+	case Heartbeat, SessionEnd, Despawn, Death, HitRequest, HitOnGuest, Respawn, NpcAttack:
 	default:
 		return nil, ErrOutOfBounds
 	}
@@ -668,6 +684,12 @@ func DecodeReliable(b []byte) (Message, error) {
 	case TypeHitOnGuest:
 		m := HitOnGuest{Source: r.u32()}
 		m.Damage = r.u32()
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case TypeNpcAttack:
+		m := NpcAttack{NetId: r.u32(), Move: r.u32(), Target: r.u32()}
 		if err := r.finish(); err != nil {
 			return nil, err
 		}

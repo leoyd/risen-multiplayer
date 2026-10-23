@@ -3780,7 +3780,9 @@ std::vector<Input> respawn_in(float x, float y, float z, float yaw, std::uint32_
 // Bilan des 5 s, à partir de « à terre : ».
 std::string down_tail(const std::string& line) {
     const auto at = line.find("à terre : ");
-    return at == std::string::npos ? std::string() : line.substr(at);
+    if (at == std::string::npos) return std::string();
+    const auto end = line.find(" ; attaques natives : ", at);  // story 3.8 : dernier bloc du bilan
+    return line.substr(at, end == std::string::npos ? std::string::npos : end - at);
 }
 
 }  // namespace
@@ -4030,4 +4032,156 @@ TEST("à terre 3.7 hôte : retrait de l'avatar ou fin de session → réappariti
     CHECK(p.respawn_pending());
     p.tick(1410, blind, reliable(encode_r(proto::SessionEnd{1})));
     CHECK(p.state() == State::Ended && !p.respawn_pending());
+}
+
+// --- Story 3.8 : attaques natives des répliques ---------------------------------------------------
+
+namespace {
+
+std::string attack_tail(const std::string& line) {
+    const auto at = line.find("attaques natives : ");
+    return at == std::string::npos ? std::string() : line.substr(at);
+}
+
+Session host_with_npcs() {
+    Session s = host_in_session();
+    s.tick(1050, host_world(npcs_in_line(2)), {});  // 1000 = GUID 1, 1001 = GUID 2 (annoncés)
+    return s;
+}
+
+}  // namespace
+
+TEST("attaques 3.8 hôte : LocalNpcAttack d'un PNJ annoncé → NpcAttack{1000, 11, 2} fiable une fois, Info, compté") {
+    Session s = host_with_npcs();
+    const Output out = s.tick(1060, host_world({}, false), {LocalNpcAttack{1000, 11, proto::kGuestNetId}});
+    const auto sent = sent_of<proto::NpcAttack>(out);
+    CHECK(sent.size() == 1 && sent[0].net_id == 1000u && sent[0].move == 11u &&
+          sent[0].target_net_id == proto::kGuestNetId);
+    CHECK(has_log_at(out, Level::Info, "[sync] attaque du PNJ 1000 (mouvement 11, cible 2) : NpcAttack envoyé"));
+    const Output next = s.tick(1070, host_world({}, false), {});
+    CHECK(sent_of<proto::NpcAttack>(next).empty());
+    CHECK_EQ(attack_tail(host_stats_line(s, 1100)),
+             std::string("attaques natives : NpcAttack envoyés 1, appliqués 0, ignorés 0"));
+}
+
+TEST("attaques 3.8 hôte : cible inconnue (0) transmise telle quelle") {
+    Session s = host_with_npcs();
+    const auto sent = sent_of<proto::NpcAttack>(s.tick(1060, host_world({}, false), {LocalNpcAttack{1001, 4, 0}}));
+    CHECK(sent.size() == 1 && sent[0].net_id == 1001u && sent[0].target_net_id == 0u);
+}
+
+TEST("attaques 3.8 hôte : PNJ non annoncé, mort, hors session → rien envoyé, Debug, compté ignoré") {
+    Session s = host_with_npcs();
+    Output out = s.tick(1060, host_world({}, false), {LocalNpcAttack{1500, 11, 2}});
+    CHECK(sent_of<proto::NpcAttack>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "[sync] attaque du PNJ 1500 (mouvement 11, cible 2) : ignorée (PNJ non annoncé)"));
+    Session d = host_in_session();
+    d.tick(1050, host_world({npc_at(1, 100.0f)}), {});
+    d.tick(1100, host_world({npc_at(1, 100.0f, 0, false)}), {});  // Death{1000}
+    out = d.tick(1110, host_world({}, false), {LocalNpcAttack{1000, 11, 2}});
+    CHECK(sent_of<proto::NpcAttack>(out).empty());
+    CHECK(has_log(out, "ignorée (PNJ mort)"));
+    Session h(host_settings());
+    h.tick(0, loaded_world(), {});
+    out = h.tick(10, loaded_world(), {LocalNpcAttack{1000, 11, 2}});
+    CHECK(commands_of<SendReliable>(out).empty());
+    CHECK(has_log(out, "ignorée (hors session)"));
+    CHECK_EQ(attack_tail(host_stats_line(s, 1100)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 0, ignorés 1"));
+}
+
+TEST("attaques 3.8 hôte : native_attacks = 0 → rien envoyé ; NpcAttack reçu → Warn, ignoré") {
+    Settings off = host_settings();
+    off.native_attacks = false;
+    Session s(off);
+    s.tick(0, loaded_world(), {});
+    s.tick(10, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    CHECK(s.state() == State::InSession);
+    s.tick(50, host_world(npcs_in_line(1)), {});
+    Output out = s.tick(60, host_world({}, false), {LocalNpcAttack{1000, 11, 2}});
+    CHECK(sent_of<proto::NpcAttack>(out).empty());
+    CHECK(has_log(out, "ignorée (native_attacks = 0)"));
+    Session h = host_with_npcs();
+    out = h.tick(1060, host_world({}, false), reliable(encode_r(proto::NpcAttack{1000, 11, 2})));
+    CHECK(commands_of<ApplyNpcAttack>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "[sync] NpcAttack PNJ 1000 (mouvement 11, cible 2) ignoré : l'hôte fait autorité"));
+    CHECK(h.state() == State::InSession);
+}
+
+TEST("attaques 3.8 invité : NpcAttack d'une réplique vivante → ApplyNpcAttack à l'instant d'affichage, après MoveNpc") {
+    Session g = guest_with_npcs();  // dernier snapshot : tick 3, affiché à now − 350 (comme un Death)
+    Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::NpcAttack{1000, 11, proto::kGuestNetId})));
+    CHECK(commands_of<ApplyNpcAttack>(out).empty());
+    CHECK(commands_of<ApplyNpcAttack>(g.tick(499, loaded_world(), {})).empty());
+    out = g.tick(500, loaded_world(), {});
+    const auto apply = commands_of<ApplyNpcAttack>(out);
+    CHECK(apply.size() == 1 && apply[0]->net_id == 1000u && apply[0]->move == 11u &&
+          apply[0]->target == proto::kGuestNetId);
+    CHECK(index_for<MoveNpc>(out, 1000) < index_for<ApplyNpcAttack>(out, 1000));
+    CHECK(commands_of<ApplyNpcAttack>(g.tick(550, loaded_world(), {})).empty());  // une fois
+    CHECK_EQ(attack_tail(guest_stats_line(g, 600)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 1, ignorés 0"));
+}
+
+TEST("attaques 3.8 invité : horloge pas prête → ApplyNpcAttack aussitôt") {
+    Session g = guest_in_session();
+    g.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    const Output out = g.tick(160, loaded_world(), reliable(encode_r(proto::NpcAttack{1000, 5, 1})));
+    const auto apply = commands_of<ApplyNpcAttack>(out);
+    CHECK(apply.size() == 1 && apply[0]->net_id == 1000u && apply[0]->move == 5u && apply[0]->target == 1u);
+}
+
+TEST("attaques 3.8 invité : NetId inconnu, réplique morte ou en attente de mort → ignoré, compté") {
+    Session g = guest_with_npcs();
+    Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::NpcAttack{1500, 11, 2})));
+    CHECK(has_log_at(out, Level::Debug, "[sync] NpcAttack PNJ 1500 (mouvement 11, cible 2) ignoré (NetId non annoncé)"));
+    g.tick(410, loaded_world(), reliable(encode_r(proto::Death{1001})));  // en attente
+    out = g.tick(420, loaded_world(), reliable(encode_r(proto::NpcAttack{1001, 11, 2})));
+    CHECK(has_log(out, "ignoré (réplique morte)"));
+    for (std::uint64_t t = 430; t <= 600; t += 50) CHECK(commands_of<ApplyNpcAttack>(g.tick(t, loaded_world(), {})).empty());
+    CHECK_EQ(attack_tail(guest_stats_line(g, 650)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 0, ignorés 2"));
+}
+
+TEST("attaques 3.8 invité : attaque en attente puis Death → jetée, comptée ignorée, NpcDeath seul") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), reliable(encode_r(proto::NpcAttack{1000, 11, 2})));
+    g.tick(410, loaded_world(), reliable(encode_r(proto::Death{1000})));
+    bool died = false;
+    for (std::uint64_t t = 420; t <= 600; t += 20) {
+        const Output out = g.tick(t, loaded_world(), {});
+        CHECK(count_for<ApplyNpcAttack>(out, 1000) == 0u);
+        died |= count_for<NpcDeath>(out, 1000) == 1u;
+    }
+    CHECK(died);
+    CHECK_EQ(attack_tail(guest_stats_line(g, 650)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 0, ignorés 1"));
+}
+
+TEST("attaques 3.8 invité : native_attacks = 0 → NpcAttack ignoré, compté ; file de 8 au plus par réplique") {
+    Settings off = guest_settings();
+    off.native_attacks = false;
+    Session g(off);
+    g.tick(0, loaded_world(), {});
+    g.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    g.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    Output out = g.tick(160, loaded_world(), reliable(encode_r(proto::NpcAttack{1000, 11, 2})));
+    CHECK(commands_of<ApplyNpcAttack>(out).empty());
+    CHECK(has_log(out, "ignoré (native_attacks = 0)"));
+    CHECK(has_log_at(out, Level::Info, "[sync] NpcAttack reçus de l'hôte mais attaques natives inactives ici"));
+    out = g.tick(170, loaded_world(), reliable(encode_r(proto::NpcAttack{1000, 11, 2})));
+    CHECK(!has_log(out, "attaques natives inactives ici"));  // une fois par session
+    Session f = guest_with_npcs();
+    for (int i = 0; i < 9; ++i) f.tick(400 + i, loaded_world(), reliable(encode_r(proto::NpcAttack{1000, 11, 2})));
+    out = f.tick(500, loaded_world(), {});
+    CHECK_EQ(count_for<ApplyNpcAttack>(out, 1000), kMaxPendingAttacks);
+    CHECK_EQ(attack_tail(guest_stats_line(f, 600)),
+             std::string("attaques natives : NpcAttack envoyés 0, appliqués 8, ignorés 1"));
+}
+
+TEST("attaques 3.8 invité : LocalNpcAttack chez l'invité → rien envoyé") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), {LocalNpcAttack{1000, 11, 2}});
+    CHECK(sent_of<proto::NpcAttack>(out).empty());
+    CHECK(has_log(out, "ignorée (pas hôte)"));
 }

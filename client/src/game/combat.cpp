@@ -94,6 +94,16 @@ constexpr const char* kStartStumble = "?StartStumble@PSCombatSystem@@QEBA_NW4gEC
 constexpr const char* kEntityCopyCtor = "??0Entity@@QEAA@AEBV0@@Z";
 constexpr int kCombatMoveStumble = 0x19;
 using StartStumbleFn = bool (*)(const Entity* self, int move, Entity* attacker_by_value);
+// Story 3.8 : attaques natives des répliques (resolve_native_attacks). gECombatMove : enum passé et
+// rendu en int (EAX / EDX).
+constexpr const char* kGetLastAttackMove = "?GetLastAttackMove@PSCombatSystem@@QEAA?AW4gECombatMove@@XZ";
+constexpr const char* kGetCurrentMove = "?GetCurrentMove@PSCombatSystem@@QEBA?AW4gECombatMove@@XZ";
+constexpr const char* kCombatGetCurrentTarget = "?GetCurrentTarget@PSCombatSystem@@QEBA?AVEntity@@XZ";
+constexpr const char* kCombatSetCurrentTarget = "?SetCurrentTarget@PSCombatSystem@@QEAA_NAEBVEntity@@@Z";
+constexpr const char* kStartMove = "?StartMove@PSCombatSystem@@QEBA_NW4gECombatMove@@@Z";
+using CombatMoveFn = int (*)(const Entity* self);
+using CombatSetTargetFn = bool (*)(const Entity* self, const Entity* target);
+using StartMoveFn = bool (*)(const Entity* self, int move);
 using EntityCopyCtorFn = Entity* (*)(Entity* self, const Entity* other);
 constexpr const char* kGetAIMode = "??BPropertyAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
 constexpr const char* kGetLastAIMode = "??BPropertyLastAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
@@ -258,6 +268,17 @@ struct DamageAbi {
 DamageAbi g_dmg;
 bool g_dmg_resolved = false;
 
+// Attaques natives des répliques (story 3.8) : bloc facultatif, résolu en tout ou rien.
+struct NativeAttackAbi {
+    CombatMoveFn get_last_attack_move = nullptr;
+    CombatMoveFn get_current_move = nullptr;
+    GetEntityRetFn get_current_target = nullptr;  // sret
+    CombatSetTargetFn set_current_target = nullptr;
+    StartMoveFn start_move = nullptr;
+};
+NativeAttackAbi g_atk;
+bool g_atk_resolved = false;
+
 ScriptFn g_kill = nullptr;
 ScriptFn g_defeat = nullptr;
 SpuGetEntityFn g_spu_get_other = nullptr;
@@ -414,6 +435,86 @@ bool resolve_damage(const char*& missing) {
     g_dmg = a;
     g_dmg_resolved = true;
     return true;
+}
+
+bool resolve_native_attacks(const char*& missing) {
+    HMODULE script = GetModuleHandleW(L"Script.dll");
+    if (script == nullptr) {
+        missing = "Script.dll";
+        return false;
+    }
+    NativeAttackAbi a;
+    const bool ok = lookup(script, kGetLastAttackMove, a.get_last_attack_move, missing) &&
+                    lookup(script, kGetCurrentMove, a.get_current_move, missing) &&
+                    lookup(script, kCombatGetCurrentTarget, a.get_current_target, missing) &&
+                    lookup(script, kCombatSetCurrentTarget, a.set_current_target, missing) &&
+                    lookup(script, kStartMove, a.start_move, missing);
+    if (!ok) return false;
+    g_atk = a;
+    g_atk_resolved = true;
+    return true;
+}
+
+bool native_attacks_resolved() { return g_atk_resolved; }
+
+bool combat_last_attack_move(const Entity& e, int& out) {
+    out = 0;
+    if (!g_atk_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_atk.get_last_attack_move(&e);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = 0;
+        return false;
+    }
+}
+
+bool combat_current_move(const Entity& e, int& out) {
+    out = 0;
+    if (!g_atk_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_atk.get_current_move(&e);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = 0;
+        return false;
+    }
+}
+
+bool combat_current_target(const Entity& e, Entity& out) {
+    out.ptr = nullptr;
+    if (!g_atk_resolved || e.ptr == nullptr) return false;
+    __try {
+        g_atk.get_current_target(&e, &out);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out.ptr = nullptr;
+        return false;
+    }
+}
+
+bool combat_set_current_target(const Entity& e, const Entity& target, bool& out) {
+    out = false;
+    if (!g_atk_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_atk.set_current_target(&e, &target);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
+        return false;
+    }
+}
+
+bool combat_start_move(const Entity& e, int move, bool& out) {
+    out = false;
+    if (!g_atk_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_atk.start_move(&e, move);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
+        return false;
+    }
 }
 
 bool damage_resolved() { return g_dmg_resolved; }

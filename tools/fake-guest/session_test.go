@@ -727,6 +727,27 @@ func TestHitOnGuest(t *testing.T) {
 	expectLog(t, r, "<- HitOnGuest source=1000 dégâts=18", "HitOnGuest reçus=")
 }
 
+// Story 3.8 : NpcAttack (v15) de l'hôte, journalisé une fois par message reçu et compté au bilan,
+// jamais appliqué.
+func TestNpcAttack(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.NpcAttackEvery = 4 // toutes les 200 ms
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1200 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	sent := host.record().npcAttacks
+	if r.res.NpcAttacksRx < 3 {
+		t.Errorf("NpcAttack reçus %d, attendu au moins 3 (envoyés %d)", r.res.NpcAttacksRx, sent)
+	}
+	if r.res.NpcAttacksRx > sent || sent-r.res.NpcAttacksRx > 1 {
+		t.Errorf("NpcAttack reçus %d, envoyés %d (au plus un en vol à la fin)", r.res.NpcAttacksRx, sent)
+	}
+	expectLog(t, r, "<- NpcAttack netid=1005 move=11 cible=2", "NpcAttack reçus=")
+}
+
 // Story 3.7 : --die-every envoie Death{2} ; l'hôte répond Respawn, l'invité journalise l'ordre, prend
 // la pose et renvoie l'accusé avec le premier tick de snapshot qui la porte ; puis remeurt DieEvery
 // après chaque Respawn.

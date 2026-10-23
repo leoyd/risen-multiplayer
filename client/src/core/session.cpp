@@ -287,6 +287,8 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_local_hit_on_guest(*lg, out);
         } else if (const auto* ld = std::get_if<LocalDown>(&in)) {  // story 3.7
             on_local_down(now, *ld, out);
+        } else if (const auto* la = std::get_if<LocalNpcAttack>(&in)) {  // story 3.8
+            on_local_npc_attack(*la, out);
         } else {
             on_local_param(now, std::get<LocalParam>(in), out);
         }
@@ -683,6 +685,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         on_hit_on_guest(*hg, out);
         return;
     }
+    if (const auto* na = std::get_if<proto::NpcAttack>(&decoded.message)) {  // story 3.8
+        on_npc_attack(*na, out);
+        return;
+    }
     if (const auto* rs = std::get_if<proto::Respawn>(&decoded.message)) {  // story 3.7
         on_respawn(now, *rs, out);
         return;
@@ -735,6 +741,8 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     npc_anim_ = NpcAnimCounters{};
     hits_ = HitCounters{};  // story 3.5
     guest_hits_ = GuestHitCounters{};  // story 3.6
+    attacks_ = NpcAttackCounters{};    // story 3.8
+    attacks_off_logged_ = false;
     reset_respawn();                   // story 3.7
     respawn_ = RespawnCounters{};
     avatar_pose_ok_ = false;
@@ -1109,6 +1117,70 @@ void Session::on_hit_on_guest(const proto::HitOnGuest& m, Output& out) {
                                           ", dégâts bruts " + std::to_string(m.damage) + ") : ApplyHitOnGuest"});
 }
 
+void Session::on_local_npc_attack(const LocalNpcAttack& in, Output& out) {
+    const std::string what = "[sync] attaque du PNJ " + std::to_string(in.net_id) + " (mouvement " +
+                             std::to_string(in.move) + ", cible " + std::to_string(in.target) + ")";
+    const char* why = nullptr;
+    if (state_ != State::InSession) {
+        why = "hors session";
+    } else if (settings_.role != Role::Host) {
+        why = "pas hôte";
+    } else if (!settings_.native_attacks) {
+        why = "native_attacks = 0";
+    } else if (npc_dead_.count(in.net_id) != 0) {
+        why = "PNJ mort";
+    } else if (npc_active_.count(in.net_id) == 0) {
+        why = "PNJ non annoncé";
+    }
+    if (why != nullptr) {
+        ++attacks_.ignored;
+        out.logs.push_back({Level::Debug, what + " : ignorée (" + why + ")"});
+        return;
+    }
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::NpcAttack{in.net_id, in.move, in.target}, bytes)) return;
+    ++attacks_.sent;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    out.logs.push_back({Level::Info, what + " : NpcAttack envoyé"});
+}
+
+void Session::on_npc_attack(const proto::NpcAttack& m, Output& out) {
+    const std::string what = "[sync] NpcAttack PNJ " + std::to_string(m.net_id) + " (mouvement " +
+                             std::to_string(m.move) + ", cible " + std::to_string(m.target_net_id) + ")";
+    if (settings_.role != Role::Guest) {
+        ++attacks_.ignored;
+        out.logs.push_back({Level::Warn, what + " ignoré : l'hôte fait autorité sur les PNJ"});
+        return;
+    }
+    const char* why = nullptr;
+    auto it = replicas_.find(m.net_id);
+    if (!settings_.native_attacks) {
+        why = "native_attacks = 0";
+    } else if (it == replicas_.end()) {
+        why = "NetId non annoncé";
+    } else if (it->second.dead || it->second.death_pending) {
+        why = "réplique morte";
+    } else if (it->second.attacks.size() >= kMaxPendingAttacks) {
+        why = "file pleine";
+    }
+    if (why != nullptr) {
+        ++attacks_.ignored;
+        out.logs.push_back({Level::Debug, what + " ignoré (" + why + ")"});
+        if (!settings_.native_attacks && !attacks_off_logged_) {  // réglage différent de l'hôte : visible
+            attacks_off_logged_ = true;
+            out.logs.push_back({Level::Info, "[sync] NpcAttack reçus de l'hôte mais attaques natives inactives ici "
+                                             "(native_attacks = 0 ou bloc non résolu) : ignorés, recul générique "
+                                             "seul (une fois par session)"});
+        }
+        return;
+    }
+    Replica& r = it->second;
+    // Comme un Death : au même instant d'affichage que le dernier snapshot reçu de la réplique, pour
+    // que le coup tombe avec l'animation rejouée (Motion, même retard).
+    r.attacks.push_back({r.interp.empty() ? 0.0 : r.interp.last_time(), m.move, m.target_net_id});
+    out.logs.push_back({Level::Debug, what + " reçu : en attente d'affichage"});
+}
+
 bool Session::on_npc_entity(std::uint64_t now, std::uint32_t tick, const proto::SnapshotEntity& e) {
     if (settings_.role != Role::Guest) {
         ++npc_.unknown;
@@ -1188,6 +1260,15 @@ void Session::place_npcs(std::uint64_t now, Output& out) {
         play_due(r.pending, shown, id, out);
         // Pas encore de snapshot : reste à la pose du Spawn.
         if (ready && !r.interp.empty()) out.commands.push_back(MoveNpc{id, r.interp.sample(shown).pose});
+        // Story 3.8 : attaques natives à l'instant d'affichage du dernier snapshot reçu avec elles
+        // (aussitôt si l'horloge n'est pas prête), après les gestes dus (l'animation de
+        // l'attaque) et la pose.
+        while (!r.attacks.empty() && !r.death_pending && (!ready || shown >= r.attacks.front().at)) {
+            const Replica::PendingAttack a = r.attacks.front();
+            r.attacks.pop_front();
+            ++attacks_.applied;
+            out.commands.push_back(ApplyNpcAttack{id, a.move, a.target});
+        }
         // Story 3.4b : mort à l'instant d'affichage du dernier snapshot reçu avec le Death (aussitôt
         // si l'horloge n'est pas prête), après les PV, les gestes et la pose dus.
         if (r.death_pending && (!ready || shown >= r.death_at)) apply_pending_death(id, r, out);
@@ -1198,6 +1279,8 @@ void Session::apply_pending_death(std::uint32_t id, Replica& r, Output& out) {
     if (!r.death_pending || r.dead) return;
     for (const PendingMotion& p : r.pending) ++(p.is_param ? npc_anim_.params_ignored : npc_anim_.ignored);
     r.pending.clear();
+    attacks_.ignored += static_cast<unsigned>(r.attacks.size());  // story 3.8 : une morte n'attaque plus
+    r.attacks.clear();
     r.hp_changes.clear();
     r.death_pending = false;
     r.dead = true;
@@ -1834,7 +1917,7 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
 void Session::snapshot_stats(std::uint64_t now, Output& out) {
     if (now < next_stats_) return;
     next_stats_ = now + kSnapshotStatsMs;
-    char buf[1600];  // story 3.7 : marge pour le pire cas (toutes les valeurs au maximum)
+    char buf[1800];  // story 3.8 : marge pour le pire cas (toutes les valeurs au maximum)
     const auto npc_rate = static_cast<unsigned long long>(npc_anim_.bytes * 1000 / kSnapshotStatsMs);
     std::snprintf(buf, sizeof buf,
                   "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
@@ -1848,7 +1931,8 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   "PNJ reçus avant leur Spawn %u ; morts de PNJ : envoyées %u, appliquées %u, ignorées %u ; "
                   "coups : envoyés %u, appliqués %u, ignorés %u, bloqués %u ; "
                   "coups subis : HitOnGuest envoyés %u, reçus %u, ignorés %u ; "
-                  "à terre : Death %u, Respawn envoyés %u, reçus %u, accusés %u, ignorés %u, snapshots périmés %u",
+                  "à terre : Death %u, Respawn envoyés %u, reçus %u, accusés %u, ignorés %u, snapshots périmés %u ; "
+                  "attaques natives : NpcAttack envoyés %u, appliqués %u, ignorés %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
                   anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
@@ -1859,7 +1943,7 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   npc_.early, npc_.deaths_sent, npc_.deaths_applied, npc_.deaths_ignored, hits_.sent,
                   hits_.applied, hits_.ignored, hits_.blocked, guest_hits_.sent, guest_hits_.received,
                   guest_hits_.ignored, respawn_.deaths, respawn_.sent, respawn_.received, respawn_.acks,
-                  respawn_.ignored, respawn_.stale);
+                  respawn_.ignored, respawn_.stale, attacks_.sent, attacks_.applied, attacks_.ignored);
     out.logs.push_back({Level::Debug, buf});
     // Story 3.4 (Q12) : budget des animations des PNJ, une ligne par bilan au plus.
     if (npc_rate > kNpcAnimBudgetBytesPerSec) {
@@ -1875,6 +1959,7 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
     hits_ = HitCounters{};
     guest_hits_ = GuestHitCounters{};
     respawn_ = RespawnCounters{};
+    attacks_ = NpcAttackCounters{};
 }
 
 void Session::send_hello(Output& out) {

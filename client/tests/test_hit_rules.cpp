@@ -307,3 +307,131 @@ TEST("PV invité : (100, 18) → 82 ; (10, 18) → 1 held ; (1, 5) → rien, hel
     CHECK(r.write && r.held);
     CHECK_EQ(r.new_hp, 1);
 }
+
+// --- Story 3.8 : attaques natives des répliques ------------------------------------------------
+
+TEST("règles des dégâts 3b (3.8) : invité, réplique frappe son héros, attaques natives → cosmétique") {
+    Inputs in = guest_replica_hits_hero();
+    in.native_attacks = true;
+    const Decision d = decide(in);
+    CHECK(d.cosmetic && !d.block && !d.impact && !d.measure && !d.hit_on_guest);
+    CHECK_EQ(d.queue_net_id, 0u);
+    CHECK(d.reason == Reason::GuestHeroCosmetic);
+    // Héros reconnu par le registre seulement : cosmétique aussi.
+    in.hero = nullptr;
+    in.target_found = true;
+    in.target_entry = entry(&g_hero, EntityRole::LocalHero);
+    CHECK(decide(in).cosmetic);
+}
+
+TEST("règles des dégâts 3b (3.8) : autre agresseur, attaques natives coupées, garde → inchangé (3.6)") {
+    Inputs in = guest_replica_hits_hero();
+    in.native_attacks = true;
+    in.aggressor = &g_avatar;  // avatar de l'hôte : toujours bloqué avec effet
+    in.aggressor_entry = entry(&g_avatar, EntityRole::Avatar, 1);
+    Decision d = decide(in);
+    CHECK(!d.cosmetic && blocked_silent(d, Reason::GuestHeroOther) && d.impact);
+    in.aggressor = nullptr;
+    in.aggressor_found = false;
+    CHECK(!decide(in).cosmetic);
+    in = guest_replica_hits_hero();  // native_attacks = 0 : comportement 3.6
+    d = decide(in);
+    CHECK(!d.cosmetic && blocked_silent(d, Reason::GuestHeroByReplica));
+    in.native_attacks = true;
+    in.guard = true;
+    CHECK(passes(decide(in)) && !decide(in).cosmetic);
+    // Hôte : sans effet (la règle 4b reste une mesure).
+    in = host_npc_hits_avatar();
+    in.native_attacks = true;
+    d = decide(in);
+    CHECK(d.measure && !d.cosmetic);
+}
+
+TEST("attaque 3.8 (D1) : première lecture muette, LastAttackMove 0 → M émis une fois, inchangé → rien") {
+    AttackState s;
+    CHECK(!attack_started(s, 0, 0));  // première lecture
+    CHECK(s.known);
+    CHECK(!attack_started(s, 0, 0));
+    CHECK(attack_started(s, 7, 7));   // 0 → 7 : début d'attaque
+    CHECK(!attack_started(s, 7, 7));  // même attaque
+    CHECK(!attack_started(s, 3, 7));  // autre mouvement (parade…)
+    CHECK(attack_started(s, 7, 7));   // le même coup recommence après autre chose
+    CHECK(attack_started(s, 9, 9));   // nouveau mouvement d'attaque
+    CHECK(attack_started(s, 2, 5));   // LastAttackMove change seul
+    CHECK(!attack_started(s, 0, 0));  // mouvement 0 : jamais émis
+    AttackState first;
+    CHECK(!attack_started(first, 7, 7));  // déjà en attaque à la première lecture : rien
+}
+
+TEST("attaque 3.8 (D1) : LastAttackMove change une frame avant CurrentMove → un seul début") {
+    AttackState s;
+    CHECK(!attack_started(s, 0, 0));
+    CHECK(attack_started(s, 0, 7));   // LastAttackMove annonce l'attaque
+    CHECK(!attack_started(s, 7, 7));  // CurrentMove l'atteint : même attaque, pas de second début
+    CHECK(!attack_started(s, 7, 7));
+    CHECK(!attack_started(s, 0, 7));  // fin du mouvement
+    CHECK(attack_started(s, 7, 7));   // nouveau coup du même mouvement
+    CHECK(attack_started(s, 3, 9));   // autre attaque annoncée avant d'être en cours…
+    CHECK(attack_started(s, 9, 9) == false);  // …puis atteinte : rien
+}
+
+TEST("attaque 3.8 (D1) : cible → héros 1, avatar 2, PNJ capturé NetId, hors registre ou nulle 0") {
+    const TrackedEntity none{};
+    CHECK_EQ(attack_target_net_id(&g_hero, &g_hero, &g_avatar, false, none), 1u);
+    CHECK_EQ(attack_target_net_id(&g_avatar, &g_hero, &g_avatar, true, entry(&g_avatar, EntityRole::Avatar, 2)), 2u);
+    CHECK_EQ(attack_target_net_id(&g_replica, &g_hero, &g_avatar, true, entry(&g_replica, EntityRole::NpcCapture, 1005)),
+             1005u);
+    CHECK_EQ(attack_target_net_id(&g_other, &g_hero, &g_avatar, false, none), 0u);
+    CHECK_EQ(attack_target_net_id(nullptr, &g_hero, nullptr, false, none), 0u);  // pas d'avatar : nul ≠ cible
+    CHECK_EQ(attack_target_net_id(&g_other, &g_hero, nullptr, false, none), 0u);
+}
+
+TEST("attaque 3.8 (D4 différé) : recul en attente 500 ms, annulé par un coup cosmétique ±500 ms") {
+    const PendingStumble none{};
+    CHECK(stumble_step(none, 5000, false, 0) == StumbleStep::Idle);
+    const PendingStumble p{true, 1000, 1000};  // HitOnGuest à 1000
+    CHECK(stumble_step(p, 1000, false, 0) == StumbleStep::Wait);
+    CHECK(stumble_step(p, 1499, false, 0) == StumbleStep::Wait);
+    CHECK(stumble_step(p, 1500, false, 0) == StumbleStep::Play);   // échéance, aucun coup cosmétique
+    CHECK(stumble_step(p, 1200, true, 1150) == StumbleStep::Cancel);  // coup local 150 ms après
+    CHECK(stumble_step(p, 1200, true, 600) == StumbleStep::Cancel);   // 400 ms avant
+    CHECK(stumble_step(p, 1500, true, 500) == StumbleStep::Play);     // 500 ms avant : hors fenêtre
+    CHECK(stumble_step(p, 1200, true, 100) == StumbleStep::Wait);     // ancien coup cosmétique
+}
+
+TEST("règles des dégâts 3c (3.8) : invité, coup sur l'avatar de l'hôte → bloqué ; effet sauf tir ami") {
+    Inputs in = guest_replica_hits_hero();
+    in.native_attacks = true;
+    in.target = &g_avatar;
+    in.target_found = true;
+    in.target_entry = entry(&g_avatar, EntityRole::Avatar, 1);
+    Decision d = decide(in);
+    CHECK(blocked_silent(d, Reason::HostAvatarOnGuest) && d.impact && !d.cosmetic);
+    in.aggressor = &g_hero;  // son héros : pas de tir ami, pas d'effet
+    in.aggressor_found = false;
+    d = decide(in);
+    CHECK(blocked_silent(d, Reason::HostAvatarOnGuest) && !d.impact);
+    in.hero = nullptr;  // héros connu du registre seulement
+    in.aggressor_found = true;
+    in.aggressor_entry = entry(&g_hero, EntityRole::LocalHero);
+    d = decide(in);
+    CHECK(blocked_silent(d, Reason::HostAvatarOnGuest) && !d.impact);
+    in.guard = true;
+    CHECK(passes(decide(in)));
+}
+
+TEST("règles des dégâts 3c (3.8) : native_attacks = 0 → règle absente (comportement 3.6 : laissé)") {
+    Inputs in = guest_replica_hits_hero();
+    in.target = &g_avatar;
+    in.target_found = true;
+    in.target_entry = entry(&g_avatar, EntityRole::Avatar, 1);
+    CHECK(passes(decide(in)));
+}
+
+TEST("règles des dégâts 3b (3.8) : héros à terre → coup de réplique bloqué avec effet, pas cosmétique") {
+    Inputs in = guest_replica_hits_hero();
+    in.native_attacks = true;
+    in.hero_down = true;
+    const Decision d = decide(in);
+    CHECK(!d.cosmetic && blocked_silent(d, Reason::GuestHeroByReplica) && d.impact);
+}

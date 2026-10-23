@@ -140,7 +140,8 @@ const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motio
                                       "despawn.bin",   "aniname.bin",     "death.bin",
                                       "motion_param.bin", "weapon.bin", "weapon_sheathed.bin",
                                       "armor.bin",     "armor_removed.bin", "spawn_npc.bin", "motion_npc.bin",
-                                      "death_npc.bin", "hit_request.bin", "hit_on_guest.bin", "respawn.bin"};
+                                      "death_npc.bin", "hit_request.bin", "hit_on_guest.bin", "respawn.bin",
+                                      "npc_attack.bin"};
 
 }  // namespace
 
@@ -411,14 +412,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v14 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v15 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 14);
+    CHECK_EQ(version, 15);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 14);
+    CHECK_EQ(version, 15);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -429,12 +430,12 @@ TEST("protocole : peek_hello_version sur v14 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 14") {
+TEST("protocole : l'encodeur refuse une version autre que 15") {
     Hello h = sample_hello();
-    h.protocol_version = 13;
+    h.protocol_version = 14;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 15;
+    h.protocol_version = 16;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -495,8 +496,8 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(Bytes{0, 16}).error == DecodeError::UnknownChannel);  // segment KCP, pas du contrôle
     CHECK(dc(load_vector("unknown_type.bin")).error == DecodeError::UnknownType);
     CHECK(dr(Bytes{99}).error == DecodeError::UnknownType);
-    // Plus aucun type réservé (v14) ; types absents de la liste et types hors de leur canal.
-    for (std::uint8_t t : {std::uint8_t{4}, std::uint8_t{15}, std::uint8_t{29}}) {
+    // Aucun type réservé (depuis la v14) ; types absents de la liste et types hors de leur canal.
+    for (std::uint8_t t : {std::uint8_t{4}, std::uint8_t{15}, std::uint8_t{30}}) {
         CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
     }
     CHECK(dc(Bytes{2, 19}).error == DecodeError::UnknownType);  // Motion en contrôle
@@ -505,6 +506,7 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(Bytes{2, 22}).error == DecodeError::UnknownType);  // HitRequest en contrôle
     CHECK(dc(Bytes{2, 23}).error == DecodeError::UnknownType);  // HitOnGuest en contrôle
     CHECK(dc(Bytes{2, 25}).error == DecodeError::UnknownType);  // Respawn en contrôle
+    CHECK(dc(Bytes{2, 29}).error == DecodeError::UnknownType);  // NpcAttack en contrôle
     CHECK(dr(Bytes{1, 1, 0}).error == DecodeError::UnknownType);  // Hello en fiable
     CHECK(dr(Bytes{0}).error == DecodeError::UnknownType);
 }
@@ -563,7 +565,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 14);
+    CHECK_EQ(kProtocolVersion, 15);
     CHECK_EQ(static_cast<int>(kSpawnTypeHero), 0);
     CHECK_EQ(static_cast<int>(kSpawnTypeNpc), 1);
     CHECK_EQ(kFirstNpcNetId, 1000u);
@@ -588,6 +590,7 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::MotionParam), 26);
     CHECK_EQ(static_cast<int>(MsgType::Weapon), 27);
     CHECK_EQ(static_cast<int>(MsgType::Armor), 28);
+    CHECK_EQ(static_cast<int>(MsgType::NpcAttack), 29);
     CHECK_EQ(kHostNetId, 1u);
     CHECK_EQ(kGuestNetId, 2u);
     CHECK_EQ(static_cast<int>(RejectReason::Protocol), 1);
@@ -751,6 +754,30 @@ TEST("protocole : vecteur hit_on_guest.bin (v13) : HitOnGuest") {
     const auto u = dr(enc(HitOnGuest{0, 7}));
     const HitOnGuest* g0 = std::get_if<HitOnGuest>(&u.message);
     CHECK(u.ok() && g0 != nullptr && g0->source_net_id == 0 && g0->damage == 7);
+}
+
+// v15 (story 3.8) : le PNJ 1005 commence l'attaque 11 sur l'avatar de l'invité (cible 2).
+TEST("protocole : vecteur npc_attack.bin (v15) : NpcAttack") {
+    const Bytes b = load_vector("npc_attack.bin");
+    CHECK(b == (Bytes{0x1d, 0xed, 0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}));
+    const auto d = dr(b);
+    const NpcAttack* got = std::get_if<NpcAttack>(&d.message);
+    CHECK(d.ok() && got != nullptr);
+    if (got != nullptr) {
+        CHECK_EQ(got->net_id, 1005u);
+        CHECK_EQ(got->move, 11u);
+        CHECK_EQ(got->target_net_id, kGuestNetId);
+    }
+    CHECK(enc(NpcAttack{1005, 11, kGuestNetId}) == b);
+    Bytes trunc(b.begin(), b.end() - 1);
+    CHECK(dr(trunc).error == DecodeError::Truncated);
+    Bytes trailing = b;
+    trailing.push_back(0);
+    CHECK(dr(trailing).error == DecodeError::TrailingBytes);
+    // Le décodeur ne vérifie aucune valeur : NetId < 1000, mouvement et cible quelconques passent.
+    const auto u = dr(enc(NpcAttack{7, 0xFFFFFFFFu, 0}));
+    const NpcAttack* g7 = std::get_if<NpcAttack>(&u.message);
+    CHECK(u.ok() && g7 != nullptr && g7->net_id == 7 && g7->move == 0xFFFFFFFFu && g7->target_net_id == 0);
 }
 
 // v14 (story 3.7) : réapparition de l'invité (ordre ou accusé), pose (100, 0, −50), lacet 1,5, tick 42.
