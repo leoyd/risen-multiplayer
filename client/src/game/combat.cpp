@@ -84,6 +84,13 @@ constexpr const char* kSetNpcCurrentTarget = "?SetCurrentTarget@PSNpc@@QEAAXAEBV
 // Groupe d'une entité : le script de dégâts divise par deux les dégâts subis par un PNJ du groupe
 // « Player » (script IsInPlayerParty), dont l'avatar, créé depuis le template du héros.
 constexpr const char* kGetPartyName = "?GetPartyName@PSParty@@QEBA?AVbCString@@XZ";
+// Réaction native à un coup (recul orienté selon l'attaquant), sur le héros invité à chaque
+// HitOnGuest. `Entity` par valeur : copie construite par le mod (Entity(const Entity&)), détruite
+// par l'appelé (AD-3).
+constexpr const char* kStartStumble = "?StartStumble@PSCombatSystem@@QEBA_NVEntity@@@Z";
+constexpr const char* kEntityCopyCtor = "??0Entity@@QEAA@AEBV0@@Z";
+using StartStumbleFn = bool (*)(const Entity* self, Entity* attacker_by_value);
+using EntityCopyCtorFn = Entity* (*)(Entity* self, const Entity* other);
 constexpr const char* kGetAIMode = "??BPropertyAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
 constexpr const char* kGetLastAIMode = "??BPropertyLastAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
 constexpr const char* kSetAIMode = "??4PropertyAIMode@PSRoutine@@QEAAAEAV01@AEBW4gEAIMode@@@Z";
@@ -241,6 +248,8 @@ struct DamageAbi {
     SetEntityFn set_npc_current_target = nullptr;      // PSNpc::SetCurrentTarget(const Entity&)
     GetNameFn get_party_name = nullptr;                // PSParty::GetPartyName (bCString, sret)
     BCStringDtorFn bcstring_dtor = nullptr;
+    StartStumbleFn start_stumble = nullptr;            // PSCombatSystem::StartStumble(Entity)
+    EntityCopyCtorFn entity_copy_ctor = nullptr;
 };
 DamageAbi g_dmg;
 bool g_dmg_resolved = false;
@@ -394,6 +403,8 @@ bool resolve_damage(const char*& missing) {
                     lookup(script, kGetNpcCurrentTarget, a.get_npc_current_target, missing) &&
                     lookup(script, kSetNpcCurrentTarget, a.set_npc_current_target, missing) &&
                     lookup(script, kGetPartyName, a.get_party_name, missing) &&
+                    lookup(script, kStartStumble, a.start_stumble, missing) &&
+                    lookup(script, kEntityCopyCtor, a.entity_copy_ctor, missing) &&
                     lookup(shared_base, kBCStringDtor, a.bcstring_dtor, missing);
     if (!ok) return false;
     g_dmg = a;
@@ -694,6 +705,20 @@ bool inventory_stacks(const Entity& e, std::vector<StackInfo>& out) {
 }
 
 bool get_combat_mode(const Entity& e, int& out) { return call_int(g_abi.get_combat_mode, e, out); }
+
+bool start_stumble(const Entity& e, const Entity& attacker, bool& out) {
+    out = false;
+    if (!g_dmg_resolved || e.ptr == nullptr || attacker.ptr == nullptr) return false;
+    __try {
+        Entity copy;  // détruite par StartStumble (passage par valeur)
+        g_dmg.entity_copy_ctor(&copy, &attacker);
+        out = g_dmg.start_stumble(&e, &copy);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
+        return false;
+    }
+}
 
 bool party_name(const Entity& e, std::string& out) {
     out.clear();

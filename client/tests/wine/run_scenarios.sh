@@ -169,7 +169,8 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Script.dll|?DoDamage@PSDamage@@QEAA_NAEAVEntity@@0@Z' \
     'Script.dll|?GetCurrentTarget@PSNpc@@QEBA?AVEntity@@XZ' \
     'Script.dll|?SetCurrentTarget@PSNpc@@QEAAXAEBVEntity@@@Z' \
-    'Script.dll|?GetPartyName@PSParty@@QEBA?AVbCString@@XZ'; do
+    'Script.dll|?GetPartyName@PSParty@@QEBA?AVbCString@@XZ' \
+    'Script.dll|?StartStumble@PSCombatSystem@@QEBA_NVEntity@@@Z' 'Script.dll|??0Entity@@QEAA@AEBV0@@Z'; do
     dll=${entry%%|*}
     sym=${entry#*|}
     if grep -qaF -- "$sym" "$risen_bin/$dll"; then

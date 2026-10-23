@@ -53,3 +53,14 @@ L'avatar est créé depuis le template du héros : il est du groupe « Player »
 divisés par deux (5 au lieu de 10 par coup de Vautour, constaté en jeu). L'hôte double la perte
 mesurée quand l'avatar est de ce groupe (±1 PV sur un nombre impair). La difficulté de l'invité
 n'est pas appliquée (limite : sans effet au réglage par défaut).
+
+## Arme de l'avatar et recul de l'invité (test du 2026-10-23, 22:49)
+
+- Chez l'hôte, la main de l'avatar s'est vidée sans `Weapon` de l'invité (entre 22:49:34 et
+  22:49:39, peu après la mort d'un PNJ) : 11 `HitRequest` ignorés (« avatar sans arme en main »).
+  Cause non identifiée (événement d'animation rejouée, ou le jeu qui range l'arme). L'avatar retient
+  l'arme du dernier `Weapon` et la reprend (`HoldRightStack`) deux fois par seconde et avant chaque
+  `HitRequest`.
+- Recul : les coups natifs sur le héros invité étant bloqués, le jeu ne joue pas sa réaction.
+  L'invité appelle `PSCombatSystem::StartStumble(Entity attaquant)` (Script.dll) sur son héros à
+  chaque `HitOnGuest` non mortel, attaquant = réplique du PNJ source.

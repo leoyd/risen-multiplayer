@@ -74,7 +74,8 @@ bool resolve_inventory(const char*& missing);
 bool resolve_npc(const char*& missing);
 // Story 3.5 (Q8) : dégâts de la session, bloc facultatif en tout ou rien : gCDamage_PS::DoDamage
 // (1 argument, cible du détour) et GetAgressor (Game.dll), eCEntityProxy::GetEntity (Engine.dll),
-// PSDamage::DoDamage, PSNpc::GetCurrentTarget et SetCurrentTarget, PSParty::GetPartyName (Script.dll),
+// PSDamage::DoDamage, PSNpc::GetCurrentTarget et SetCurrentTarget, PSParty::GetPartyName,
+// PSCombatSystem::StartStumble et Entity(const Entity&) (Script.dll),
 // ~bCString (SharedBase.dll). Un échec laisse la
 // session sans dégâts synchronisés (déroge à AD-3 pour ce seul bloc). False et `missing` au premier
 // échec.
@@ -91,6 +92,9 @@ bool npc_current_target(const Entity& e, Entity& out);
 bool set_npc_current_target(const Entity& e, const Entity& target);
 // PSParty::GetPartyName (après resolve_damage), sous SEH, thread principal. Vide si sans groupe.
 bool party_name(const Entity& e, std::string& out);
+// PSCombatSystem::StartStumble(attaquant) sur `e` (après resolve_damage) : réaction native au coup,
+// orientée selon l'attaquant. `out` = retour du jeu. False sur SEH. Thread principal.
+bool start_stumble(const Entity& e, const Entity& attacker, bool& out);
 // Kill, Defeat et DownOrDeadBy* (Script_Game.dll), facultatifs : module déjà chargé par le jeu,
 // jamais par nous (sonde J2, et depuis la story 3.7 les détours DownOrDeadBy* de session). False et
 // `missing` (module ou symbole) en cas d'échec.

@@ -337,6 +337,7 @@ void apply(std::uint32_t net_id, const protocol::Guid& guid) {
         log::warn(what + " ignoré : pas d'avatar");
         return;
     }
+    avatar::rearm();  // main vidée par le jeu depuis le dernier Weapon : arme reprise
     int stack = -1;
     game::Entity weapon;
     if (!game::get_right_hold_stack(attacker, stack) || stack < 0 || !game::get_right_hold_item(attacker, weapon) ||

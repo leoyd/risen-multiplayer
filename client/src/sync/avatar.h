@@ -43,6 +43,10 @@ void die(std::uint32_t net_id);
 // vide → objet en main rangé (EquipStack), sans effet si la main est vide. Nom inconnu du jeu :
 // journalisé une fois par nom, avatar inchangé.
 void set_weapon(std::uint32_t net_id, const std::string& name);
+// Hôte, avant un HitRequest : si l'arme du dernier Weapon n'est plus en main (le jeu vide parfois
+// la main de l'avatar), la reprend (HoldRightStack). Aussi vérifié par move() deux fois par seconde.
+// True si l'arme attendue est en main. Frame seulement.
+bool rearm();
 // Équipement (story 3.2b), nom par nom : Template(nom) puis IsValid ; pile cherchée
 // (FindStackIndex) ou, à défaut, créée (CreateItems, 1) ; puis EquipStack sauf si IsStackEquiped.
 // Un nom en échec est journalisé et n'empêche pas les suivants. `equip` : avatar `net_id` (piles

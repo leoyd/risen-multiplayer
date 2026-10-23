@@ -70,6 +70,8 @@ void release_all(const std::string& cause);
 // GetEntity(GUID + 4 octets nuls) : entité native (eCEntity*), nul si introuvable. False sur SEH.
 // Frame seulement (story 3.5 : cible d'un HitRequest chez l'hôte).
 bool find_entity(const protocol::Guid& guid, void*& out);
+// Invité : entité de la réplique `net_id` (nul si inconnue ou morte). Frame seulement, jamais gardée.
+void* replica_entity(std::uint32_t net_id);
 std::size_t count();  // répliques (invité), PNJ capturés ou à capturer (hôte)
 
 }  // namespace mp::sync::npc

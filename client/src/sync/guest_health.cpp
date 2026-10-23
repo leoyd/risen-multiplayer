@@ -6,6 +6,7 @@
 #include "sync/avatar.h"
 #include "sync/hit_rules.h"
 #include "sync/hits.h"
+#include "sync/npc.h"
 
 #include <atomic>
 #include <cstdio>
@@ -61,7 +62,22 @@ void apply_hit(std::uint32_t source, std::uint32_t damage) {
     }
     log::info("[sync] HitOnGuest " + src + " appliqué : dégâts bruts " + std::to_string(damage) + ", PV " +
               std::to_string(hp) + " -> " + std::to_string(r.new_hp));
-    if (r.held) note_down(cs::kDownCauseHitOnGuest);  // story 3.7 : à terre, Death{2} par la session
+    if (r.held) {
+        note_down(cs::kDownCauseHitOnGuest);  // story 3.7 : à terre, Death{2} par la session
+        return;
+    }
+    // Réaction native au coup (recul) : les coups natifs sur le héros sont bloqués, le jeu ne la
+    // joue donc pas de lui-même. Attaquant = réplique du PNJ source ; source inconnue : rien.
+    game::Entity attacker;
+    attacker.ptr = source != 0 ? npc::replica_entity(source) : nullptr;
+    if (damage > 0 && attacker.ptr != nullptr) {
+        bool started = false;
+        if (!game::start_stumble(hero, attacker, started)) {
+            log::warn("[sync] HitOnGuest " + src + " : StartStumble a levé une exception (SEH)");
+        } else {
+            log::debug("[sync] HitOnGuest " + src + " : recul du héros, StartStumble -> " + (started ? "1" : "0"));
+        }
+    }
 }
 
 bool on_down_or_dead(int which, void* spu, void* other) noexcept {

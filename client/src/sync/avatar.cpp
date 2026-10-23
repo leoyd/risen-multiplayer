@@ -53,7 +53,12 @@ struct Entry {
     std::string pending_weapon;
     bool pending_armor_set = false;  // story 3.2c : dernier Armor reçu avant que l'inventaire soit prêt
     std::string pending_armor;
+    // Arme tenue d'après le dernier Weapon appliqué (vide : rangée). Le jeu vide parfois la main de
+    // l'avatar sans Weapon du pair (test en jeu du 2026-10-23) : reprise par reassert_weapon.
+    std::string weapon;
+    unsigned weapon_check_frames = 0;
 };
+constexpr unsigned kWeaponCheckFrames = 30;  // vérification de la main environ deux fois par seconde
 constexpr unsigned kInventoryReadyFrames = 15;  // environ 250 ms à 60 images/s
 std::vector<Entry> g_table;
 
@@ -385,11 +390,31 @@ void apply_pending_inventory(Entry& e) {
     }
 }
 
+// L'arme du dernier Weapon n'est plus en main (vidée par le jeu) : HoldRightStack de sa pile.
+// True si l'arme est en main à la sortie (ou si aucune n'est attendue).
+bool reassert_weapon(Entry& e) {
+    if (e.dead || !e.inventory_ready || e.weapon.empty()) return e.weapon.empty();
+    int held = -1;
+    if (!game::get_right_hold_stack(e.entity, held)) return false;
+    if (held >= 0) return true;
+    const auto it = e.item_stacks.find(e.weapon);
+    if (it == e.item_stacks.end()) return false;
+    bool ok = false;
+    if (!game::hold_right_stack(e.entity, it->second, ok)) return false;
+    log::info("[sync] arme : avatar " + std::to_string(e.net_id) + " : main vidée par le jeu, « " + e.weapon +
+              " » reprise (pile " + std::to_string(it->second) + ", HoldRightStack → " + (ok ? "true" : "false") + ")");
+    return ok;
+}
+
 void move(std::uint32_t net_id, const Pose& pose) {
     for (Entry& e : g_table) {
         if (e.net_id != net_id) continue;
         if (e.move_error_logged || e.dead) return;  // après une SEH, ou mort : plus de pose imposée
         if (!e.inventory_ready && ++e.frames >= kInventoryReadyFrames) apply_pending_inventory(e);
+        if (e.inventory_ready && ++e.weapon_check_frames >= kWeaponCheckFrames) {
+            e.weapon_check_frames = 0;
+            reassert_weapon(e);
+        }
         // Corps cinématique (AD-8, story 3.1) : pose de l'entité puis du corps, sans MoveTo
         // (StopMovement) ni SetGoalPose.
         // Story 3.1 (tests en jeu du 2026-10-20) : les réglages d'avatar solide du spike J2
@@ -514,6 +539,7 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
                 log::error(who + " : GetRightHoldStack a levé une exception (SEH)");
                 return;
             }
+            e.weapon.clear();
             if (held < 0) {
                 log::debug(who + " : main déjà vide, rien à ranger");
                 return;
@@ -530,6 +556,7 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
         int stack = -1;
         const char* how = nullptr;
         if (!avatar_stack(e, name, who, stack, how)) return;
+        e.weapon = name;
         bool ok = false;
         if (!game::hold_right_stack(e.entity, stack, ok)) {
             log::error(who + " : HoldRightStack a levé une exception (SEH)");
@@ -661,6 +688,8 @@ bool local_armor(std::string& name) {
 bool present() { return !g_table.empty(); }
 
 void* entity() { return g_table.empty() ? nullptr : g_table.front().entity.ptr; }
+
+bool rearm() { return !g_table.empty() && reassert_weapon(g_table.front()); }
 
 bool teleport_player(const Pose& pose, const char* what) {
     game::Entity player;

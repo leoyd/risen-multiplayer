@@ -494,4 +494,9 @@ void release_all(const std::string& cause) {
 
 std::size_t count() { return g_replicas.size() + g_captured.size() + g_wanted.size(); }
 
+void* replica_entity(std::uint32_t net_id) {
+    const auto it = g_replicas.find(net_id);
+    return it == g_replicas.end() || it->second.dead ? nullptr : it->second.entity.ptr;
+}
+
 }  // namespace mp::sync::npc
