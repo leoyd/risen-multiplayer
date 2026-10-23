@@ -525,6 +525,10 @@ void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target) {
                              std::to_string(target) + ")";
     // Cible nulle ou introuvable : effacée (Entity nulle), sinon StartMove viserait l'ancienne cible
     // de la réplique, peut-être le héros local.
+    // Test du 2026-10-24 : coups locaux refusés (DoDamage -> 0, ni sang ni recul) : le script
+    // CanDoMeleeDamage exige que la cible PNJ (PSNpc, distincte de celle de PSCombatSystem) soit
+    // l'entité frappée (docs/re/degats-hote.md). Les deux sont fixées.
+    const bool npc_target_ok = game::set_npc_current_target(r.entity, aim);
     bool target_set = false;
     if (!game::combat_set_current_target(r.entity, aim, target_set)) {
         if (!g_attack_error_logged) {
@@ -570,7 +574,7 @@ void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target) {
                      ", HoldRightStack -> " + (held_ok ? "1" : "0") + ", StartMove -> " + (started ? "1" : "0");
         }
     }
-    log::debug(what + " : SetCurrentTarget -> " +
+    log::debug(what + " : PSNpc::SetCurrentTarget " + (npc_target_ok ? "fait" : "en échec") + ", SetCurrentTarget -> " +
                (aim.ptr == nullptr ? std::string("(effacée) ") : std::string()) + (target_set ? "1" : "0") +
                ", StartMove -> " + (started ? "1" : "0") + retry);
 }
