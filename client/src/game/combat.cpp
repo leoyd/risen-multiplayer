@@ -81,6 +81,9 @@ constexpr const char* kDoDamage = "?DoDamage@PSDamage@@QEAA_NAEAVEntity@@0@Z";
 // pas l'entité frappée (docs/re/degats-hote.md).
 constexpr const char* kGetNpcCurrentTarget = "?GetCurrentTarget@PSNpc@@QEBA?AVEntity@@XZ";
 constexpr const char* kSetNpcCurrentTarget = "?SetCurrentTarget@PSNpc@@QEAAXAEBVEntity@@@Z";
+// Groupe d'une entité : le script de dégâts divise par deux les dégâts subis par un PNJ du groupe
+// « Player » (script IsInPlayerParty), dont l'avatar, créé depuis le template du héros.
+constexpr const char* kGetPartyName = "?GetPartyName@PSParty@@QEBA?AVbCString@@XZ";
 constexpr const char* kGetAIMode = "??BPropertyAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
 constexpr const char* kGetLastAIMode = "??BPropertyLastAIMode@PSRoutine@@QEBA?BW4gEAIMode@@XZ";
 constexpr const char* kSetAIMode = "??4PropertyAIMode@PSRoutine@@QEAAAEAV01@AEBW4gEAIMode@@@Z";
@@ -236,6 +239,8 @@ struct DamageAbi {
     DoDamageFn do_damage = nullptr;       // PSDamage::DoDamage(Entity&, Entity&)
     GetEntityRetFn get_npc_current_target = nullptr;  // PSNpc::GetCurrentTarget (sret)
     SetEntityFn set_npc_current_target = nullptr;      // PSNpc::SetCurrentTarget(const Entity&)
+    GetNameFn get_party_name = nullptr;                // PSParty::GetPartyName (bCString, sret)
+    BCStringDtorFn bcstring_dtor = nullptr;
 };
 DamageAbi g_dmg;
 bool g_dmg_resolved = false;
@@ -373,8 +378,12 @@ bool resolve_damage(const char*& missing) {
     HMODULE script = GetModuleHandleW(L"Script.dll");
     HMODULE engine = GetModuleHandleW(L"Engine.dll");
     HMODULE game = GetModuleHandleW(L"Game.dll");
-    if (script == nullptr || engine == nullptr || game == nullptr) {
-        missing = script == nullptr ? "Script.dll" : (engine == nullptr ? "Engine.dll" : "Game.dll");
+    HMODULE shared_base = GetModuleHandleW(L"SharedBase.dll");
+    if (script == nullptr || engine == nullptr || game == nullptr || shared_base == nullptr) {
+        missing = script == nullptr   ? "Script.dll"
+                  : engine == nullptr ? "Engine.dll"
+                  : game == nullptr   ? "Game.dll"
+                                      : "SharedBase.dll";
         return false;
     }
     DamageAbi a;
@@ -383,7 +392,9 @@ bool resolve_damage(const char*& missing) {
                     lookup(engine, kProxyGetEntity, a.proxy_get_entity, missing) &&
                     lookup(script, kDoDamage, a.do_damage, missing) &&
                     lookup(script, kGetNpcCurrentTarget, a.get_npc_current_target, missing) &&
-                    lookup(script, kSetNpcCurrentTarget, a.set_npc_current_target, missing);
+                    lookup(script, kSetNpcCurrentTarget, a.set_npc_current_target, missing) &&
+                    lookup(script, kGetPartyName, a.get_party_name, missing) &&
+                    lookup(shared_base, kBCStringDtor, a.bcstring_dtor, missing);
     if (!ok) return false;
     g_dmg = a;
     g_dmg_resolved = true;
@@ -683,6 +694,16 @@ bool inventory_stacks(const Entity& e, std::vector<StackInfo>& out) {
 }
 
 bool get_combat_mode(const Entity& e, int& out) { return call_int(g_abi.get_combat_mode, e, out); }
+
+bool party_name(const Entity& e, std::string& out) {
+    out.clear();
+    if (!g_dmg_resolved || e.ptr == nullptr) return false;
+    char buf[255];
+    std::size_t len = 0;
+    if (!name_into(g_dmg.get_party_name, g_dmg.bcstring_dtor, e, buf, sizeof buf, len)) return false;
+    out.assign(buf, len);
+    return true;
+}
 
 bool get_entity_name(const Entity& e, std::string& out) {
     out.clear();

@@ -39,3 +39,17 @@ la remplace par le PNJ frappé (`PSNpc::SetCurrentTarget`), puis la rétablit. `
   utilisent les compétences de l'agresseur (`PSSkills::GetTotal`). `(Amount + Bonus) × Multiplier`
   du PS reçu par le détour valait 0 pour tous les coups observés (Nautilus, Vautours). D'où la
   mesure sur l'avatar plutôt qu'un calcul par script.
+
+## Dégâts divisés par deux sur l'avatar (groupe « Player »)
+
+Script générique `DoDamage` (Script_Game.dll, `0x1800d8060`), sur la cible :
+`dégâts = max(brut − GetProtection(type), DamageMultiplier × 10)`, puis :
+- cible = joueur (`IsPlayer`) : × facteur de difficulté (`/Game/Difficulty` : 0 → 0,5, 1 → 1,0,
+  2 → 1,5 ; défaut 1) ;
+- sinon : divisés par deux si le script `IsInPlayerParty` rend 1 (`PSParty::GetPartyName() ==
+  "Player"`) ou si `PartyMemberType == 6`.
+
+L'avatar est créé depuis le template du héros : il est du groupe « Player », donc ses dégâts étaient
+divisés par deux (5 au lieu de 10 par coup de Vautour, constaté en jeu). L'hôte double la perte
+mesurée quand l'avatar est de ce groupe (±1 PV sur un nombre impair). La difficulté de l'invité
+n'est pas appliquée (limite : sans effet au réglage par défaut).

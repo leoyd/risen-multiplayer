@@ -79,7 +79,9 @@ Decision decide(const Inputs& in);
 // Dégâts d'un coup mesuré sur l'avatar (hôte) : PV avant − PV après ; ≤ 0 → 0 ; plafonné à
 // kMaxRawDamage. Les PV avant sont les PV max (fixés le temps du coup) : la perte n'est pas bornée
 // par les PV affichés de l'avatar. Armure de l'avatar (celle de l'invité) comprise.
-std::uint32_t measured_damage(int hp_before, int hp_after);
+// `player_party` : l'avatar est du groupe « Player » ; le script de dégâts du jeu divise alors par
+// deux les dégâts d'un PNJ (IsInPlayerParty), que le joueur subirait entiers : la perte est doublée.
+std::uint32_t measured_damage(int hp_before, int hp_after, bool player_party);
 // damage = 0 → pas d'écriture ; hp ≤ 1 → pas d'écriture, held ; hp − damage ≤ 0 → 1, held ;
 // sinon hp − damage.
 GuestHp guest_hp_after(int hp, std::uint32_t damage);

@@ -60,8 +60,9 @@ Decision decide(const Inputs& in) {
     return d;  // 5.
 }
 
-std::uint32_t measured_damage(int hp_before, int hp_after) {
-    const long long v = static_cast<long long>(hp_before) - static_cast<long long>(hp_after);
+std::uint32_t measured_damage(int hp_before, int hp_after, bool player_party) {
+    long long v = static_cast<long long>(hp_before) - static_cast<long long>(hp_after);
+    if (player_party) v *= 2;
     if (v <= 0) return 0;
     if (v >= static_cast<long long>(kMaxRawDamage)) return kMaxRawDamage;
     return static_cast<std::uint32_t>(v);

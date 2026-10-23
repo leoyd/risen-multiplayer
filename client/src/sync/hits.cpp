@@ -222,6 +222,8 @@ bool measure(void* damage_ps, void* target, std::uint32_t source, DamageFn origi
         }
         return true;
     }
+    std::string party;
+    const bool player_party = game::party_name(avatar, party) && party == "Player";
     bool result = false;
     {
         ApplyGuard guard;  // coups imbriqués laissés
@@ -232,13 +234,13 @@ bool measure(void* damage_ps, void* target, std::uint32_t source, DamageFn origi
     int after = max;
     const bool after_ok = game::get_hit_points(avatar, after);
     game::set_hit_points(avatar, before, game::kSkillModifierSet);
-    const std::uint32_t damage = after_ok ? hit_rules::measured_damage(max, after) : 0;
+    const std::uint32_t damage = after_ok ? hit_rules::measured_damage(max, after, player_party) : 0;
     if (damage > 0) queue_guest_hit(source, damage);
     log::info("[sync] coup sur l'avatar invité mesuré (source " +
               (source != 0 ? "PNJ " + std::to_string(source) : std::string("inconnue")) + ") : DoDamage -> " +
               (result ? "1" : "0") + ", dégâts " + (after_ok ? std::to_string(damage) : std::string("illisibles")) +
-              (damage > 0 ? " (HitOnGuest)" : " (rien d'émis)") + ", PV de l'avatar rendus à " +
-              std::to_string(before));
+              (player_party ? " (perte doublée : groupe Player)" : "") + (damage > 0 ? " (HitOnGuest)" : " (rien d'émis)") +
+              ", PV de l'avatar rendus à " + std::to_string(before));
     return result;
 }
 

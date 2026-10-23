@@ -276,12 +276,15 @@ TEST("règles des dégâts 3b : invité, garde active ou hors session → laiss�
     CHECK(passes(decide(in)));
 }
 
-TEST("dégâts mesurés : 100 → 82 = 18 ; 100 → -30 = 130 ; gain ou égalité → 0 ; énorme → plafond") {
-    CHECK_EQ(measured_damage(100, 82), 18u);
-    CHECK_EQ(measured_damage(100, -30), 130u);  // PV sous 0 : la perte entière compte
-    CHECK_EQ(measured_damage(100, 100), 0u);
-    CHECK_EQ(measured_damage(100, 120), 0u);
-    CHECK_EQ(measured_damage(2000000, -2000000), kMaxRawDamage);
+TEST("dégâts mesurés : 100 → 82 = 18 ; 100 → -30 = 130 ; gain ou égalité → 0 ; groupe Player ×2 ; plafond") {
+    CHECK_EQ(measured_damage(100, 82, false), 18u);
+    CHECK_EQ(measured_damage(100, -30, false), 130u);  // PV sous 0 : la perte entière compte
+    CHECK_EQ(measured_damage(100, 100, false), 0u);
+    CHECK_EQ(measured_damage(100, 120, false), 0u);
+    CHECK_EQ(measured_damage(80, 75, true), 10u);  // divisé par deux par le jeu (IsInPlayerParty)
+    CHECK_EQ(measured_damage(80, 80, true), 0u);
+    CHECK_EQ(measured_damage(2000000, -2000000, false), kMaxRawDamage);
+    CHECK_EQ(measured_damage(1000000, 0, true), kMaxRawDamage);
 }
 
 TEST("PV invité : (100, 18) → 82 ; (10, 18) → 1 held ; (1, 5) → rien, held ; (50, 0) → rien") {
