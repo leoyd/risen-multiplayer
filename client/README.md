@@ -770,6 +770,27 @@ Prérequis : comme la 3.6, plus `cd tools/fake-guest && go build`.
 6. **Deux machines, chute ou eau profonde** : Warn `mort native du héros …`, `Respawn` refusé, fin de
    session au rechargement de l'invité, aucun crash (H5).
 
+### Overlay à l'écran (rôle et état de session)
+
+Une ligne permanente en haut à gauche de l'image dit quelle fenêtre est l'hôte et laquelle est
+l'invité : `HÔTE · <pseudo> · <état>` (or) ou `INVITÉ · <pseudo> · <état>` (cyan), avec une ombre
+noire. États : `hors partie` (Inactive), `en attente d’un invité` (Hosting),
+`connexion à <ip>:<port>…` (Connecting), `en session` (InSession), `session terminée` (Ended).
+- Dessinée par un détour de `IDirect3DDevice9::Present` (vtable lue sur un device factice créé
+  à l'installation, `d3d9.dll` résolue dynamiquement) avec `ID3DXFont` (`D3DXCreateFontW` de
+  `d3dx9_39.dll`, déjà chargée par le jeu, interface déclarée à la main) ; `Reset` est détourné
+  pour relâcher puis recréer les ressources de la police. Aucun appel au jeu depuis ces détours.
+- Clé `overlay` (défaut `1`) : à `0`, aucun détour (`[overlay] désactivé (overlay = 0)`).
+  Jamais posé en mode sonde (`probe = 1`).
+- Facultatif : un échec (`d3dx9_39.dll` absente, device factice impossible, MinHook) donne
+  `[overlay] inactif : …` et la session continue sans overlay.
+- Log attendu : `[overlay] détours posés (IDirect3DDevice9::Present, Reset)` au chargement,
+  puis `[overlay] premier dessin, thread N` au premier `Present`.
+
+**À valider en jeu** (deux Risen sur la même machine, en fenêtré) : chaque fenêtre affiche son
+rôle et son état ; l'invité passe à `en session` quand l'hôte l'accepte ; le texte reste affiché
+après un changement de résolution. `grep '\[overlay\]'` dans les deux logs.
+
 ### Fin de session en jeu (story 1.5, une machine)
 
 Prérequis : `role = host`, `probe = 0`, **`log_level = debug`**, une sauvegarde rapide.
@@ -859,12 +880,12 @@ session est installée (hook `OnProcess` seul). Sonde et session sont exclusives
 
 ```
 cmake/clang-cl-xwin.cmake   toolchain croisée Windows x64
-src/core/                   logique pure (config, version, codec du protocole, machine à états de session), testée sous Linux
+src/core/                   logique pure (config, version, codec du protocole, machine à états de session, texte de l'overlay), testée sous Linux
 src/common/                 log
 src/net/                    transport UDP + KCP : socket, canaux, thread réseau (testé sous Linux et Wine)
 src/game/                   adaptateur ABI du jeu (GetProcAddress) — seul code qui appelle le jeu
 src/sync/                   pilote de session (tick par frame) ; filtre PlayMotion (AnimFilter) ; sonde du spike J1
-src/win/                    ScriptInit, hooks MinHook
+src/win/                    ScriptInit, hooks MinHook, overlay à l'écran (détour de Present)
 third_party/minhook/        MinHook, figé sur un commit (voir VERSION.txt)
 third_party/kcp/            KCP 2.1.1, figé sur un commit (voir VERSION.txt), compilé dans mp_net
 tests/                      tests unitaires (dont vecteurs de ../protocol/vectors/) (mini-framework maison, sans dépendance) + wine/

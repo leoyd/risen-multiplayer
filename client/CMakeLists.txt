@@ -17,6 +17,7 @@ add_library(mp_core STATIC
     src/core/protocol.cpp
     src/core/session.cpp
     src/core/interpolation.cpp
+    src/core/overlay_text.cpp
     src/core/version.cpp)
 target_include_directories(mp_core PUBLIC src)
 
@@ -77,6 +78,7 @@ if(WIN32)
         src/sync/hit_rules.cpp
         src/sync/session.cpp
         src/win/watchdog.cpp
+        src/win/overlay.cpp
         ${MINHOOK_SOURCES})
     target_include_directories(Script_Multiplayer PRIVATE third_party/minhook/include)
     # USER32 : GetAsyncKeyState / GetForegroundWindow (touches F9/F10 de la sonde).
@@ -124,6 +126,7 @@ else()
         tests/test_local_capture.cpp
         tests/test_motion_desc.cpp
         tests/test_net.cpp
+        tests/test_overlay_text.cpp
         tests/test_protocol.cpp
         tests/test_session.cpp
         tests/test_version.cpp

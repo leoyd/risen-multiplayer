@@ -9,6 +9,8 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
+#include <string>
 
 #include "core/config.h"
 #include "core/version.h"
@@ -23,5 +25,11 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
 // Hook OnProcess, thread principal, une fois par appel. Ne lève jamais d'exception : un échec
 // journalise la cause et laisse le jeu en solo.
 void on_frame() noexcept;
+
+// Overlay à l'écran : après chaque tick, le texte (core/overlay_text) est passé à `sink` s'il a
+// changé depuis le dernier appel. Branché par win/script_init sur win::overlay::set_text (sync/
+// n'en dépend pas) ; nul = pas d'overlay. À appeler depuis ScriptInit, avant la première frame.
+using OverlaySink = void (*)(const std::string& utf8, std::uint32_t argb);
+void set_overlay_sink(OverlaySink sink);
 
 }  // namespace mp::sync::session

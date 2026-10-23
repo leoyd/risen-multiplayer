@@ -251,3 +251,27 @@ TEST("config : damage_hook invalide -> erreur nommant le champ") {
         CHECK_EQ(r.error_field, std::string("damage_hook"));
     }
 }
+
+TEST("config : overlay absent -> 1 par défaut ; 0, 1, vide") {
+    CHECK(parse_config("role=host\n").config.overlay);
+    const auto zero = parse_config("role=host\noverlay = 0\n");
+    CHECK(zero.ok);
+    CHECK(!zero.config.overlay);
+    const auto one = parse_config("role=guest\nhost_ip=1.2.3.4\noverlay = 1\n");
+    CHECK(one.ok);
+    CHECK(one.config.overlay);
+    const auto empty = parse_config("role=host\noverlay =\n");
+    CHECK(empty.ok);
+    CHECK(empty.config.overlay);
+    CHECK(empty.warnings.empty());
+}
+
+TEST("config : overlay invalide -> erreur nommant le champ") {
+    for (const char* v : {"2", "oui", "true", "-1"}) {
+        const auto r = parse_config(std::string("role=host\noverlay=") + v + "\n");
+        CHECK(!r.ok);
+        CHECK_EQ(r.error_field, std::string("overlay"));
+        CHECK_EQ(r.error_value, std::string(v));
+        CHECK_EQ(r.error_message, std::string("valeurs possibles : 0, 1"));
+    }
+}

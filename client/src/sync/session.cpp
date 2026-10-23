@@ -1,6 +1,7 @@
 #include "sync/session.h"
 
 #include "common/log.h"
+#include "core/overlay_text.h"
 #include "core/session.h"
 #include "game/combat.h"
 #include "game/entity.h"
@@ -17,6 +18,7 @@
 #endif
 #include <windows.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
@@ -40,6 +42,12 @@ bool g_player_error_logged = false;
 bool g_running_error_logged = false;
 bool g_dead_error_logged = false;
 LARGE_INTEGER g_qpc_frequency{};
+// Overlay à l'écran : pseudo et adresse de l'hôte (texte), dernier texte poussé.
+std::atomic<OverlaySink> g_overlay_sink{nullptr};
+std::string g_overlay_nickname;
+std::string g_overlay_host_ip;
+std::uint16_t g_overlay_port = kDefaultPort;
+std::string g_overlay_text;
 std::vector<cs::Input> g_inputs;  // réutilisé d'une frame à l'autre
 
 // Captures du héros local (story 2.4) : PS suivi par l'AnimFilter, noms des ressources (vidés
@@ -378,6 +386,17 @@ void log_keepalives() {
     }
 }
 
+// Overlay : texte recalculé après le tick, poussé seulement s'il change (aucun appel au jeu).
+void push_overlay() {
+    const OverlaySink sink = g_overlay_sink.load(std::memory_order_acquire);
+    if (sink == nullptr) return;
+    std::string text = core::overlay_text(g_role, g_overlay_nickname, g_session->state(), g_overlay_host_ip,
+                                          g_overlay_port);
+    if (text == g_overlay_text) return;
+    g_overlay_text = std::move(text);
+    sink(g_overlay_text, core::overlay_color(g_role));
+}
+
 void frame() {
     const cs::State state = g_session->state();
     cs::World world = read_world(state);
@@ -422,6 +441,7 @@ void frame() {
     // Filet de sécurité : hors session, aucune réplique ne reste au registre (ReleaseNpc déjà
     // exécutés à Ended).
     if (g_session->state() != cs::State::InSession) npc::release_all("hors session");
+    push_overlay();
 }
 
 }  // namespace
@@ -435,6 +455,9 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
         return;
     }
     g_role = config.role;
+    g_overlay_nickname = config.nickname;
+    g_overlay_host_ip = config.host_ip;
+    g_overlay_port = config.port;
     cs::Settings s;
     s.role = config.role;
     s.host_ip = config.host_ip;
@@ -456,6 +479,8 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
               ") : démarrage au chargement d'une partie");
 }
 
+void set_overlay_sink(OverlaySink sink) { g_overlay_sink.store(sink, std::memory_order_release); }
+
 void on_frame() noexcept {
     if (g_session == nullptr || g_broken) return;
     try {
@@ -466,6 +491,13 @@ void on_frame() noexcept {
             log::error(std::string("[sync] exception dans la session (état ") + cs::state_name(g_session->state()) +
                        ") : abandon, retour au solo");
             if (g_transport != nullptr) g_transport->stop();
+            // Overlay : dernier texte « session terminée », plus aucun push ensuite (g_broken).
+            const OverlaySink sink = g_overlay_sink.load(std::memory_order_acquire);
+            if (sink != nullptr) {
+                sink(core::overlay_text(g_role, g_overlay_nickname, cs::State::Ended, g_overlay_host_ip,
+                                        g_overlay_port),
+                     core::overlay_color(g_role));
+            }
         } catch (...) {
         }
     }

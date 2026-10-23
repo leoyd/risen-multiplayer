@@ -97,6 +97,17 @@ expect_log "damage_hook = 0 : détour non posé" "$d" "\[hooks\] point d'accroch
 expect_no_log "damage_hook = 0 : pas de détour" "$d" "point d'accroche des dégâts posé"
 expect_log "damage_hook = 0 : hooks de session installés" "$d" "hooks de session installés (OnProcess, PlayMotion, SetRagDollEnabled, locomotion EMotionFX, gCScriptRoutine_PS::OnProcess)"
 
+# Overlay à l'écran : posé par défaut (device factice sur le d3d9 du préfixe Wine) ; sans GPU, Warn
+# nommé et session intacte. overlay = 0 : aucun détour, ligne Info.
+expect_log "overlay par défaut : posé ou inactif nommé" "$d" "\[overlay\] \(détours posés (IDirect3DDevice9::Present, Reset)\|inactif : \)"
+expect_no_log "overlay par défaut : d3dx9_39.dll chargée" "$d" "\[overlay\] inactif : d3dx9_39.dll non chargée"
+expect_no_log "overlay par défaut : D3DXCreateFontW résolue" "$d" "\[overlay\] inactif : D3DXCreateFontW introuvable"
+d=$(setup sans_overlay $'role = host\noverlay = 0')
+run "overlay = 0" "$d"
+expect_log "overlay = 0 : désactivé" "$d" "\[overlay\] désactivé (overlay = 0)"
+expect_no_log "overlay = 0 : pas de détour" "$d" "\[overlay\] détours posés"
+expect_log "overlay = 0 : session prête" "$d" "\[sync\] session prête (rôle hôte)"
+
 d=$(setup sonde_on $'role = host\nprobe = 1')
 run "sonde on" "$d"
 expect_log "probe = 1 : hooks installés" "$d" "hooks installés (OnProcess, PlayMotion, SetRagDollEnabled)"
@@ -105,6 +116,7 @@ expect_no_log "probe = 1 : inventaire de session non résolu" "$d" "inventaire d
 expect_no_log "probe = 1 : PNJ de session non résolus" "$d" "PNJ de session résolus"
 expect_no_log "probe = 1 : pas de hook de session" "$d" "hooks de session installés"
 expect_no_log "probe = 1 : aucune session" "$d" "\[sync\]"
+expect_no_log "probe = 1 : pas d'overlay" "$d" "\[overlay\]"
 # Spike J2 (story 3.0) : hooks facultatifs. Le banc ne charge jamais Script_Game.dll (et le mod
 # ne la charge pas lui-même) : hook Routine posé, expérience Q7 nommée inactive, sonde J1 intacte.
 expect_log "probe = 1 : J2 : hook Routine posé" "$d" "\[hooks\] J2 : hook Routine posé (Num4)"

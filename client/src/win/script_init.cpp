@@ -24,6 +24,7 @@
 #include "common/log.h"
 #include "sync/session.h"
 #include "win/hooks.h"
+#include "win/overlay.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -256,6 +257,13 @@ void start_session() {
         }
     }
     mp::sync::session::configure(g_config, fingerprint, MP_MOD_VERSION);
+    // Overlay à l'écran (rôle, pseudo, état) : facultatif, un échec laisse la session intacte.
+    // Jamais en mode sonde (start_session n'est appelée qu'avec probe = 0).
+    if (!g_config.overlay) {
+        mp::log::info("[overlay] désactivé (overlay = 0)");
+    } else if (mp::win::overlay::install()) {
+        mp::sync::session::set_overlay_sink(&mp::win::overlay::set_text);
+    }
 }
 
 void initialize() {

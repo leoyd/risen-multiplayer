@@ -234,3 +234,10 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-7-a-terre-reapparition.md`
   summary: Hypothèses non vérifiées en jeu : `Entity::MoveTo` du héros en cours de partie, même en combat (H1), `SetHitPoints(GetHitPointsMax, fixer)` remplit la jauge (H2), la pose lue à la frame suivant la téléportation est la nouvelle (H3, sinon l'accusé date trop tôt et l'avatar repasse un instant sur l'ancienne position), `DownOrDeadBy*` voit le héros dans `other` pour les projectiles et l'inferno (H4).
   evidence: Rétro-ingénierie statique et banc seulement ; étapes 2, 4 et 5 du « Test en jeu à faire » de la spec 3.7.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-overlay-role.md`
+  summary: Tester sous Linux le calcul du texte de l'overlay et son envoi au sink seulement quand il change (extraire `push_overlay` dans `core/`).
+  evidence: `sync/session.cpp` n'est compilé que dans la DLL et le banc Wine ne fait aucun tick : un sink jamais branché ou un test d'égalité inversé passerait tous les tests.
+- source_spec: `_bmad-output/implementation-artifacts/spec-overlay-role.md`
+  summary: Si Risen présente par `IDirect3DSwapChain9::Present`, détourner aussi cette entrée (medium, non vérifié).
+  evidence: à trancher au premier test en jeu : `[overlay] détours posés` sans `[overlay] premier dessin` dans le log.
