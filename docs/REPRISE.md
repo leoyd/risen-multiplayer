@@ -1,4 +1,4 @@
-# Reprise du travail — état au 2026-10-23 (soir)
+# Reprise du travail — état au 2026-10-24
 
 Note de passation : où en est le projet et quoi faire à la prochaine session. Le détail de chaque livraison est dans sa spec, sous `_bmad-output/implementation-artifacts/spec-*.md`.
 
@@ -15,16 +15,20 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 | 3.2b | Équipement de l’invité : `guest_equipment`, héros invité, avatar équipé chez l’hôte (protocole toujours v7) | fait, **avatar validé en jeu sur une machine** le 2026-10-21 ; équipement de l’avatar différé de 15 frames (`docs/re/equipement.md`) ; héros d’un invité réel non testé |
 | 3.2c | Armure portée, transmise à l’avatar dans les deux sens (message `Armor`, protocole **v8**) | fait, **validé en jeu sur une machine** le 2026-10-21 (changements d’armure suivis, tunique de retour quand l’armure est retirée) |
 | 3.3 | Répliques des PNJ : apparition, position, PV (`Spawn{1}` avec GUID, protocole **v9**) | fait ; **côté hôte testé en jeu** le 2026-10-22 (annonces, GUID, PV) ; correctif : délai de grâce de 2 s pour les PNJ absents de la liste du moteur (`8887fe1`), **revérifié en jeu** le 2026-10-22 (retraits espacés, tous « absent de la liste depuis 2 s », 73 annonces pour 55 retraits en 2 min de va-et-vient) ; côté invité (GUID, IA figée) seulement testable à deux machines |
-| 3.4 | Répliques des PNJ : animations (protocole **v10**) | fait ; côté invité vu en jeu au premier test à deux machines le 2026-10-23 (session coupée par timeout pendant une cinématique, corrigé en 3.4a) ; branche `auto/epic-3` |
-| 3.4a | Robustesse de session (heartbeat de secours, PNJ en avance, fin de monde) | fait, non testé en jeu, branche `auto/epic-3` |
-| 3.4b | Mort des répliques de PNJ sans `Kill` natif (protocole **v11**) | fait, non testé en jeu, branche `auto/epic-3` |
-| 3.5 | Dégâts de l’invité sur les monstres (`HitRequest`, protocole **v12**) | fait, non testé en jeu, branche `auto/epic-3` |
-| 3.6 | Dégâts subis par l’invité (`HitOnGuest`, protocole **v13**) | fait, non testé en jeu, branche `auto/epic-3` |
-| 3.7 | À terre et réapparition de l’invité (`Respawn` avec accusé, protocole **v14**) ; mort native (chute, eau profonde) = limite documentée | fait, non testé en jeu, branche `auto/epic-3` (procédure : `client/README.md`, « À terre et réapparition ») |
+| 3.4 | Répliques des PNJ : animations (protocole **v10**) | fait, **validé en jeu** (deux instances locales, 2026-10-23/24) |
+| 3.4a | Robustesse de session (heartbeat de secours, PNJ en avance, fin de monde) | fait ; reconnexion après rechargement de l’invité vue en jeu le 2026-10-24 |
+| 3.4b | Mort des répliques de PNJ sans `Kill` natif (protocole **v11**) | fait, **validé en jeu** (ragdoll chez l’invité) |
+| 3.5 | Dégâts de l’invité sur les monstres (`HitRequest`, **v12**) | fait, **validé en jeu** après correctifs : `CanDoMeleeDamage` (cible PSNpc de l’avatar), arme de l’avatar reprise si le jeu la range |
+| 3.6 | Dégâts subis par l’invité (`HitOnGuest`, **v13**) | fait, **validé en jeu** après correctifs : coup **mesuré** sur l’avatar (dégâts bruts nuls pour les monstres), perte doublée dans le groupe « Player », effet d’impact des coups bloqués |
+| 3.7 | À terre et réapparition de l’invité (`Respawn` avec accusé, **v14**) | fait, **validé en jeu** |
+| 3.8 | Attaques natives des répliques chez l’invité (`NpcAttack`, **v15**) | fait, **validé en jeu** le 2026-10-24 : sang, recul et flash chez l’invité (griffes `It_Fist_Monster` créées, cibles PSCombatSystem et PSNpc) |
+| 3.8b | Attaques natives de l’avatar chez l’hôte (`NpcAttack` bidirectionnel) | fait, validé en jeu (sang chez l’hôte sur ~30 % des coups) ; correctif « mouvement local arrêté » (`2558900`) en test |
 
-- **Branches** :
-  - `main` est à `be50231` (story 3.3 revérifiée en jeu), identique à `origin/main`.
-  - tout le travail des stories 3.4 à 3.7 est fusionné dans `auto/epic-3` (8 commits d’avance sur `main`, dont `f21a407` : PRD), **rien de poussé**. Les branches `story/3-4-*` à `story/3-7-*` sont des étapes intermédiaires, déjà contenues dans `auto/epic-3`.
+- **Branches** (rien de poussé) :
+  - `main` est à `be50231` (story 3.3), identique à `origin/main`.
+  - `auto/epic-3` : stories 3.4 à 3.7, correctifs du test en jeu, overlay (`c03b61d`), script d’installation locale.
+  - `story/3-8-attaques-natives-repliques` (depuis `auto/epic-3`) puis `story/3-8b-attaques-natives-avatar` (depuis la 3.8) : branche de travail courante, à fusionner dans `auto/epic-3` puis `main`.
+- **Banc de test local** (depuis le 2026-10-23) : deux copies du jeu, `~/Games/Risen-host` et `~/Games/Risen-invite` (préfixes Wine `~/Games/Risen-*-pfx`), lancées ensemble par `~/Games/lancer-risen-coop.sh`. `tools/installer-local.sh` y installe la DLL et les configs avant chaque test. Overlay à l’écran (rôle, pseudo, état de session), clé `overlay`.
 
 ## Décisions de l’utilisateur à ne pas rediscuter
 
@@ -41,9 +45,10 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre
 
-1. **Dérouler [`docs/test-epic-3.md`](test-epic-3.md)** sur la branche `auto/epic-3` : préparation (compilation, DLL identiques des deux côtés, `multiplayer.ini`, overlay Steam désactivé), partie A seul (Risen en hôte + faux invité), partie B à deux avec Stone, puis la grille de résultats et les extraits de logs du §8.
-2. **Corriger** ce que le test met en défaut, story par story (specs `_bmad-output/implementation-artifacts/spec-3-4*.md` à `spec-3-7-a-terre-reapparition.md`).
-3. **Fusionner `auto/epic-3` dans `main`** une fois le test passé, puis pousser si l’utilisateur le demande.
+1. Lire le résultat du test du correctif `2558900` (course en diagonale de l’avatar pendant une attaque native) et le bug signalé « épée de l’hôte toujours sortie chez l’invité après un rechargement » (non reproduit dans les logs, test ciblé demandé).
+2. Finir `docs/test-epic-3.md` : B9 (butin), B10 (pause Échap de l’invité), B11 et B12 (chargements rapides).
+3. Fusionner la 3.8b dans `auto/epic-3`, puis dans `main` ; régénérer `epic-3-context.md` (reports dans `deferred-work.md`).
+4. Pistes : orientation de l’avatar vers sa cible avant `StartMove` (sang chez l’hôte sur ~30 % des coups) ; validation à deux machines avec Stone.
 
 ## Points ouverts à vérifier en jeu
 
