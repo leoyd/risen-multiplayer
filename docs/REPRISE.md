@@ -1,4 +1,4 @@
-# Reprise du travail — état au 2026-10-24
+# Reprise du travail — état au 2026-10-25
 
 Note de passation : où en est le projet et quoi faire à la prochaine session. Le détail de chaque livraison est dans sa spec, sous `_bmad-output/implementation-artifacts/spec-*.md`.
 
@@ -27,6 +27,18 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 - **Branches** : `main` contient l’epic 3 complète (code jusqu’à `d7e6593`, puis la documentation de clôture), 29 commits d’avance sur `origin/main`, **rien de poussé**. `auto/epic-3` et les branches `story/3-*` sont contenues dans `main`.
 - **Banc de test local** (depuis le 2026-10-23) : deux copies du jeu, `~/Games/Risen-host` et `~/Games/Risen-invite` (préfixes Wine `~/Games/Risen-*-pfx`), lancées ensemble par `~/Games/lancer-risen-coop.sh`. `tools/installer-local.sh` y installe la DLL et les configs avant chaque test. Overlay à l’écran (rôle, pseudo, état de session), clé `overlay`.
 
+- **Epic 4 « Parler au monde ensemble » (J3, dialogues)** : planifiée dans `epics.md` (FR-13 à FR-17, stories 4.0 à 4.4), décision d'architecture **AD-13** dans la spine.
+
+| Story | Sujet | État |
+|---|---|---|
+| 4.0 | Étude de G3 Together (Gothic 3, même moteur) + spike des dialogues (sonde Num7–Num9) | fait, **validé en jeu** : détection par `gCScriptProcessingUnit::StartOutput`, rejeu par `sStartOutput` + `StartFacialAni` (voix + lèvres) ; sous-titres non résolus (`docs/re/spike-j3.md`) |
+| 4.1 | Dialogue de l'hôte vu par l'invité (`DialogLine`, protocole **v16**) | fait, **validé en jeu** (correctif : voix des répliques figées par `UpdateChannel`) |
+| 4.2 | Dialogue de l'invité vu par l'hôte (`DialogState`, protocole **v17** ; réplique libérée chez l'invité, PNJ tenu chez l'hôte) | fait, relu, commité (`2398b1b`), **installé, pas encore testé en jeu** |
+| 4.3, 4.4 | Dialogues simultanés ; robustesse | à faire |
+
+- **Branches** (rien de poussé) : `main` contient l'epic 3 et la planification de l'epic 4. Travail en cours en chaîne : `story/4-0-spike-j3` → `story/4-1-dialogue-hote-vu-invite` → `story/4-2-dialogue-invite-vu-hote` (branche courante).
+- **Reports nés des tests** (`deferred-work.md`) : PNJ en T-pose en ville chez l'invité (8 PNJ animés seulement, story 3.4c proposée) ; objets tenus par les PNJ non répliqués (balai, story 3.4d proposée).
+
 ## Décisions de l’utilisateur à ne pas rediscuter
 
 - L’avatar reste **traversable** et placé par `MoveTo`. La recette « solide » du spike décroche son modèle animé. Les PNJ le ciblent quand même.
@@ -42,10 +54,9 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre
 
-1. Pousser `main` si l’utilisateur le demande.
-2. Finitions possibles de l’epic 3 (`deferred-work.md`) : locomotion de l’avatar (marche figée par moments, limite 2.4b : vitesse non transmise) ; sang chez l’hôte sur ~40 % des coups de l’invité (décalage de position).
-3. Validation à deux machines avec Stone (réseau réel).
-4. Epic suivante : J3, dialogues (`_bmad-output/planning-artifacts/epics.md`).
+1. **Tester la story 4.2** (DLL déjà installée dans `~/Games/Risen-host` et `Risen-invite`) : l'invité parle à un PNJ près de l'hôte. Point clé (H1) : le dialogue natif démarre-t-il avec une réplique figée ? Sinon, libérer la réplique dès la demande (journal debug `IsBeingTalkedTo`). Procédure : `client/README.md`, section de la 4.2.
+2. Selon le résultat : corriger, puis stories 4.3 (dialogues simultanés) et 4.4 (robustesse) ; ensuite 3.4c / 3.4d (PNJ de ville).
+3. Fusionner la chaîne 4.0 → 4.2 dans `main` une fois la 4.2 validée.
 
 ## Points ouverts à vérifier en jeu
 
