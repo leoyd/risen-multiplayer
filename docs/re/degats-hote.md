@@ -129,3 +129,12 @@ monstre ne changent que par `HitRequest`.
 Hypothèses à vérifier en jeu : `StartMove` rend vrai sur l'avatar (gabarit du héros, IA figée) avec
 son arme humaine ; le coup local atteint `HitTargets` malgré l'animation locale bloquée (comme H2
 pour les répliques).
+
+## Attaques natives de l'avatar chez l'hôte (story 3.8b, test du 2026-10-24, 09:25)
+
+45 attaques de l'invité relancées sur l'avatar : `StartMove -> 1` 44 fois (une fois 0, raison
+inconnue). 13 coups natifs de l'avatar ont touché un PNJ (bloqués, effet d'impact joué) pour 45
+`HitRequest` appliqués : environ 30 % des coups de l'invité montrent du sang chez l'hôte. Les autres
+frappent à côté : l'avatar et le PNJ ne sont pas au même endroit chez l'hôte que chez l'invité
+(retard d'interpolation dans les deux sens). Piste : tourner l'avatar vers sa cible avant
+`StartMove`. Côté invité, inchangé : 23 coups cosmétiques réussis, aucun Warn.
