@@ -5,6 +5,8 @@
 #include "game/entity.h"
 #include "game/motion_desc.h"
 #include "sync/anim_filter.h"
+#include "sync/hit_rules.h"
+#include "sync/hits.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -60,6 +62,7 @@ struct Entry {
     // Story 3.8b : attaques natives ignorées faute d'arme en main ; SEH déjà signalée (avatar = session).
     unsigned attacks_unarmed = 0;
     bool attack_error_logged = false;
+    std::uint64_t native_move_ms = 0;  // départ du mouvement local d'une attaque native (0 : aucun)
 };
 constexpr unsigned kWeaponCheckFrames = 30;  // vérification de la main environ deux fois par seconde
 constexpr unsigned kInventoryReadyFrames = 15;  // environ 250 ms à 60 images/s
@@ -409,11 +412,28 @@ bool reassert_weapon(Entry& e) {
     return ok;
 }
 
+// Mouvement local d'une attaque native (story 3.8b) : arrêté dès que son coup est passé au détour
+// des dégâts, ou au plus tard 1,5 s après son départ. Laissé à lui-même, il prenait la main sur la
+// locomotion de l'avatar (test du 2026-10-24 : course en diagonale, marche figée).
+void end_native_move(Entry& e) {
+    if (e.native_move_ms == 0) return;
+    const std::uint64_t now = hits::now_ms();
+    if (!hit_rules::native_move_over(e.native_move_ms, now, hits::native_hit_since(e.entity.ptr, e.native_move_ms))) {
+        return;
+    }
+    e.native_move_ms = 0;
+    bool stopped = false;
+    game::combat_stop_move(e.entity, stopped);
+    log::debug("[sync] avatar " + std::to_string(e.net_id) + " : mouvement d'attaque natif arrêté (StopCurrentMove -> " +
+               (stopped ? "1" : "0") + ")");
+}
+
 void move(std::uint32_t net_id, const Pose& pose) {
     for (Entry& e : g_table) {
         if (e.net_id != net_id) continue;
         if (e.move_error_logged || e.dead) return;  // après une SEH, ou mort : plus de pose imposée
         if (!e.inventory_ready && ++e.frames >= kInventoryReadyFrames) apply_pending_inventory(e);
+        end_native_move(e);
         if (e.inventory_ready && ++e.weapon_check_frames >= kWeaponCheckFrames) {
             e.weapon_check_frames = 0;
             reassert_weapon(e);
@@ -729,6 +749,7 @@ void attack(std::uint32_t move, void* target) {
         }
         return;
     }
+    if (started) e.native_move_ms = hits::now_ms();
     log::debug(what + " : PSNpc::SetCurrentTarget " + (npc_target_ok ? "fait" : "en échec") + ", SetCurrentTarget -> " +
                (target_set ? "1" : "0") + ", StartMove -> " + (started ? "1" : "0") + ", main " + std::to_string(held));
 }

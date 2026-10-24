@@ -135,4 +135,9 @@ enum class StumbleStep { Idle, Wait, Play, Cancel };
 StumbleStep stumble_step(const PendingStumble& p, std::uint64_t now_ms, bool any_cosmetic,
                          std::uint64_t last_cosmetic_ms);
 
+// Fin du mouvement local d'une attaque native (correctif du 2026-10-24) : arrêté dès que le coup a
+// touché, ou au plus tard kNativeMoveMaxMs après son départ (sinon il garde la main sur la locomotion).
+constexpr std::uint64_t kNativeMoveMaxMs = 1500;
+bool native_move_over(std::uint64_t started_ms, std::uint64_t now_ms, bool hit_landed);
+
 }  // namespace mp::sync::hit_rules

@@ -189,6 +189,7 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Script.dll|?GetCurrentTarget@PSCombatSystem@@QEBA?AVEntity@@XZ' \
     'Script.dll|?SetCurrentTarget@PSCombatSystem@@QEAA_NAEBVEntity@@@Z' \
     'Script.dll|?StartMove@PSCombatSystem@@QEBA_NW4gECombatMove@@@Z' \
+    'Script.dll|?StopCurrentMove@PSCombatSystem@@QEAA_NXZ' \
     'Script.dll|?GetRightFistItem@PSCombatSystem@@QEBA?AVTemplate@@XZ'; do
     dll=${entry%%|*}
     sym=${entry#*|}

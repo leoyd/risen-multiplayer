@@ -47,6 +47,7 @@ struct Replica {
     // Story 3.4b : morte (NpcDeath) : plus de pose, de PV ni de rejeu ; reste au registre (IA,
     // animations et ragdoll natifs bloqués) jusqu'à sa libération.
     bool dead = false;
+    std::uint64_t native_move_ms = 0;  // story 3.8 : départ du mouvement local d'une attaque native
 };
 std::map<std::uint32_t, Replica> g_replicas;
 // Story 3.4, invité : ressource de chaque nom d'animation (nul : introuvable) et noms déjà signalés
@@ -365,6 +366,17 @@ void uncapture(std::uint32_t net_id) {
 void move(std::uint32_t net_id, const Pose& pose) {
     auto it = g_replicas.find(net_id);
     if (it == g_replicas.end() || it->second.dead) return;  // inconnu, introuvable, perdu ou mort : ignoré
+    // Story 3.8 (correctif du 2026-10-24) : mouvement local d'une attaque native arrêté une fois son
+    // coup porté, ou au plus tard 1,5 s après son départ (sinon il garde la main sur la locomotion).
+    Replica& r = it->second;
+    if (r.native_move_ms != 0 &&
+        hit_rules::native_move_over(r.native_move_ms, hits::now_ms(),
+                                    hits::native_hit_since(r.entity.ptr, r.native_move_ms))) {
+        r.native_move_ms = 0;
+        bool stopped = false;
+        game::combat_stop_move(r.entity, stopped);
+        log::debug(who(net_id) + " : mouvement d'attaque natif arrêté (StopCurrentMove -> " + (stopped ? "1" : "0") + ")");
+    }
     game::Matrix m{};
     matrix_of(pose, m);
     if (!game::move_to(it->second.entity, m)) drop(it, "Entity::MoveTo a levé une exception (SEH), IA rendue");
@@ -579,6 +591,7 @@ void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target) {
                      ", HoldRightStack -> " + (held_ok ? "1" : "0") + ", StartMove -> " + (started ? "1" : "0");
         }
     }
+    if (started) r.native_move_ms = hits::now_ms();
     log::debug(what + " : PSNpc::SetCurrentTarget " + (npc_target_ok ? "fait" : "en échec") + ", SetCurrentTarget -> " +
                (aim.ptr == nullptr ? std::string("(effacée) ") : std::string()) + (target_set ? "1" : "0") +
                ", StartMove -> " + (started ? "1" : "0") + retry);

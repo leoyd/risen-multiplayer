@@ -110,6 +110,9 @@ bool combat_current_target(const Entity& e, Entity& out); // PSCombatSystem::Get
 // PSCombatSystem::SetCurrentTarget(const Entity&) et StartMove(gECombatMove) : `out` = retour du jeu.
 bool combat_set_current_target(const Entity& e, const Entity& target, bool& out);
 bool combat_start_move(const Entity& e, int move, bool& out);
+// PSCombatSystem::StopCurrentMove : fin du mouvement local d'une attaque native (story 3.8, correctif
+// du 2026-10-24 : laissé à lui-même, il prenait la main sur la locomotion de l'entité).
+bool combat_stop_move(const Entity& e, bool& out);
 // PSCombatSystem::GetRightFistItem : arme naturelle (créature) ; `out` à détruire (destroy_template).
 bool combat_right_fist_item(const Entity& e, Template& out);
 // Kill, Defeat et DownOrDeadBy* (Script_Game.dll), facultatifs : module déjà chargé par le jeu,

@@ -151,4 +151,9 @@ StumbleStep stumble_step(const PendingStumble& p, std::uint64_t now_ms, bool any
     return StumbleStep::Wait;
 }
 
+bool native_move_over(std::uint64_t started_ms, std::uint64_t now_ms, bool hit_landed) {
+    if (started_ms == 0) return false;
+    return hit_landed || (now_ms >= started_ms && now_ms - started_ms >= kNativeMoveMaxMs);
+}
+
 }  // namespace mp::sync::hit_rules

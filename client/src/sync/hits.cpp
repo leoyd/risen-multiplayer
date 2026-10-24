@@ -49,6 +49,17 @@ std::atomic<bool> g_restore_warned{false};   // PV du héros non rendus après u
 std::atomic<bool> g_any_cosmetic{false};
 std::atomic<std::uint64_t> g_last_cosmetic_ms{0};
 
+// Correctif du 2026-10-24 : derniers coups natifs portés par un avatar ou une réplique (agresseur,
+// instant QPC en ms), pour arrêter leur mouvement local dès que le coup a touché. Verrou court.
+struct NativeHit {
+    void* aggressor = nullptr;
+    std::uint64_t ms = 0;
+};
+constexpr std::size_t kNativeHits = 16;
+std::mutex g_native_hits_mutex;
+NativeHit g_native_hits[kNativeHits];
+std::size_t g_native_hits_next = 0;
+
 std::uint64_t qpc_ms() {
     LARGE_INTEGER f{}, t{};
     QueryPerformanceFrequency(&f);
@@ -218,6 +229,13 @@ Outcome decide(void* damage_ps, void* target) {
                    role_text(target, target_found, tt, hero) + ") -> " +
                    (block ? "bloqué" : (d.measure ? "mesuré" : (d.cosmetic ? "cosmétique" : "laissé"))));
     }
+    if (aggressor != nullptr && aggressor_found &&
+        (ta.role == EntityRole::Avatar || ta.role == EntityRole::NpcReplica)) {
+        const std::uint64_t ms = qpc_ms();
+        std::lock_guard<std::mutex> lock(g_native_hits_mutex);
+        g_native_hits[g_native_hits_next] = {aggressor, ms};
+        g_native_hits_next = (g_native_hits_next + 1) % kNativeHits;
+    }
     Outcome out;
     if (d.measure) {
         out.action = Action::Measure;
@@ -367,6 +385,14 @@ void publish(void* hero, Role role, bool in_session, std::uint32_t frame_thread)
 }
 
 void* hero() { return g_hero.load(); }
+
+bool native_hit_since(const void* aggressor, std::uint64_t since_ms) {
+    std::lock_guard<std::mutex> lock(g_native_hits_mutex);
+    for (const NativeHit& h : g_native_hits) {
+        if (h.aggressor == aggressor && h.ms >= since_ms) return true;
+    }
+    return false;
+}
 
 void set_native_attacks(bool on) { g_native_attacks.store(on); }
 

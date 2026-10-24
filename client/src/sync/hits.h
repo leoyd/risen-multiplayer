@@ -58,6 +58,9 @@ bool native_attacks();
 // Story 3.8 (D4) : horloge QPC (ms) ; dernier coup cosmétique de la session sur le héros invité
 // (`ms`), false s'il n'y en a eu aucun.
 std::uint64_t now_ms();
+// Un coup natif d'`aggressor` (avatar ou réplique) est passé au détour depuis `since_ms` (horloge de
+// now_ms). Frame : arrêt du mouvement local d'une attaque native une fois le coup porté.
+bool native_hit_since(const void* aggressor, std::uint64_t since_ms);
 bool last_cosmetic(std::uint64_t& ms);
 
 // Frame : héros local (Entity::GetPlayer, eCEntity*), rôle et état « en session » vus par le

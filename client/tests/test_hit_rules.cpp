@@ -450,3 +450,10 @@ TEST("règles des dégâts 3b (3.8) : héros à terre → coup de réplique bloq
     const Decision d = decide(in);
     CHECK(!d.cosmetic && blocked_silent(d, Reason::GuestHeroByReplica) && d.impact);
 }
+
+TEST("mouvement natif : arrêté au coup porté ou après 1,5 s ; jamais sans départ") {
+    CHECK(!native_move_over(0, 5000, true));
+    CHECK(native_move_over(1000, 1100, true));
+    CHECK(!native_move_over(1000, 2499, false));
+    CHECK(native_move_over(1000, 2500, false));
+}

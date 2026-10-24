@@ -101,6 +101,7 @@ constexpr const char* kGetCurrentMove = "?GetCurrentMove@PSCombatSystem@@QEBA?AW
 constexpr const char* kCombatGetCurrentTarget = "?GetCurrentTarget@PSCombatSystem@@QEBA?AVEntity@@XZ";
 constexpr const char* kCombatSetCurrentTarget = "?SetCurrentTarget@PSCombatSystem@@QEAA_NAEBVEntity@@@Z";
 constexpr const char* kStartMove = "?StartMove@PSCombatSystem@@QEBA_NW4gECombatMove@@@Z";
+constexpr const char* kStopCurrentMove = "?StopCurrentMove@PSCombatSystem@@QEAA_NXZ";
 using CombatMoveFn = int (*)(const Entity* self);
 using CombatSetTargetFn = bool (*)(const Entity* self, const Entity* target);
 using StartMoveFn = bool (*)(const Entity* self, int move);
@@ -278,6 +279,7 @@ struct NativeAttackAbi {
     GetEntityRetFn get_current_target = nullptr;  // sret
     CombatSetTargetFn set_current_target = nullptr;
     StartMoveFn start_move = nullptr;
+    BoolGetterFn stop_current_move = nullptr;  // PSCombatSystem::StopCurrentMove
     TemplateRetFn get_right_fist_item = nullptr;  // sret, à détruire (destroy_template)
 };
 NativeAttackAbi g_atk;
@@ -453,6 +455,7 @@ bool resolve_native_attacks(const char*& missing) {
                     lookup(script, kCombatGetCurrentTarget, a.get_current_target, missing) &&
                     lookup(script, kCombatSetCurrentTarget, a.set_current_target, missing) &&
                     lookup(script, kStartMove, a.start_move, missing) &&
+                    lookup(script, kStopCurrentMove, a.stop_current_move, missing) &&
                     lookup(script, kGetRightFistItem, a.get_right_fist_item, missing);
     if (!ok) return false;
     g_atk = a;
@@ -515,6 +518,18 @@ bool combat_start_move(const Entity& e, int move, bool& out) {
     if (!g_atk_resolved || e.ptr == nullptr) return false;
     __try {
         out = g_atk.start_move(&e, move);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
+        return false;
+    }
+}
+
+bool combat_stop_move(const Entity& e, bool& out) {
+    out = false;
+    if (!g_atk_resolved || e.ptr == nullptr) return false;
+    __try {
+        out = g_atk.stop_current_move(&e);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = false;
