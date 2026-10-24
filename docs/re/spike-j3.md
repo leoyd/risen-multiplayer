@@ -122,3 +122,32 @@ Faits du désassemblage utiles à la lecture du log (Steam x64 de janvier 2023) 
   `gCHudSystem2::ShowSubtitle` (Game.dll). `InfoSystem::GetNPC` = `gCInfoSystem::GetDialogPartnerNPC`.
 
 Résultats : section 5, à remplir après le test.
+
+## 5. Résultats (test en jeu du 2026-10-24, une instance, sonde)
+
+| Hypothèse | Résultat |
+|---|---|
+| **H1** détection | **Oui.** Chaque réplique passe une fois par le détour de `StartOutput`, héros compris (`INFO_<dialogue>_<n°>_<voix>_<langue>_%_<locuteur>.wav`, type 3 pour le héros), sur le thread d'`OnProcess`. Début et fin du dialogue par `InfoSystem` (partenaire, commande `Say` 0x1b avec l'identifiant de texte, 0x3d = aucune). Durée de chaque réplique par `sIsOutputPlaying`. Les commentaires ambiants des PNJ (hors dialogue) y passent aussi. |
+| **H2** rejeu sur un PNJ libre | **Oui** : `sStartOutput(entité, échantillon capturé, type)` puis `StartFacialAni(échantillon)` : voix et lèvres, sans dialogue ni blocage du héros. `StartSay` sur un autre PNJ échoue (`retour=false`) : il recalcule l'échantillon avec la voix de ce PNJ, fichier inexistant. **Rejouer l'échantillon capturé, jamais `StartSay`.** |
+| **H3** PNJ à l'IA figée | **Oui** : voix et lèvres malgré le gel de `gCScriptRoutine_PS::OnProcess` (réplique en session). |
+| **H4** entité créée par le mod (copie F6, comme l'avatar) | **Oui** : voix et lèvres du héros sur la copie. |
+| **H5** sous-titre | **Non** pour l'instant : `eCLocAdmin2::GetString(id)` rend une chaîne vide, et `gCHudSystem2::ShowSubtitle` n'affiche rien de visible. `StartSay` avec « afficher le texte » écrit le texte en jaune dans le journal à l'écran (`PrintGameLog`), mais pas à chaque fois. Piste : `eCLocString(id).GetString()` comme `StartSayEx`, puis le journal à l'écran. Bonus de FR-13 : reporté. |
+
+Remarque de l'utilisateur : la sonde fait parler n'importe quel PNJ proche (voulu pour le test) ; le vrai
+rejeu fera parler le PNJ locuteur lui-même, retrouvé par NetId/GUID.
+
+## 6. Décisions pour J3 (reportées dans la spine, AD-13)
+
+- **Détection, chez celui qui parle** : détour de `gCScriptProcessingUnit::StartOutput` (nom exporté) ;
+  seules les répliques d'un dialogue en cours (`InfoSystem::IsRunning`) dont le locuteur est le héros ou
+  le partenaire de dialogue sont émises (pas les commentaires ambiants).
+- **Message fiable `DialogLine`** : locuteur (NetId : 1 hôte, 2 invité, ≥ 1000 PNJ), échantillon
+  (nom de fichier validé : caractères `[A-Za-z0-9_%.]`, 1 à 128 octets, suffixe `.wav`), type de sortie.
+  Début et fin de dialogue : `DialogState{NetId PNJ, en cours}` pour les PNJ tenus.
+- **Rejeu, chez l'autre** : si l'entité locuteur est à 20 m au plus du héros local et que ce dernier
+  n'est pas lui-même en dialogue : `sStartOutput(entité, échantillon, type)` + `StartFacialAni`. Entité =
+  avatar (1, 2) ou réplique/PNJ capturé (≥ 1000). Pas de caméra, pas de `ZS_Talk`, pas de menu.
+- **PNJ tenu pendant un dialogue de l'invité** : chez l'hôte, le PNJ natif est immobilisé (IA figée par
+  le registre) le temps du dialogue, puis rendu. Chez l'invité, la réplique est libérée pour que le
+  dialogue natif tourne (à valider en 4.2).
+- **Sous-titres** : reportés (H5).
