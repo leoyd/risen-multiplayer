@@ -5,7 +5,7 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 ## Où on en est
 
 - **Epics 1 et 2 (J0, J1)** : finies, fusionnées dans `main`. La validation à deux machines de J1 reste à faire (« je testerai plus tard »).
-- **Epic 3 « Combattre ensemble » (J2)**, stories dans `_bmad-output/planning-artifacts/epics.md` :
+- **Epic 3 « Combattre ensemble » (J2)** : **close le 2026-10-24**, tests B1 à B12 passés à deux instances locales. Stories dans `_bmad-output/planning-artifacts/epics.md` :
 
 | Story | Sujet | État |
 |---|---|---|
@@ -22,12 +22,9 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 | 3.6 | Dégâts subis par l’invité (`HitOnGuest`, **v13**) | fait, **validé en jeu** après correctifs : coup **mesuré** sur l’avatar (dégâts bruts nuls pour les monstres), perte doublée dans le groupe « Player », effet d’impact des coups bloqués |
 | 3.7 | À terre et réapparition de l’invité (`Respawn` avec accusé, **v14**) | fait, **validé en jeu** |
 | 3.8 | Attaques natives des répliques chez l’invité (`NpcAttack`, **v15**) | fait, **validé en jeu** le 2026-10-24 : sang, recul et flash chez l’invité (griffes `It_Fist_Monster` créées, cibles PSCombatSystem et PSNpc) |
-| 3.8b | Attaques natives de l’avatar chez l’hôte (`NpcAttack` bidirectionnel) | fait, validé en jeu (sang chez l’hôte sur ~30 % des coups) ; correctif « mouvement local arrêté » (`2558900`) en test |
+| 3.8b | Attaques natives de l’avatar chez l’hôte (`NpcAttack` bidirectionnel) | fait, **validé en jeu** : mouvement local arrêté au coup ou après 1,5 s (plus de course en diagonale), avatar tourné vers sa cible (sang chez l’hôte sur ~40 % des coups) |
 
-- **Branches** (rien de poussé) :
-  - `main` est à `be50231` (story 3.3), identique à `origin/main`.
-  - `auto/epic-3` : stories 3.4 à 3.7, correctifs du test en jeu, overlay (`c03b61d`), script d’installation locale.
-  - `story/3-8-attaques-natives-repliques` (depuis `auto/epic-3`) puis `story/3-8b-attaques-natives-avatar` (depuis la 3.8) : branche de travail courante, à fusionner dans `auto/epic-3` puis `main`.
+- **Branches** : `main` contient l’epic 3 complète (code jusqu’à `d7e6593`, puis la documentation de clôture), 29 commits d’avance sur `origin/main`, **rien de poussé**. `auto/epic-3` et les branches `story/3-*` sont contenues dans `main`.
 - **Banc de test local** (depuis le 2026-10-23) : deux copies du jeu, `~/Games/Risen-host` et `~/Games/Risen-invite` (préfixes Wine `~/Games/Risen-*-pfx`), lancées ensemble par `~/Games/lancer-risen-coop.sh`. `tools/installer-local.sh` y installe la DLL et les configs avant chaque test. Overlay à l’écran (rôle, pseudo, état de session), clé `overlay`.
 
 ## Décisions de l’utilisateur à ne pas rediscuter
@@ -45,10 +42,10 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre
 
-1. Lire le résultat du test du correctif `2558900` (course en diagonale de l’avatar pendant une attaque native) et le bug signalé « épée de l’hôte toujours sortie chez l’invité après un rechargement » (non reproduit dans les logs, test ciblé demandé).
-2. Finir `docs/test-epic-3.md` : B9 (butin), B10 (pause Échap de l’invité), B11 et B12 (chargements rapides).
-3. Fusionner la 3.8b dans `auto/epic-3`, puis dans `main` ; régénérer `epic-3-context.md` (reports dans `deferred-work.md`).
-4. Pistes : orientation de l’avatar vers sa cible avant `StartMove` (sang chez l’hôte sur ~30 % des coups) ; validation à deux machines avec Stone.
+1. Pousser `main` si l’utilisateur le demande.
+2. Finitions possibles de l’epic 3 (`deferred-work.md`) : locomotion de l’avatar (marche figée par moments, limite 2.4b : vitesse non transmise) ; sang chez l’hôte sur ~40 % des coups de l’invité (décalage de position).
+3. Validation à deux machines avec Stone (réseau réel).
+4. Epic suivante : J3, dialogues (`_bmad-output/planning-artifacts/epics.md`).
 
 ## Points ouverts à vérifier en jeu
 
