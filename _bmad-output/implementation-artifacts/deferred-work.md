@@ -258,3 +258,10 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-8b-attaques-natives-avatar.md`
   summary: Observer en jeu les effets de bord d'un StartMove de l'avatar chez l'hôte (aggro, crime sur PNJ neutres, réaction du héros de l'hôte) (medium, non vérifié).
   evidence: aucun effet étudié au désassemblage ; à surveiller au test près d'un camp ou d'une ville.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-dialogue-hote-vu-invite.md`
+  summary: Répliques de PNJ en ville glissant en T-pose chez l'invité : l'hôte n'anime que 8 PNJ (story 3.4) alors que l'invité en réplique des dizaines ; leurs animations natives restent bloquées. Pistes : A) ne plus bloquer les animations natives d'une réplique non animée par l'hôte ; B) passer à ~16 PNJ animés, les plus proches des deux joueurs. Story proposée 3.4c.
+  evidence: test du 2026-10-24 en ville : 72 répliques chez l'invité, « animés 8 » en continu chez l'hôte ; gardes glissant en T-pose.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-dialogue-hote-vu-invite.md`
+  summary: Objets tenus par les PNJ pendant leurs activités (balai de la femme qui balaie, outils) non répliqués chez l'invité. Story proposée 3.4d (objet en main des PNJ animés, sur le modèle de l'arme de l'avatar).
+  evidence: test du 2026-10-24 : une femme balaie en ville chez l'hôte, sans balai chez l'invité.
