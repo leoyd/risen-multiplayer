@@ -2,6 +2,8 @@
 #include "sync/hit_rules.h"
 #include "test.h"
 
+#include <cmath>
+
 using mp::sync::EntityRole;
 using mp::sync::TrackedEntity;
 using namespace mp::sync::hit_rules;
@@ -456,4 +458,11 @@ TEST("mouvement natif : arrêté au coup porté ou après 1,5 s ; jamais sans d�
     CHECK(native_move_over(1000, 1100, true));
     CHECK(!native_move_over(1000, 2499, false));
     CHECK(native_move_over(1000, 2500, false));
+}
+
+TEST("lacet vers une cible : +Z → 0, +X → π/2, −Z → ±π, confondu → 0") {
+    CHECK(std::fabs(yaw_towards(0, 0, 0, 10) - 0.0f) < 1e-5f);
+    CHECK(std::fabs(yaw_towards(0, 0, 10, 0) - 1.5707964f) < 1e-5f);
+    CHECK(std::fabs(std::fabs(yaw_towards(5, 5, 5, -5)) - 3.1415927f) < 1e-5f);
+    CHECK(yaw_towards(3, 4, 3, 4) == 0.0f);
 }

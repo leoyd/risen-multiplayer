@@ -140,4 +140,9 @@ StumbleStep stumble_step(const PendingStumble& p, std::uint64_t now_ms, bool any
 constexpr std::uint64_t kNativeMoveMaxMs = 1500;
 bool native_move_over(std::uint64_t started_ms, std::uint64_t now_ms, bool hit_landed);
 
+// Lacet (radians, convention de core/pose.h : avant = (sin ψ, 0, cos ψ)) qui tourne une entité en
+// (x, z) vers (tx, tz). Point confondu : 0. Avatar tourné vers sa cible pendant une attaque native
+// (story 3.8b) : les coups locaux touchent plus souvent.
+float yaw_towards(float x, float z, float tx, float tz);
+
 }  // namespace mp::sync::hit_rules

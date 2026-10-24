@@ -7,6 +7,7 @@
 #include "sync/anim_filter.h"
 #include "sync/hit_rules.h"
 #include "sync/hits.h"
+#include "sync/npc.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -63,6 +64,7 @@ struct Entry {
     unsigned attacks_unarmed = 0;
     bool attack_error_logged = false;
     std::uint64_t native_move_ms = 0;  // départ du mouvement local d'une attaque native (0 : aucun)
+    std::uint32_t native_target = 0;   // NetId du PNJ capturé visé pendant ce mouvement (0 : aucun)
 };
 constexpr unsigned kWeaponCheckFrames = 30;  // vérification de la main environ deux fois par seconde
 constexpr unsigned kInventoryReadyFrames = 15;  // environ 250 ms à 60 images/s
@@ -422,6 +424,7 @@ void end_native_move(Entry& e) {
         return;
     }
     e.native_move_ms = 0;
+    e.native_target = 0;
     bool stopped = false;
     game::combat_stop_move(e.entity, stopped);
     log::debug("[sync] avatar " + std::to_string(e.net_id) + " : mouvement d'attaque natif arrêté (StopCurrentMove -> " +
@@ -443,7 +446,18 @@ void move(std::uint32_t net_id, const Pose& pose) {
         // Story 3.1 (tests en jeu du 2026-10-20) : les réglages d'avatar solide du spike J2
         // décrochaient le modèle animé de l'avatar (seule l'arme suivait). Avatar traversable :
         // placement par MoveTo, comme en J1.
-        if (!game::move_to(e.entity, matrix_of(pose))) {
+        // Story 3.8b : pendant le mouvement local d'une attaque native, avatar tourné vers sa cible
+        // (chez l'hôte, PNJ et avatar ne sont pas où l'invité les voit : les coups tombaient à côté).
+        Pose shown = pose;
+        if (e.native_move_ms != 0 && e.native_target != 0) {
+            game::Entity aim;
+            aim.ptr = npc::captured_entity(e.native_target);
+            game::Matrix m{};
+            if (aim.ptr != nullptr && game::get_pose(aim, m)) {
+                shown.yaw = hit_rules::yaw_towards(pose.x, pose.z, m.m[12], m.m[14]);
+            }
+        }
+        if (!game::move_to(e.entity, matrix_of(shown))) {
             e.move_error_logged = true;
             log::error("[sync] avatar " + std::to_string(net_id) +
                        " : Entity::MoveTo a levé une exception (SEH) : avatar plus déplacé");
@@ -714,7 +728,7 @@ void* entity() { return g_table.empty() ? nullptr : g_table.front().entity.ptr; 
 
 bool rearm() { return !g_table.empty() && reassert_weapon(g_table.front()); }
 
-void attack(std::uint32_t move, void* target) {
+void attack(std::uint32_t move, void* target, std::uint32_t target_net_id) {
     const std::string what = "[sync] avatar : attaque native (mouvement " + std::to_string(move) + ", cible " +
                              (target == nullptr ? std::string("effacée") : hex_ptr(target)) + ")";
     if (g_table.empty() || g_table.front().dead) {
@@ -749,7 +763,10 @@ void attack(std::uint32_t move, void* target) {
         }
         return;
     }
-    if (started) e.native_move_ms = hits::now_ms();
+    if (started) {
+        e.native_move_ms = hits::now_ms();
+        e.native_target = target != nullptr ? target_net_id : 0;
+    }
     log::debug(what + " : PSNpc::SetCurrentTarget " + (npc_target_ok ? "fait" : "en échec") + ", SetCurrentTarget -> " +
                (target_set ? "1" : "0") + ", StartMove -> " + (started ? "1" : "0") + ", main " + std::to_string(held));
 }

@@ -53,7 +53,9 @@ bool rearm();
 // nul : cibles effacées), puis PSCombatSystem::StartMove(`move`), hors garde de rejeu : l'animation
 // locale reste bloquée (rôle avatar), le coup local sur un PNJ est bloqué par la règle 4 du détour
 // des dégâts, effet d'impact gardé. SEH : Warn une fois par session. Frame seulement.
-void attack(std::uint32_t move, void* target);
+// `target_net_id` : NetId du PNJ capturé visé (0 : aucun) ; tant que le mouvement local dure,
+// l'avatar est tourné vers lui (lacet seul, position toujours celle de l'invité).
+void attack(std::uint32_t move, void* target, std::uint32_t target_net_id);
 // Équipement (story 3.2b), nom par nom : Template(nom) puis IsValid ; pile cherchée
 // (FindStackIndex) ou, à défaut, créée (CreateItems, 1) ; puis EquipStack sauf si IsStackEquiped.
 // Un nom en échec est journalisé et n'empêche pas les suivants. `equip` : avatar `net_id` (piles

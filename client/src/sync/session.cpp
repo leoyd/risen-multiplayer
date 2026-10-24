@@ -281,7 +281,7 @@ void execute(cs::Output out) {
                     log::debug("[sync] avatar : attaque native sur le PNJ " + std::to_string(aa->target) +
                                " non capturé : cibles effacées");
                 }
-                avatar::attack(aa->move, target);
+                avatar::attack(aa->move, target, target != nullptr ? aa->target : 0);
                 continue;
             }
             if (const auto* rh = std::get_if<cs::RespawnHero>(&cmd)) {  // story 3.7 : chez l'invité

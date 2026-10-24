@@ -1,5 +1,7 @@
 #include "sync/hit_rules.h"
 
+#include <cmath>
+
 #include "core/protocol.h"
 
 namespace mp::sync::hit_rules {
@@ -154,6 +156,12 @@ StumbleStep stumble_step(const PendingStumble& p, std::uint64_t now_ms, bool any
 bool native_move_over(std::uint64_t started_ms, std::uint64_t now_ms, bool hit_landed) {
     if (started_ms == 0) return false;
     return hit_landed || (now_ms >= started_ms && now_ms - started_ms >= kNativeMoveMaxMs);
+}
+
+float yaw_towards(float x, float z, float tx, float tz) {
+    const float dx = tx - x, dz = tz - z;
+    if (dx == 0.0f && dz == 0.0f) return 0.0f;
+    return std::atan2(dx, dz);
 }
 
 }  // namespace mp::sync::hit_rules
