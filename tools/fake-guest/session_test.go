@@ -733,6 +733,28 @@ func TestHitOnGuest(t *testing.T) {
 	expectLog(t, r, "<- HitOnGuest source=1000 dégâts=18", "HitOnGuest reçus=")
 }
 
+// Story 4.1 : DialogLine (v16) de l'hôte, journalisé une fois par message reçu et compté au bilan,
+// jamais rejoué.
+func TestDialogLine(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.DialogEvery = 4 // toutes les 200 ms
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1200 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	sent := host.record().dialogLines
+	if r.res.DialogLinesRx < 3 {
+		t.Errorf("DialogLine reçus %d, attendu au moins 3 (envoyés %d)", r.res.DialogLinesRx, sent)
+	}
+	if r.res.DialogLinesRx > sent || sent-r.res.DialogLinesRx > 1 {
+		t.Errorf("DialogLine reçus %d, envoyés %d (au plus un en vol à la fin)", r.res.DialogLinesRx, sent)
+	}
+	expectLog(t, r, "<- DialogLine locuteur=1004 type=0 échantillon="+dialogSample,
+		"<- DialogLine locuteur=1 type=3 échantillon="+dialogHeroSample, "Bilan dialogues : DialogLine reçus=")
+}
+
 // Story 3.8 : NpcAttack (v15) de l'hôte, journalisé une fois par message reçu et compté au bilan,
 // jamais appliqué.
 func TestNpcAttack(t *testing.T) {

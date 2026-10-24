@@ -79,6 +79,8 @@ if(WIN32)
         src/sync/guest_health.cpp
         src/sync/hit_rules.cpp
         src/sync/session.cpp
+        src/sync/dialogue.cpp
+        src/sync/dialogue_rules.cpp
         src/win/watchdog.cpp
         src/win/overlay.cpp
         ${MINHOOK_SOURCES})
@@ -122,6 +124,7 @@ else()
         tests/test_main.cpp
         tests/test_anim_filter.cpp
         tests/test_config.cpp
+        tests/test_dialogue_rules.cpp
         tests/test_equipment.cpp
         tests/test_hit_rules.cpp
         tests/test_interpolation.cpp
@@ -135,6 +138,7 @@ else()
         # Code portable de game/ et sync/ (sans appel au jeu), compilé aussi dans la DLL.
         src/game/motion_desc.cpp
         src/sync/anim_filter.cpp
+        src/sync/dialogue_rules.cpp
         src/sync/hit_rules.cpp
         src/sync/local_capture.cpp)
     target_link_libraries(client_tests PRIVATE mp_core mp_net)

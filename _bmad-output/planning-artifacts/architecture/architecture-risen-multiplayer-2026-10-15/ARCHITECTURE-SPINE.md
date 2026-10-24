@@ -166,7 +166,7 @@ graph TD
 - **Prevents:** des messages ad hoc ajoutés sans contrat.
 - **Rule:**
   - Le canal de contrôle ne transporte que `Hello`, `Welcome` et `Reject`.
-  - Le canal fiable ne transporte que : `Heartbeat`, `SessionEnd{raison: u8}`, `AniName`, `Motion`, `MotionParam` (AD-8), `Spawn`, `Despawn{NetId}`, `Death{NetId}`, `HitRequest{NetId cible}`, `HitOnGuest{NetId source, dégâts bruts}`, `Respawn{NetId, pose, tick}`, `NpcAttack{NetId, mouvement, NetId cible}` (story 3.8, protocole v15 : hôte → invité pour un PNJ ≥ 1000 ; story 3.8b : invité → hôte pour l’avatar invité, NetId 2).
+  - Le canal fiable ne transporte que : `Heartbeat`, `SessionEnd{raison: u8}`, `AniName`, `Motion`, `MotionParam` (AD-8), `Spawn`, `Despawn{NetId}`, `Death{NetId}`, `HitRequest{NetId cible}`, `HitOnGuest{NetId source, dégâts bruts}`, `Respawn{NetId, pose, tick}`, `NpcAttack{NetId, mouvement, NetId cible}` (story 3.8, protocole v15 : hôte → invité pour un PNJ ≥ 1000 ; story 3.8b : invité → hôte pour l’avatar invité, NetId 2), `DialogLine{NetId locuteur, type, échantillon}` (story 4.1, protocole v16 : hôte → invité, locuteur 1 ou ≥ 1000 ; AD-13).
   - **`Respawn` a deux sens** (story 3.7, protocole v14) : hôte → invité = **ordre** (`NetId` 2, pose de réapparition, `tick` 0) ; invité → hôte = **accusé** (même pose, `tick` = premier tick de ses snapshots qui porte la nouvelle pose). Depuis la v14, `Death{2}` signifie « invité à terre » : l’hôte ne met plus l’avatar en ragdoll.
   - **`Spawn` dépend de son `type`** : `0` = avatar `{NetId, type, pose}` ; `1` = PNJ `{NetId, type, pose, GUID 16 o}` (story 3.3).
   - Ajouter un type **ou changer une struct** (y compris le tableau d’empreinte de `Hello`) exige de mettre à jour `PROTOCOL.md` et les vecteurs `protocol/vectors/`, et d’incrémenter la version du protocole.
@@ -203,7 +203,8 @@ graph TD
     - les quatre réglages de locomotion EMotionFX (story 2.4b) ;
     - `gCScriptRoutine_PS::OnProcess` ;
     - les trois `DownOrDeadBy*` : sonde J2, et en session (story 3.7) le filet de la mise à terre de l’invité, qui délègue à `sync/guest_health::on_down_or_dead`. Facultatifs en session : `Script_Game.dll` absente ou symbole introuvable → Warn, session sans ce filet ;
-    - le point d’accroche des dégâts : `gCDamage_PS::DoDamage(eCEntity*)` (Game.dll, version à 1 argument ; question 8 tranchée en 3.5). Seul passage commun de tout coup natif (mêlée, projectiles, magie) avant la baisse des PV ; agresseur = `eCEntityProxy::GetEntity(GetAgressor())` (proxy à `+0x30`), cible = l’argument ; bloquer = ne pas appeler l’original et rendre `true` (le jeu joue l’effet d’impact sans dégâts), ou `false` sans effet (tir ami, agresseur nul) ; correctif du 2026-10-23, AD-9. Facultatif : un échec de résolution, ou `damage_hook = 0`, laisse la session sans dégâts synchronisés (dérogation à AD-3 pour ce seul bloc).
+    - le point d’accroche des dégâts : `gCDamage_PS::DoDamage(eCEntity*)` (Game.dll, version à 1 argument ; question 8 tranchée en 3.5). Seul passage commun de tout coup natif (mêlée, projectiles, magie) avant la baisse des PV ; agresseur = `eCEntityProxy::GetEntity(GetAgressor())` (proxy à `+0x30`), cible = l’argument ; bloquer = ne pas appeler l’original et rendre `true` (le jeu joue l’effet d’impact sans dégâts), ou `false` sans effet (tir ami, agresseur nul) ; correctif du 2026-10-23, AD-9. Facultatif : un échec de résolution, ou `damage_hook = 0`, laisse la session sans dégâts synchronisés (dérogation à AD-3 pour ce seul bloc) ;
+    - `gCScriptProcessingUnit::StartOutput` (Game.dll) : sonde J3, et en session (story 4.1, AD-13) la détection des répliques de dialogue, qui délègue à `sync/dialogue::on_start_output`. Facultatif : bloc `game/dialogue` introuvable ou `dialogues = 0` → session sans dialogues (Warn ou Info).
 
     Un seul détour par fonction. Il délègue à `sync/` et choisit son comportement selon le **rôle** de l’entité. Ajouter un hook exige de mettre à jour cette liste.
   - **Registre unique** (extension de `sync::AnimFilter`, AD-2, même verrou) : pour chaque entité suivie, `{entité, PS d’animation, PS de routine, rôle}`. Rôles : héros local, avatar, réplique de PNJ.
@@ -220,7 +221,7 @@ graph TD
   - Le dialogue ne tourne que chez celui qui parle (système natif `gCInfoSystem`) ; ses effets y restent (FR-16, J4 pour les quêtes).
   - Détection : détour de `gCScriptProcessingUnit::StartOutput(bCString const&, gEOutputType)` (Game.dll, nom exporté), réservé aux répliques d'un dialogue en cours (`InfoSystem::IsRunning`) dont le locuteur est le héros local ou le partenaire de dialogue. Le détour ne fait que copier (locuteur, échantillon, type) dans une file ; la frame émet.
   - Rejeu chez l'autre : `gCScriptProcessingUnit::sStartOutput(entité, échantillon, type)` puis `Entity::StartFacialAni(échantillon)` sur l'entité du locuteur (avatar, ou PNJ par NetId), si elle est à 20 m au plus du héros local et que celui-ci n'est pas en dialogue. Jamais `StartSay` (il recalcule l'échantillon avec la voix de l'entité qui parle), jamais de caméra ni d'état `ZS_Talk` chez le spectateur.
-  - L'échantillon reçu est validé (`[A-Za-z0-9_%.]`, 1 à 128 octets, suffixe `.wav`) : c'est un nom de fichier.
+  - L'échantillon reçu est validé (`[A-Za-z0-9_%.]`, 5 à 128 octets, sans `..`, suffixe `.wav` après un nom non vide) : c'est un nom de fichier.
   - Spike du 2026-10-24 (`docs/re/spike-j3.md`) : détection, rejeu sur PNJ libre, sur PNJ à l'IA figée et sur entité créée par le mod validés en jeu ; sous-titres reportés.
 
 ## Consistency Conventions

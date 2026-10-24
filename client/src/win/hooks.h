@@ -19,8 +19,10 @@ bool install_probe();
 // laisse la session sans dégâts synchronisés. Story 3.8 : `native_attacks` vrai et détour des dégâts
 // posé et détours DownOrDeadBy* posés résolvent en plus le bloc facultatif des attaques natives (game::resolve_native_attacks) ;
 // son échec laisse la session sans NpcAttack (game::native_attacks_resolved faux). Même contrat
-// d'échec que install_probe.
-bool install_session(bool damage_hook, bool native_attacks);
+// d'échec que install_probe. Story 4.1 : `dialogues` vrai résout le bloc facultatif game/dialogue
+// et pose le détour de gCScriptProcessingUnit::StartOutput (sync/dialogue) ; son échec laisse la
+// session sans dialogues (sync::dialogue::active faux, Warn).
+bool install_session(bool damage_hook, bool native_attacks, bool dialogues);
 
 // Retire les hooks posés (sans effet s'il n'y en a aucun).
 void remove();

@@ -49,7 +49,16 @@ type hostConfig struct {
 	RespawnOnDeath bool
 	// Story 3.8 : > 0 : NpcAttack{1005, 11, 2} tous les N ticks de snapshot (50 ms), à partir du tick N.
 	NpcAttackEvery int64
+	// Story 4.1 : > 0 : un DialogLine tous les N ticks de snapshot, à partir du tick N, en alternant le
+	// PNJ 1004 (type 0, dialogSample) et le héros de l'hôte (locuteur 1, type 3, dialogHeroSample).
+	DialogEvery int64
 }
+
+// Story 4.1 : échantillon des DialogLine de l'hôte simulé (celui de dialog_line.bin).
+const (
+	dialogSample     = "INFO_Sara_2_Sara_DE_%_Sara.wav"
+	dialogHeroSample = "INFO_Sara_3_PC_Hero_DE_%_PC_Hero.wav"
+)
 
 // Story 3.7 : pose des Respawn de l'hôte simulé.
 var respawnPose = protocol.Respawn{NetId: protocol.GuestNetId, X: 500, Y: 10, Z: -300, Yaw: 0.5}
@@ -94,6 +103,7 @@ type hostRecord struct {
 	hitsOnGuest  int                  // HitOnGuest envoyés à l'invité (v13)
 	respawnsSent int                  // Respawn (ordres) envoyés à l'invité (v14)
 	npcAttacks   int                  // NpcAttack envoyés à l'invité (v15)
+	dialogLines  int                  // DialogLine envoyés à l'invité (v16)
 	guestAttacks []protocol.NpcAttack // NpcAttack reçus de l'invité (v15, story 3.8b)
 	respawnAcks  []protocol.Respawn   // accusés reçus de l'invité (v14)
 	weapons      []protocol.Weapon    // reçus de l'invité (v7)
@@ -503,6 +513,19 @@ func (h *simHost) tick() {
 			h.sendReliable(protocol.HitOnGuest{Source: protocol.FirstNpcNetId, Damage: 18})
 			h.mu.Lock()
 			h.rec.hitsOnGuest++
+			h.mu.Unlock()
+		}
+		if h.cfg.DialogEvery > 0 && tick > 0 && tick%h.cfg.DialogEvery == 0 {
+			h.mu.Lock()
+			hero := h.rec.dialogLines%2 == 1
+			h.mu.Unlock()
+			if hero {
+				h.sendReliable(protocol.DialogLine{Speaker: protocol.HostNetId, OutputType: 3, Sample: dialogHeroSample})
+			} else {
+				h.sendReliable(protocol.DialogLine{Speaker: 1004, OutputType: 0, Sample: dialogSample})
+			}
+			h.mu.Lock()
+			h.rec.dialogLines++
 			h.mu.Unlock()
 		}
 		if h.cfg.NpcAttackEvery > 0 && tick > 0 && tick%h.cfg.NpcAttackEvery == 0 {

@@ -141,7 +141,7 @@ const char* const kValidReliable[] = {"heartbeat.bin", "session_end.bin", "motio
                                       "motion_param.bin", "weapon.bin", "weapon_sheathed.bin",
                                       "armor.bin",     "armor_removed.bin", "spawn_npc.bin", "motion_npc.bin",
                                       "death_npc.bin", "hit_request.bin", "hit_on_guest.bin", "respawn.bin",
-                                      "npc_attack.bin"};
+                                      "npc_attack.bin", "dialog_line.bin"};
 
 }  // namespace
 
@@ -412,14 +412,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v15 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v16 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 15);
+    CHECK_EQ(version, 16);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 15);
+    CHECK_EQ(version, 16);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -430,12 +430,12 @@ TEST("protocole : peek_hello_version sur v15 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 15") {
+TEST("protocole : l'encodeur refuse une version autre que 16") {
     Hello h = sample_hello();
-    h.protocol_version = 14;
+    h.protocol_version = 15;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 16;
+    h.protocol_version = 17;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -497,7 +497,7 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(load_vector("unknown_type.bin")).error == DecodeError::UnknownType);
     CHECK(dr(Bytes{99}).error == DecodeError::UnknownType);
     // Aucun type réservé (depuis la v14) ; types absents de la liste et types hors de leur canal.
-    for (std::uint8_t t : {std::uint8_t{4}, std::uint8_t{15}, std::uint8_t{30}}) {
+    for (std::uint8_t t : {std::uint8_t{4}, std::uint8_t{15}, std::uint8_t{31}}) {
         CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
     }
     CHECK(dc(Bytes{2, 19}).error == DecodeError::UnknownType);  // Motion en contrôle
@@ -507,6 +507,7 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(Bytes{2, 23}).error == DecodeError::UnknownType);  // HitOnGuest en contrôle
     CHECK(dc(Bytes{2, 25}).error == DecodeError::UnknownType);  // Respawn en contrôle
     CHECK(dc(Bytes{2, 29}).error == DecodeError::UnknownType);  // NpcAttack en contrôle
+    CHECK(dc(Bytes{2, 30}).error == DecodeError::UnknownType);  // DialogLine en contrôle
     CHECK(dr(Bytes{1, 1, 0}).error == DecodeError::UnknownType);  // Hello en fiable
     CHECK(dr(Bytes{0}).error == DecodeError::UnknownType);
 }
@@ -565,7 +566,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 15);
+    CHECK_EQ(kProtocolVersion, 16);
     CHECK_EQ(static_cast<int>(kSpawnTypeHero), 0);
     CHECK_EQ(static_cast<int>(kSpawnTypeNpc), 1);
     CHECK_EQ(kFirstNpcNetId, 1000u);
@@ -591,6 +592,9 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::Weapon), 27);
     CHECK_EQ(static_cast<int>(MsgType::Armor), 28);
     CHECK_EQ(static_cast<int>(MsgType::NpcAttack), 29);
+    CHECK_EQ(static_cast<int>(MsgType::DialogLine), 30);
+    CHECK_EQ(static_cast<int>(kMaxDialogOutputType), 3);
+    CHECK_EQ(kMaxDialogSample, std::size_t{128});
     CHECK_EQ(kHostNetId, 1u);
     CHECK_EQ(kGuestNetId, 2u);
     CHECK_EQ(static_cast<int>(RejectReason::Protocol), 1);
@@ -778,6 +782,92 @@ TEST("protocole : vecteur npc_attack.bin (v15) : NpcAttack") {
     const auto u = dr(enc(NpcAttack{7, 0xFFFFFFFFu, 0}));
     const NpcAttack* g7 = std::get_if<NpcAttack>(&u.message);
     CHECK(u.ok() && g7 != nullptr && g7->net_id == 7 && g7->move == 0xFFFFFFFFu && g7->target_net_id == 0);
+}
+
+// v16 (story 4.1) : le PNJ 1004 dit la réplique « INFO_Sara_2_Sara_DE_%_Sara.wav », type 0.
+TEST("protocole : vecteur dialog_line.bin (v16) : DialogLine") {
+    const Bytes b = load_vector("dialog_line.bin");
+    CHECK_EQ(b.size(), std::size_t{37});
+    const auto d = dr(b);
+    const DialogLine* got = std::get_if<DialogLine>(&d.message);
+    CHECK(d.ok() && got != nullptr);
+    if (got != nullptr) {
+        CHECK_EQ(got->speaker_net_id, 1004u);
+        CHECK_EQ(static_cast<int>(got->output_type), 0);
+        CHECK_EQ(got->sample, std::string("INFO_Sara_2_Sara_DE_%_Sara.wav"));
+    }
+    CHECK(enc(DialogLine{1004, 0, "INFO_Sara_2_Sara_DE_%_Sara.wav"}) == b);
+    Bytes trunc(b.begin(), b.end() - 1);
+    CHECK(dr(trunc).error == DecodeError::Truncated);
+    Bytes trailing = b;
+    trailing.push_back(0);
+    CHECK(dr(trailing).error == DecodeError::TrailingBytes);
+    // Héros de l'hôte, type 3 (réplique du héros).
+    const auto h = dr(enc(DialogLine{kHostNetId, 3, "INFO_X_1_Hero_DE_%_PC_Hero.wav"}));
+    const DialogLine* gh = std::get_if<DialogLine>(&h.message);
+    CHECK(h.ok() && gh != nullptr && gh->speaker_net_id == kHostNetId && gh->output_type == 3);
+}
+
+namespace {
+// DialogLine écrit à la main (sans l'encodeur, qui refuse ces valeurs).
+Bytes raw_dialog_line(std::uint32_t speaker, std::uint8_t type, const std::string& sample) {
+    Bytes b{30, static_cast<std::uint8_t>(speaker), static_cast<std::uint8_t>(speaker >> 8),
+            static_cast<std::uint8_t>(speaker >> 16), static_cast<std::uint8_t>(speaker >> 24), type,
+            static_cast<std::uint8_t>(sample.size())};
+    b.insert(b.end(), sample.begin(), sample.end());
+    return b;
+}
+}  // namespace
+
+TEST("protocole : DialogLine hors domaine -> BadValue au décodage, refusé à l'encodage") {
+    const std::string ok = "INFO_A_1_B_DE_%_C.wav";
+    CHECK(dr(raw_dialog_line(1004, 0, ok)).ok());
+    CHECK(dr(raw_dialog_line(kHostNetId, 3, ok)).ok());
+    CHECK(dr(raw_dialog_line(kFirstNpcNetId, 1, "a.wav")).ok());
+    CHECK(dr(raw_dialog_line(1004, 0, std::string(124, 'a') + ".wav")).ok());  // 128 octets
+    const struct {
+        std::uint32_t speaker;
+        std::uint8_t type;
+        std::string sample;
+    } bad[] = {
+        {0, 0, ok},                                    // locuteur nul
+        {kGuestNetId, 0, ok},                          // invité : pas en v16
+        {999, 0, ok},                                  // ni héros ni PNJ
+        {1004, 4, ok},                                 // type hors domaine
+        {1004, 255, ok},
+        {1004, 0, ""},                                 // vide
+        {1004, 0, "../x.wav"},                         // chemin
+        {1004, 0, "..\\x.wav"},
+        {1004, 0, "dir/x.wav"},
+        {1004, 0, "INFO_A"},                           // sans .wav
+        {1004, 0, ".wav"},                             // nom de base vide
+        {1004, 0, "a..wav"},                           // « .. » refusé partout
+        {1004, 0, "x..y_z.wav"},
+        {1004, 0, "INFO_A.WAV"},                       // suffixe exact
+        {1004, 0, "INFO_A.wav "},
+        {1004, 0, "INFO A.wav"},                       // espace
+        {1004, 0, "INFO_\xc3\xa9.wav"},                  // non ASCII
+        {1004, 0, std::string(125, 'a') + ".wav"},     // 129 octets
+        {1004, 0, std::string(251, 'a') + ".wav"},     // 255 octets
+    };
+    for (const auto& c : bad) {
+        CHECK(dr(raw_dialog_line(c.speaker, c.type, c.sample)).error == DecodeError::BadValue);
+        Bytes out = {0xAA};
+        CHECK(!encode_reliable(DialogLine{c.speaker, c.type, c.sample}, out));
+        CHECK(out == Bytes{0xAA});
+    }
+    // Longueur annoncée plus grande que le tampon : Truncated (pas BadValue).
+    Bytes cut = raw_dialog_line(1004, 0, ok);
+    cut.pop_back();
+    CHECK(dr(cut).error == DecodeError::Truncated);
+    CHECK(dr(Bytes{30, 0xec, 3, 0, 0, 0}).error == DecodeError::Truncated);  // sans longueur
+    CHECK(valid_dialog_sample("INFO_Sara_2_Sara_DE_%_Sara.wav"));
+    CHECK(!valid_dialog_sample(".wa"));
+    CHECK(!valid_dialog_sample(".wav"));
+    CHECK(!valid_dialog_sample("a..wav"));
+    CHECK(valid_dialog_sample("a.wav"));
+    CHECK(valid_dialog_sample("a.b.wav"));
+    CHECK(valid_dialog_speaker(kHostNetId) && valid_dialog_speaker(1000) && !valid_dialog_speaker(2));
 }
 
 // v14 (story 3.7) : réapparition de l'invité (ordre ou accusé), pose (100, 0, −50), lacet 1,5, tick 42.

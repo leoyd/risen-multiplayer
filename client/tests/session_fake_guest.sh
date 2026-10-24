@@ -548,6 +548,21 @@ if start_host_npcs attaques_netid $p 30000 3; then
     expect_count "attaques NetId ≠ 2 : aucune commande" "$h" "ApplyAvatarAttack" 0
 fi
 
+# --- Story 4.1 : répliques de dialogue de l'hôte (héros et PNJ 1002) → DialogLine chez l'invité ---
+p=$((base_port + 25))
+if start_host dialogues $p 30000 1 --npcs 3 --dialog-ms 400; then
+    h=$work/dialogues.host.log
+    g=$work/dialogues.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 3s --quit > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "dialogues : invité" 0 $rc "$g"
+    expect_log "dialogues : réplique du héros envoyée" "$h" "réplique de dialogue du héros (type 3, « INFO_Test_1_PC_Hero_DE_%_PC_Hero.wav ») : DialogLine envoyé"
+    expect_log "dialogues : réplique du PNJ envoyée" "$h" "réplique de dialogue du PNJ 1002 (type 0, « INFO_Test_2_Sara_DE_%_Sara.wav ») : DialogLine envoyé"
+    expect_log "dialogues : héros reçu par l'invité" "$g" "<- DialogLine locuteur=1 type=3 échantillon=INFO_Test_1_PC_Hero_DE_%_PC_Hero.wav"
+    expect_log "dialogues : PNJ reçu par l'invité" "$g" "<- DialogLine locuteur=1002 type=0 échantillon=INFO_Test_2_Sara_DE_%_Sara.wav"
+    expect_log "dialogues : bilan de l'invité" "$g" "Bilan dialogues : DialogLine reçus=[1-9]"
+fi
+
 # --- Story 3.7 : invité à terre toutes les secondes : Respawn de l'hôte, accusé de l'invité -----
 p=$((base_port + 22))
 if start_host respawn $p 30000; then

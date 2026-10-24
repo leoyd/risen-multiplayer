@@ -176,6 +176,18 @@ void write(Writer& w, const NpcAttack& m) {
     w.u32(m.target_net_id);
 }
 
+void write(Writer& w, const DialogLine& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::DialogLine));
+    w.u32(m.speaker_net_id);
+    w.u8(m.output_type);
+    w.str8(m.sample);
+}
+
+bool valid(const DialogLine& m) {
+    return valid_dialog_speaker(m.speaker_net_id) && m.output_type <= kMaxDialogOutputType &&
+           valid_dialog_sample(m.sample);
+}
+
 void write(Writer& w, const Respawn& m) {
     w.u8(static_cast<std::uint8_t>(MsgType::Respawn));
     w.u32(m.net_id);
@@ -384,6 +396,15 @@ DecodeError read(Reader& r, NpcAttack& m) {
     return r.finish();
 }
 
+DecodeError read(Reader& r, DialogLine& m) {
+    m.speaker_net_id = r.u32();
+    m.output_type = r.u8();
+    r.str8(m.sample, 0, 255);  // longueur u8 : bornes vérifiées ci-dessous (BadValue)
+    const DecodeError e = r.finish();
+    if (e != DecodeError::None) return e;
+    return valid(m) ? DecodeError::None : DecodeError::BadValue;
+}
+
 DecodeError read(Reader& r, Respawn& m) {
     m.net_id = r.u32();
     m.x = r.f32();
@@ -422,6 +443,22 @@ Decoded<Variant> decode_as(Reader& r) {
 
 }  // namespace
 
+bool valid_dialog_sample(const std::string& sample) {
+    static constexpr char kSuffix[] = ".wav";
+    constexpr std::size_t kSuffixLen = sizeof kSuffix - 1;
+    // Nom de base non vide (5 octets au moins) ; « .. » refusé partout (jamais rien qui ressemble à un chemin).
+    if (sample.size() < kMinDialogSample || sample.size() > kMaxDialogSample) return false;
+    if (sample.find("..") != std::string::npos) return false;
+    for (char c : sample) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' ||
+                        c == '%' || c == '.';
+        if (!ok) return false;
+    }
+    return sample.compare(sample.size() - kSuffixLen, kSuffixLen, kSuffix) == 0;
+}
+
+bool valid_dialog_speaker(std::uint32_t net_id) { return net_id == kHostNetId || net_id >= kFirstNpcNetId; }
+
 bool encode_control(const ControlMessage& message, std::vector<std::uint8_t>& out) {
     if (const Hello* hello = std::get_if<Hello>(&message); hello != nullptr && !valid(*hello)) return false;
     std::vector<std::uint8_t> buf;
@@ -441,6 +478,7 @@ bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& 
         a != nullptr && !in_bounds(a->name, kMinAniName, kMaxAniName)) {
         return false;
     }
+    if (const DialogLine* dl = std::get_if<DialogLine>(&message); dl != nullptr && !valid(*dl)) return false;
     if (const Weapon* wp = std::get_if<Weapon>(&message); wp != nullptr && !in_bounds(wp->name, 0, kMaxWeaponName)) {
         return false;
     }
@@ -486,6 +524,7 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
         case MsgType::HitOnGuest: return decode_as<HitOnGuest, ReliableMessage>(r);
         case MsgType::Respawn: return decode_as<Respawn, ReliableMessage>(r);
         case MsgType::NpcAttack: return decode_as<NpcAttack, ReliableMessage>(r);
+        case MsgType::DialogLine: return decode_as<DialogLine, ReliableMessage>(r);
         case MsgType::MotionParam: return decode_as<MotionParam, ReliableMessage>(r);
         case MsgType::Weapon: return decode_as<Weapon, ReliableMessage>(r);
         case MsgType::Armor: return decode_as<Armor, ReliableMessage>(r);

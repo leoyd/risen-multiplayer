@@ -719,6 +719,8 @@ So that je suive l’histoire avec lui.
 **Then** rien n’est rejoué chez l’invité.
 **And** le nouveau message fiable est ajouté au protocole (v16, `PROTOCOL.md`, vecteurs), au faux invité et aux tests.
 
+*Note (implémentation 4.1, protocole v16) :* `DialogLine` = type 30, `{locuteur u32 (1 héros de l’hôte, ≥ 1000 PNJ), type u8 (0 à 3), échantillon u8 + octets (5 à 128, `[A-Za-z0-9_%.]`, sans `..`, suffixe `.wav` après un nom non vide)}`, hôte → invité, tout autre contenu refusé (`BadValue`). L’hôte n’émet que pendant un dialogue (`InfoSystem::IsRunning`) et pour son héros ou le partenaire de dialogue annoncé ; l’invité rejoue aussitôt (`sStartOutput` + `StartFacialAni`, sous garde de rejeu) si l’entité est à 20 m au plus et qu’il n’est pas lui-même en dialogue. Clé `dialogues` (défaut 1). Pas de sous-titres. À valider en jeu.
+
 ### Story 4.2 : Dialogue de l’invité vu par l’hôte
 
 As a hôte,

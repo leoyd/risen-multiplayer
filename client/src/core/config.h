@@ -38,6 +38,9 @@ struct Config {
     // application (invité), coups natifs sur le héros invité tous bloqués : interrupteur de
     // diagnostic, comportement de la story 3.6 (recul générique seul).
     bool native_attacks = true;
+    // Story 4.1 : répliques de dialogue de l'hôte vues par l'invité (DialogLine, protocole v16). 0 = ni
+    // émission (hôte) ni rejeu (invité) : interrupteur de diagnostic.
+    bool dialogues = true;
     // Overlay à l'écran (rôle, pseudo, état de session), détour de IDirect3DDevice9::Present.
     // 0 = pas de détour.
     bool overlay = true;
@@ -60,7 +63,7 @@ struct ConfigResult {
 // Champs : role (host|guest, obligatoire), host_ip (validé en invité seulement),
 // port (vide = défaut), nickname, guest_equipment (liste de templates, core/equipment.h), probe (0|1, vide = défaut 0),
 // log_level (debug|info, insensible à la casse, vide = défaut info), damage_hook (0|1, vide = défaut 1),
-// native_attacks (0|1, vide = défaut 1), overlay (0|1, vide = défaut 1).
+// native_attacks (0|1, vide = défaut 1), dialogues (0|1, vide = défaut 1), overlay (0|1, vide = défaut 1).
 ConfigResult parse_config(std::string_view text);
 
 }  // namespace mp

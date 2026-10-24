@@ -4040,7 +4040,9 @@ namespace {
 
 std::string attack_tail(const std::string& line) {
     const auto at = line.find("attaques natives : ");
-    return at == std::string::npos ? std::string() : line.substr(at);
+    if (at == std::string::npos) return std::string();
+    const auto end = line.find(" ; dialogues : ", at);  // story 4.1 : dernier bloc du bilan
+    return line.substr(at, end == std::string::npos ? std::string::npos : end - at);
 }
 
 Session host_with_npcs() {
@@ -4342,4 +4344,161 @@ TEST("attaques 3.8b hôte : Weapon{2} et NpcAttack{2} dus au même tick → Avat
     CHECK_EQ(commands_of<AvatarWeapon>(out).size(), 1u);
     CHECK_EQ(commands_of<ApplyAvatarAttack>(out).size(), 1u);
     CHECK(index_of<AvatarWeapon>(out) < index_of<ApplyAvatarAttack>(out));
+}
+
+// --- Story 4.1 : dialogue de l'hôte vu par l'invité ----------------------------------------------
+
+namespace {
+
+std::string dialog_tail(const std::string& line) {
+    const auto at = line.find("dialogues : ");
+    return at == std::string::npos ? std::string() : line.substr(at);
+}
+
+const char* const kSample = "INFO_Sara_2_Sara_DE_%_Sara.wav";
+
+LocalDialogLine npc_line(std::uint8_t g, std::uint8_t type = 0, const std::string& sample = kSample) {
+    LocalDialogLine l;
+    l.guid = guid_of(g);
+    l.output_type = type;
+    l.sample = sample;
+    return l;
+}
+
+LocalDialogLine hero_line(const std::string& sample = kSample) {
+    LocalDialogLine l;
+    l.hero = true;
+    l.output_type = 3;
+    l.sample = sample;
+    return l;
+}
+
+}  // namespace
+
+TEST("dialogues 4.1 hôte : réplique du PNJ annoncé → DialogLine{1001, 0, échantillon} une fois, Debug, compté") {
+    Session s = host_with_npcs();  // 1000 = GUID 1, 1001 = GUID 2
+    const Output out = s.tick(1060, host_world({}, false), {npc_line(2)});
+    const auto sent = sent_of<proto::DialogLine>(out);
+    CHECK(sent.size() == 1 && sent[0].speaker_net_id == 1001u && sent[0].output_type == 0 && sent[0].sample == kSample);
+    CHECK(has_log_at(out, Level::Debug,
+                     "[sync] réplique de dialogue du PNJ 1001 (type 0, « INFO_Sara_2_Sara_DE_%_Sara.wav ») : DialogLine envoyé"));
+    CHECK(sent_of<proto::DialogLine>(s.tick(1070, host_world({}, false), {})).empty());
+    CHECK_EQ(dialog_tail(host_stats_line(s, 1100)),
+             std::string("dialogues : DialogLine envoyés 1, reçus 0, rejoués 0, ignorés 0"));
+}
+
+TEST("dialogues 4.1 hôte : réplique du héros → DialogLine{1, 3, …}") {
+    Session s = host_in_session();
+    const auto sent = sent_of<proto::DialogLine>(s.tick(1060, host_world({}, false), {hero_line()}));
+    CHECK(sent.size() == 1 && sent[0].speaker_net_id == proto::kHostNetId && sent[0].output_type == 3);
+}
+
+TEST("dialogues 4.1 hôte : PNJ non annoncé, mort, échantillon invalide, hors session → rien, compté ignoré") {
+    Session s = host_with_npcs();
+    Output out = s.tick(1060, host_world({}, false), {npc_line(9)});
+    CHECK(sent_of<proto::DialogLine>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignorée (PNJ non annoncé)"));
+    out = s.tick(1070, host_world({}, false), {npc_line(1, 0, "../x.wav"), npc_line(1, 4)});
+    CHECK(sent_of<proto::DialogLine>(out).empty());
+    CHECK(has_log(out, "ignorée (échantillon ou type invalide)"));
+    CHECK_EQ(dialog_tail(host_stats_line(s, 1100)),
+             std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 3"));
+    Session d = host_in_session();
+    d.tick(1050, host_world({npc_at(1, 100.0f)}), {});
+    d.tick(1100, host_world({npc_at(1, 100.0f, 0, false)}), {});  // Death{1000}
+    out = d.tick(1110, host_world({}, false), {npc_line(1)});
+    CHECK(sent_of<proto::DialogLine>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignorée (PNJ mort)"));
+    CHECK(!has_log(out, "PNJ non annoncé"));
+    Session h(host_settings());
+    h.tick(0, loaded_world(), {});
+    out = h.tick(10, loaded_world(), {hero_line()});
+    CHECK(commands_of<SendReliable>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignorée (hors session)"));
+}
+
+TEST("dialogues 4.1 hôte : dialogues = 0 → rien envoyé ; DialogLine reçu → Warn, ignoré, session intacte") {
+    Settings off = host_settings();
+    off.dialogues = false;
+    Session s(off);
+    s.tick(0, loaded_world(), {});
+    s.tick(10, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    CHECK(s.state() == State::InSession);
+    Output out = s.tick(60, loaded_world(), {hero_line()});
+    CHECK(sent_of<proto::DialogLine>(out).empty());
+    CHECK(has_log(out, "ignorée (dialogues = 0)"));
+    Session h = host_with_npcs();
+    out = h.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogLine{1000, 0, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log_at(out, Level::Warn, "ignoré : l'hôte ne rejoue pas de dialogue"));
+    out = h.tick(1070, host_world({}, false), reliable(encode_r(proto::DialogLine{1000, 0, kSample})));
+    CHECK(has_log_at(out, Level::Debug, "ignoré : l'hôte ne rejoue pas de dialogue"));  // Warn une fois
+    CHECK(!has_log_at(out, Level::Warn, "ignoré : l'hôte ne rejoue pas de dialogue"));
+    CHECK(h.state() == State::InSession);
+}
+
+TEST("dialogues 4.1 invité : DialogLine d'une réplique vivante → ApplyDialogLine aussitôt, compté reçu") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::DialogLine{1001, 2, kSample})));
+    const auto apply = commands_of<ApplyDialogLine>(out);
+    CHECK(apply.size() == 1 && apply[0]->net_id == 1001u && apply[0]->output_type == 2 && apply[0]->sample == kSample);
+    // Bilan de sync/dialogue : un rejoué, un ignoré (trop loin, par exemple).
+    g.tick(410, loaded_world(), {LocalDialogReplayed{1, 1}});
+    CHECK_EQ(dialog_tail(guest_stats_line(g, 600)),
+             std::string("dialogues : DialogLine envoyés 0, reçus 1, rejoués 1, ignorés 1"));
+}
+
+TEST("dialogues 4.1 invité : locuteur 1 → avatar de l'hôte présent seulement") {
+    Session g = guest_with_npcs();  // pas d'avatar de l'hôte
+    Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::DialogLine{proto::kHostNetId, 3, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignoré (pas d'avatar de l'hôte)"));
+    Session a = guest_with_clock();
+    out = a.tick(1400, loaded_world(), reliable(encode_r(proto::DialogLine{proto::kHostNetId, 3, kSample})));
+    const auto apply = commands_of<ApplyDialogLine>(out);
+    CHECK(apply.size() == 1 && apply[0]->net_id == proto::kHostNetId && apply[0]->output_type == 3);
+}
+
+TEST("dialogues 4.1 invité : avatar de l'hôte mort (Death{1} en attente puis appliqué) → pas d'ApplyDialogLine") {
+    Session g = guest_with_clock();  // affiché = now − 1350
+    g.tick(1400, loaded_world(), reliable(encode_r(proto::Death{proto::kHostNetId})));  // en attente
+    Output out = g.tick(1410, loaded_world(), reliable(encode_r(proto::DialogLine{proto::kHostNetId, 3, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignoré (avatar de l'hôte mort)"));
+    CHECK_EQ(commands_of<AvatarDeath>(g.tick(1500, loaded_world(), {})).size(), 1u);  // appliqué
+    out = g.tick(1510, loaded_world(), reliable(encode_r(proto::DialogLine{proto::kHostNetId, 3, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignoré (avatar de l'hôte mort)"));
+}
+
+TEST("dialogues 4.1 invité : NetId non annoncé, réplique morte → ignoré, compté ; dialogues = 0 → Info une fois") {
+    Session g = guest_with_npcs();
+    Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::DialogLine{1500, 0, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log(out, "ignoré (NetId non annoncé)"));
+    g.tick(410, loaded_world(), reliable(encode_r(proto::Death{1001})));
+    out = g.tick(420, loaded_world(), reliable(encode_r(proto::DialogLine{1001, 0, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log(out, "ignoré (réplique morte)"));
+    CHECK_EQ(dialog_tail(guest_stats_line(g, 600)),
+             std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 2"));
+    Settings off = guest_settings();
+    off.dialogues = false;
+    Session f(off);
+    f.tick(0, loaded_world(), {});
+    f.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    f.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    out = f.tick(160, loaded_world(), reliable(encode_r(proto::DialogLine{1000, 0, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log(out, "ignoré (dialogues = 0)"));
+    CHECK(has_log_at(out, Level::Info, "[sync] DialogLine reçus de l'hôte mais dialogues inactifs ici"));
+    out = f.tick(170, loaded_world(), reliable(encode_r(proto::DialogLine{1000, 0, kSample})));
+    CHECK(!has_log(out, "dialogues inactifs ici"));
+}
+
+TEST("dialogues 4.1 invité : LocalDialogLine chez l'invité → rien envoyé") {
+    Session g = guest_with_npcs();
+    const Output out = g.tick(400, loaded_world(), {hero_line()});
+    CHECK(sent_of<proto::DialogLine>(out).empty());
+    CHECK(has_log(out, "ignorée (pas hôte)"));
 }

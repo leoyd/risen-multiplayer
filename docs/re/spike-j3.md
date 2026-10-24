@@ -151,3 +151,21 @@ rejeu fera parler le PNJ locuteur lui-même, retrouvé par NetId/GUID.
   le registre) le temps du dialogue, puis rendu. Chez l'invité, la réplique est libérée pour que le
   dialogue natif tourne (à valider en 4.2).
 - **Sous-titres** : reportés (H5).
+
+## 7. Mise en œuvre (story 4.1, protocole v16)
+
+- Session : `win/hooks::install_session` pose le détour de `StartOutput` (clé `dialogues`, bloc
+  `game/dialogue` en tout ou rien) ; `sync/dialogue` copie (locuteur, échantillon, type) dans une file
+  de 32, la frame de l'hôte filtre (dialogue en cours, héros ou partenaire, PNJ annoncé) et émet
+  `DialogLine{locuteur, type, échantillon}` (type 30).
+- Invité : rejeu aussitôt reçu par `sStartOutput` puis `StartFacialAni`, **sous garde de rejeu** du
+  registre (l'avatar et les répliques ont leurs animations natives bloquées ; la sonde ne l'avait pas
+  vérifié : la copie F6 n'était pas au registre). Distance 20 m, invité pas en dialogue.
+- `InfoSystem::IsRunning` et `GetNPC` sont lus dans le détour, au moment de la réplique (accesseurs
+  sans effet de bord) : la première et la dernière réplique ne dépendent pas de l'état à la frame.
+- À vérifier en jeu : lèvres de l'avatar et de la réplique malgré le registre ; partenaire `GetNPC` =
+  locuteur des répliques du PNJ ; répliques du héros de l'hôte (type 3, « locuteur = joueur »)
+  rejouées sur l'avatar sans router le son ni la caméra vers le joueur local de l'invité (voix en 3D
+  sur l'avatar, caméra de l'invité immobile).
+  Procédure : `client/README.md`, « Dialogue de l'hôte vu par l'invité ».
+

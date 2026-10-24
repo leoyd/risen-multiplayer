@@ -67,6 +67,8 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"respawn.bin", true, Respawn{NetId: GuestNetId, X: 100, Y: 0, Z: -50, Yaw: 1.5, Tick: 42}},
 		// v15 (story 3.8) : début d'une attaque du PNJ 1005 sur l'avatar de l'invité.
 		{"npc_attack.bin", true, NpcAttack{NetId: 1005, Move: 11, Target: GuestNetId}},
+		// v16 (story 4.1) : réplique de dialogue du PNJ 1004.
+		{"dialog_line.bin", true, DialogLine{Speaker: 1004, OutputType: 0, Sample: "INFO_Sara_2_Sara_DE_%_Sara.wav"}},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
@@ -139,7 +141,7 @@ func TestAllVectorsCovered(t *testing.T) {
 		"weapon.bin": true, "weapon_sheathed.bin": true, "armor.bin": true, "armor_removed.bin": true,
 		"spawn_npc.bin": true, "spawn_bad_type.bin": true, "snapshot_multi.bin": true, "motion_npc.bin": true,
 		"death_npc.bin": true, "hit_request.bin": true, "hit_on_guest.bin": true, "respawn.bin": true,
-		"npc_attack.bin": true}
+		"npc_attack.bin": true, "dialog_line.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -162,7 +164,11 @@ func TestDecodeErrors(t *testing.T) {
 		{"canal snapshot", []byte{1, 1}, false, ErrUnknownChannel},
 		{"heartbeat en contrôle", []byte{2, 16}, false, ErrUnknownType},
 		{"hello en fiable", []byte{1, 1, 0}, true, ErrUnknownType},
-		{"type absent", []byte{30}, true, ErrUnknownType},
+		{"type absent", []byte{31}, true, ErrUnknownType},
+		{"dialogline en contrôle", []byte{2, 30}, false, ErrUnknownType},
+		{"dialogline sans longueur", []byte{30, 0xec, 3, 0, 0, 0}, true, ErrTruncated},
+		{"dialogline tronqué", []byte{30, 0xec, 3, 0, 0, 0, 5, 'a', '.', 'w', 'a'}, true, ErrTruncated},
+		{"dialogline trop long", []byte{30, 0xec, 3, 0, 0, 0, 5, 'a', '.', 'w', 'a', 'v', 0}, true, ErrTrailingBytes},
 		{"npcattack tronqué", []byte{29, 0xed, 3, 0, 0, 0x0b, 0, 0, 0, 2, 0, 0}, true, ErrTruncated},
 		{"npcattack trop long", []byte{29, 0xed, 3, 0, 0, 0x0b, 0, 0, 0, 2, 0, 0, 0, 0}, true, ErrTrailingBytes},
 		{"npcattack en contrôle", []byte{2, 29}, false, ErrUnknownType},
@@ -349,7 +355,7 @@ func TestMotionAndAniNameErrors(t *testing.T) {
 		t.Fatal("AniName de 256 octets encodé")
 	}
 	// Aucun type réservé (depuis la v14) ; un type absent de la liste reste inconnu.
-	for _, typ := range []byte{4, 15, 30} {
+	for _, typ := range []byte{4, 15, 31} {
 		if _, err := DecodeReliable([]byte{typ}); !errors.Is(err, ErrUnknownType) {
 			t.Fatalf("type inconnu %d : %v", typ, err)
 		}
@@ -481,5 +487,36 @@ func TestSnapshotMultiVector(t *testing.T) {
 	enc, err := EncodeSnapshot(want)
 	if err != nil || !bytes.Equal(enc, raw) {
 		t.Fatalf("réencodage différent :\n% x\n% x (%v)", enc, raw, err)
+	}
+}
+
+// Story 4.1 : DialogLine (v16), bornes du locuteur, du type et de l'échantillon.
+func TestDialogLineBounds(t *testing.T) {
+	raw := func(speaker uint32, typ uint8, sample string) []byte {
+		b := []byte{30, byte(speaker), byte(speaker >> 8), byte(speaker >> 16), byte(speaker >> 24), typ, byte(len(sample))}
+		return append(b, sample...)
+	}
+	good := "INFO_A_1_B_DE_%_C.wav"
+	for _, m := range []DialogLine{{1004, 0, good}, {HostNetId, 3, good}, {FirstNpcNetId, 1, "a.wav"},
+		{1004, 0, strings.Repeat("a", 124) + ".wav"}} {
+		got, err := DecodeReliable(raw(m.Speaker, m.OutputType, m.Sample))
+		if err != nil || got.(DialogLine) != m {
+			t.Errorf("DialogLine %+v : %v %v", m, got, err)
+		}
+		if b, err := EncodeReliable(m); err != nil || !bytes.Equal(b, raw(m.Speaker, m.OutputType, m.Sample)) {
+			t.Errorf("encodage %+v : %v", m, err)
+		}
+	}
+	bad := []DialogLine{{0, 0, good}, {GuestNetId, 0, good}, {999, 0, good}, {1004, 4, good}, {1004, 255, good},
+		{1004, 0, ""}, {1004, 0, "../x.wav"}, {1004, 0, "..\\x.wav"}, {1004, 0, "dir/x.wav"}, {1004, 0, "INFO_A"}, {1004, 0, ".wav"}, {1004, 0, "a..wav"},
+		{1004, 0, "INFO_A.WAV"}, {1004, 0, "INFO_A.wav "}, {1004, 0, "INFO A.wav"}, {1004, 0, "INFO_\xc3\xa9.wav"},
+		{1004, 0, strings.Repeat("a", 125) + ".wav"}, {1004, 0, strings.Repeat("a", 251) + ".wav"}}
+	for _, m := range bad {
+		if _, err := DecodeReliable(raw(m.Speaker, m.OutputType, m.Sample)); !errors.Is(err, ErrBadValue) {
+			t.Errorf("DialogLine %+v : %v, attendu ErrBadValue", m, err)
+		}
+		if _, err := EncodeReliable(m); err == nil {
+			t.Errorf("DialogLine %+v encodé", m)
+		}
 	}
 }

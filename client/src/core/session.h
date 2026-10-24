@@ -101,6 +101,14 @@
 // ApplyAvatarAttack, exécuté par sync/avatar (cibles fixées, StartMove). Tout autre NetId reçu par
 // l'hôte est ignoré (Warn) ; NpcAttack{2} reçu par l'invité : ignoré (NetId non annoncé).
 //
+// Dialogues (story 4.1, protocole v16) : chez l'hôte, une réplique de son dialogue (LocalDialogLine,
+// relevée par sync/dialogue : son héros, ou le partenaire de dialogue désigné par son GUID) part en
+// DialogLine{1 ou NetId du PNJ annoncé et vivant, type, échantillon}. Chez l'invité, un DialogLine
+// donne aussitôt ApplyDialogLine si le locuteur est l'avatar de l'hôte (présent et vivant) ou une
+// réplique annoncée et vivante ; sync/dialogue vérifie la distance et le dialogue local, puis rejoue
+// (sStartOutput, StartFacialAni) et rend son bilan (LocalDialogReplayed). Settings::dialogues faux : ni
+// envoi ni rejeu. Un hôte qui reçoit DialogLine l'ignore (Warn).
+//
 // Robustesse (story 3.4a) : Start porte le Heartbeat encodé et ses délais, que le transport envoie
 // depuis son thread quand la frame ne le lit plus (pause du jeu). Chez l'invité, l'entrée de
 // snapshot d'un PNJ pas encore annoncé est gardée kEarlyNpcHoldMs puis appliquée à son Spawn.
@@ -158,6 +166,8 @@ struct Settings {
     std::uint64_t seed = 0;                       // graine du tirage de `conv`
     // Story 3.8 (3.8b : les deux sens) : NpcAttack envoyés et appliqués. Faux : ignorés et comptés.
     bool native_attacks = true;
+    // Story 4.1 : DialogLine envoyés (hôte) et rejoués (invité). Faux : ignorés et comptés.
+    bool dialogues = true;
 };
 
 using core::Pose;
@@ -277,8 +287,25 @@ struct LocalNpcAttack {
     std::uint32_t move = 0;
     std::uint32_t target = 0;
 };
+// Story 4.1, hôte : une réplique d'un dialogue en cours, relevée par sync/dialogue : dite par son héros
+// (`hero`), ou par le partenaire de dialogue de GUID `guid`. Échantillon et type tels que passés à
+// gCScriptProcessingUnit::StartOutput. Devient DialogLine en session si le PNJ est annoncé et vivant.
+struct LocalDialogLine {
+    bool hero = false;
+    protocol::Guid guid{};
+    std::uint8_t output_type = 0;
+    std::string sample;
+};
+// Story 4.1 : bilan des ApplyDialogLine exécutés depuis la frame précédente (sync/dialogue) : rejoués,
+// ou ignorés (entité absente ou morte, trop loin, invité en dialogue, échec du jeu). Hôte : répliques
+// relevées mais invalides (échantillon, GUID illisible).
+struct LocalDialogReplayed {
+    unsigned played = 0;
+    unsigned ignored = 0;
+};
 using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor,
-                           LocalHit, LocalHitsBlocked, LocalHitOnGuest, LocalDown, LocalNpcAttack>;
+                           LocalHit, LocalHitsBlocked, LocalHitOnGuest, LocalDown, LocalNpcAttack, LocalDialogLine,
+                           LocalDialogReplayed>;
 
 // Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
 // (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
@@ -410,6 +437,14 @@ struct ApplyAvatarAttack {
     std::uint32_t move = 0;
     std::uint32_t target = 0;
 };
+// Story 4.1, invité : rejouer une réplique de dialogue de l'hôte sur le locuteur `net_id` (1 avatar de
+// l'hôte, ≥ 1000 réplique de ce NetId) : sync/dialogue::replay (distance, dialogue local, sStartOutput,
+// StartFacialAni).
+struct ApplyDialogLine {
+    std::uint32_t net_id = 0;
+    std::uint8_t output_type = 0;
+    std::string sample;
+};
 // Invité : rejouer un Motion ou un réglage de l'hôte sur la réplique, sous ReplayGuard.
 struct PlayNpcMotion {
     std::uint32_t net_id = 0;
@@ -424,7 +459,7 @@ using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseRelia
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
                              ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath, ApplyHit,
-                             ApplyHitOnGuest, RespawnHero, ApplyNpcAttack, ApplyAvatarAttack>;
+                             ApplyHitOnGuest, RespawnHero, ApplyNpcAttack, ApplyAvatarAttack, ApplyDialogLine>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -544,6 +579,9 @@ private:
     void on_local_npc_attack(const LocalNpcAttack& in, Output& out);
     void on_npc_attack(const protocol::NpcAttack& m, Output& out);
     void on_avatar_attack(const protocol::NpcAttack& m, Output& out);  // story 3.8b, hôte : NpcAttack{2}
+    // Story 4.1. Hôte : réplique de son dialogue (DialogLine). Invité : DialogLine reçu (ApplyDialogLine).
+    void on_local_dialog_line(const LocalDialogLine& in, Output& out);
+    void on_dialog_line(const protocol::DialogLine& m, Output& out);
     // Story 3.7. Invité : mise à terre (LocalDown), Respawn reçu (ordre), repli. Hôte : Death{2} reçu,
     // envoi du Respawn dû, accusé reçu, repli ; filtre des entrées de snapshot du NetId 2.
     void on_local_down(std::uint64_t now, const LocalDown& in, Output& out);
@@ -746,6 +784,13 @@ private:
         unsigned sent = 0, applied = 0, ignored = 0;
     } attacks_;
     bool attacks_off_logged_ = false;  // NpcAttack du pair ignoré pour native_attacks = 0 déjà signalé (session)
+    // Story 4.1 : dialogues. Hôte : DialogLine envoyés ; invité : reçus (ApplyDialogLine émis) et rejoués
+    // (bilan de sync/dialogue) ; les deux : ignorés (refusés ici ou par sync/dialogue).
+    struct DialogCounters {
+        unsigned sent = 0, received = 0, played = 0, ignored = 0;
+    } dialog_;
+    bool dialog_off_logged_ = false;  // DialogLine reçu ignoré pour dialogues = 0 déjà signalé (session)
+    bool dialog_host_warned_ = false;  // hôte : DialogLine reçu déjà signalé en Warn (session)
     // Story 3.7 : à terre et réapparition. Invité : à terre (Death{2} envoyé), depuis quand, mort native
     // (IsDead) en cours et déjà signalée. Hôte : Respawn à envoyer, accusé attendu depuis
     // respawn_sent_at_, premier tick valide des entrées du NetId 2.

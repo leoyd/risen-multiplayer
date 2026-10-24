@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 15, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 16, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -14,10 +14,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"strings"
 )
 
 const (
-	ProtocolVersion   = 15
+	ProtocolVersion   = 16
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -53,6 +54,7 @@ const (
 	TypeDeath       MsgType = 24 // v5
 	TypeRespawn     MsgType = 25 // v14 (story 3.7)
 	TypeNpcAttack   MsgType = 29 // v15 (story 3.8)
+	TypeDialogLine  MsgType = 30 // v16 (story 4.1)
 	TypeMotionParam MsgType = 26 // v6
 	TypeWeapon      MsgType = 27 // v7
 	TypeArmor       MsgType = 28 // v8
@@ -103,7 +105,7 @@ var (
 	ErrUnsupportedVersion = errors.New("version du protocole non prise en charge")
 	ErrBadLength          = errors.New("longueur de texte hors bornes")
 	ErrTrailingBytes      = errors.New("octets en trop")
-	ErrBadValue           = errors.New("champ hors domaine") // Motion, MotionParam, type de Spawn, snapshot de plus de 54 entités
+	ErrBadValue           = errors.New("champ hors domaine") // Motion, MotionParam, type de Spawn, DialogLine, snapshot de plus de 54 entités
 )
 
 // ErrOutOfBounds : refus de l'encodeur (texte hors bornes, version ≠ ProtocolVersion, > 1200 octets,
@@ -228,6 +230,44 @@ type Weapon struct {
 	Name  string
 }
 
+// DialogLine (v16, story 4.1) : réplique d'un dialogue de l'hôte, hôte → invité. Speaker = 1 (héros
+// de l'hôte) ou ≥ 1000 (PNJ) ; OutputType = gEOutputType brut, 0 à 3 ; Sample = nom du fichier voix
+// (5 à 128 octets, [A-Za-z0-9_%.], sans « .. », suffixe « .wav »). Autre valeur : ErrBadValue au décodage,
+// ErrOutOfBounds à l'encodage.
+type DialogLine struct {
+	Speaker    uint32
+	OutputType uint8
+	Sample     string
+}
+
+const (
+	MaxDialogOutputType = 3
+	MinDialogSample     = 5
+	MaxDialogSample     = 128
+)
+
+// ValidDialogSample : 5 à 128 octets (nom de base non vide), caractères [A-Za-z0-9_%.] seulement,
+// sans « .. » (aucun chemin), suffixe « .wav ».
+func ValidDialogSample(s string) bool {
+	if len(s) < MinDialogSample || len(s) > MaxDialogSample || !strings.HasSuffix(s, ".wav") ||
+		strings.Contains(s, "..") {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '%' || c == '.'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validDialogLine(m DialogLine) bool {
+	return (m.Speaker == HostNetId || m.Speaker >= FirstNpcNetId) && m.OutputType <= MaxDialogOutputType &&
+		ValidDialogSample(m.Sample)
+}
+
 const MaxWeaponName = 255
 
 // Armor : armure portée par une entité (v8), nom de l'objet de la pile équipée à l'emplacement 8
@@ -299,6 +339,7 @@ func (HitRequest) Type() MsgType  { return TypeHitRequest }
 func (HitOnGuest) Type() MsgType  { return TypeHitOnGuest }
 func (Respawn) Type() MsgType     { return TypeRespawn }
 func (NpcAttack) Type() MsgType   { return TypeNpcAttack }
+func (DialogLine) Type() MsgType  { return TypeDialogLine }
 func (MotionParam) Type() MsgType { return TypeMotionParam }
 func (Weapon) Type() MsgType      { return TypeWeapon }
 func (Armor) Type() MsgType       { return TypeArmor }
@@ -387,6 +428,10 @@ func (w *writer) message(m Message) {
 		w.u32(m.NetId)
 		w.u32(m.Move)
 		w.u32(m.Target)
+	case DialogLine:
+		w.u32(m.Speaker)
+		w.u8(m.OutputType)
+		w.str8(m.Sample)
 	case Respawn:
 		w.u32(m.NetId)
 		w.f32(m.X)
@@ -432,8 +477,7 @@ func EncodeControl(m Message) ([]byte, error) {
 
 // EncodeReliable rend le message [MsgType][charge] d'un message fiable (Heartbeat, SessionEnd,
 // Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon, Armor, HitRequest, HitOnGuest, Respawn,
-// NpcAttack),
-// sans octet de canal.
+// NpcAttack, DialogLine), sans octet de canal.
 func EncodeReliable(m Message) ([]byte, error) {
 	switch m := m.(type) {
 	case AniName:
@@ -458,6 +502,10 @@ func EncodeReliable(m Message) ([]byte, error) {
 		}
 	case Spawn:
 		if !validSpawn(m) {
+			return nil, ErrOutOfBounds
+		}
+	case DialogLine:
+		if !validDialogLine(m) {
 			return nil, ErrOutOfBounds
 		}
 	case Heartbeat, SessionEnd, Despawn, Death, HitRequest, HitOnGuest, Respawn, NpcAttack:
@@ -692,6 +740,16 @@ func DecodeReliable(b []byte) (Message, error) {
 		m := NpcAttack{NetId: r.u32(), Move: r.u32(), Target: r.u32()}
 		if err := r.finish(); err != nil {
 			return nil, err
+		}
+		return m, nil
+	case TypeDialogLine:
+		m := DialogLine{Speaker: r.u32(), OutputType: r.u8()}
+		m.Sample = r.str8(0, 255) // longueur u8 : bornes vérifiées ci-dessous (ErrBadValue)
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		if !validDialogLine(m) {
+			return nil, ErrBadValue
 		}
 		return m, nil
 	case TypeRespawn:

@@ -1,5 +1,6 @@
-// Adaptateur ABI des dialogues (spike J3, story 4.0, `probe = 1` seulement). Plan et résultats :
-// docs/re/spike-j3.md.
+// Adaptateur ABI des dialogues : sonde du spike J3 (story 4.0, `probe = 1`) et, depuis la story 4.1
+// (AD-13), session (sync/dialogue : détour de StartOutput, InfoSystem::IsRunning et GetNPC chez l'hôte,
+// sStartOutput et StartFacialAni chez l'invité). Plan et résultats : docs/re/spike-j3.md.
 //
 // Faits établis par désassemblage (Steam x64, janvier 2023) :
 // - gCScriptProcessingUnit (SPU, Game.dll) vit à `+0x118` du gCScriptRoutine_PS (PS 0x24) de
@@ -29,8 +30,9 @@
 //   copies construites par l'appelant et détruites par l'appelé (AD-3).
 //
 // Toutes les fonctions sont protégées par SEH et rendent false en cas d'échec. Thread principal
-// (hook OnProcess, AD-2), sauf `spu_self_entity` et `read_bcstring` : accesseurs sans effet de
-// bord appelés depuis le détour de StartOutput (même thread que le script qui parle).
+// (hook OnProcess, AD-2), sauf `spu_self_entity`, `read_bcstring` et, depuis la story 4.1,
+// `info_is_running` et `info_dialog_npc` : accesseurs sans effet de bord appelés depuis le détour de
+// StartOutput (même thread que le script qui parle).
 #pragma once
 
 #include "game/entity.h"
@@ -47,7 +49,8 @@ constexpr int kInfoCommandNone = 0x3d;  // InfoSystem::GetCurrentCommandType san
 using StartOutputFn = bool (*)(void* spu, const void* sample, int type);
 
 // Bloc facultatif en tout ou rien (Game.dll, Script.dll, Engine.dll, SharedBase.dll). False et
-// `missing` au premier échec : les expériences J3 restent inactives, J1 et J2 intactes.
+// `missing` au premier échec : sonde, expériences J3 inactives (J1 et J2 intactes) ; session, pas de
+// dialogues (story 4.1).
 bool resolve_dialogue(const char*& missing);
 bool dialogue_resolved();
 void* start_output_address();  // après resolve_dialogue (sinon nul)
@@ -68,7 +71,8 @@ bool info_say_speaker(Entity& out);
 // --- Parole --------------------------------------------------------------------------------
 // gCScriptProcessingUnit::sIsOutputPlaying(entité) : ressource de sortie en attente ou en cours.
 bool output_playing(const Entity& e, bool& out);
-// gCScriptProcessingUnit::sStartOutput(entité, échantillon, type) : passe par le détour.
+// gCScriptProcessingUnit::sStartOutput(entité, échantillon, type) : passe par le détour (sonde ou
+// session : sync/dialogue ignore ces copies chez l'invité).
 bool start_output(const Entity& e, const char* sample, int type, bool& out);
 // Entity::StartFacialAni(bCString) : animation des lèvres (nom = échantillon, comme StartSayEx).
 bool start_facial_ani(const Entity& e, const char* sample);

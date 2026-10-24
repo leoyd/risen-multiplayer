@@ -274,6 +274,28 @@ TEST("config : native_attacks invalide -> erreur nommant le champ") {
     }
 }
 
+TEST("config : dialogues absent -> 1 par défaut ; 0, 1, vide") {
+    CHECK(parse_config("role=host\n").config.dialogues);
+    const auto zero = parse_config("role=guest\nhost_ip=1.2.3.4\ndialogues = 0\n");
+    CHECK(zero.ok);
+    CHECK(!zero.config.dialogues);
+    const auto one = parse_config("role=host\ndialogues = 1\n");
+    CHECK(one.ok);
+    CHECK(one.config.dialogues);
+    const auto empty = parse_config("role=host\ndialogues =\n");
+    CHECK(empty.ok);
+    CHECK(empty.config.dialogues);
+    CHECK(empty.warnings.empty());
+}
+
+TEST("config : dialogues invalide -> erreur nommant le champ") {
+    for (const char* v : {"2", "oui", "true", "-1"}) {
+        const auto r = parse_config(std::string("role=host\ndialogues=") + v + "\n");
+        CHECK(!r.ok);
+        CHECK_EQ(r.error_field, std::string("dialogues"));
+    }
+}
+
 TEST("config : overlay absent -> 1 par défaut ; 0, 1, vide") {
     CHECK(parse_config("role=host\n").config.overlay);
     const auto zero = parse_config("role=host\noverlay = 0\n");

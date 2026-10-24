@@ -856,6 +856,56 @@ l'autre sens (protocole v15 inchangé). But : chez l'hôte, les coups de l'invit
    bloqué : avatar invité -> PNJ N (seuls les HitRequest blessent)` ; les PV du monstre ne baissent
    que par `HitRequest PNJ N appliqué`. `StartMove -> 0` : rapporter la ligne (arme tenue, `main`).
 
+### Dialogue de l'hôte vu par l'invité (story 4.1, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité ; banc Wine : symboles de `game/dialogue` et
+lignes d'installation) seulement. Protocole **v16** (`DialogLine`, type 30, AD-13, spike J3 :
+`docs/re/spike-j3.md`). But : quand l'hôte parle à un PNJ, l'invité voit et entend chaque réplique
+(voix et lèvres) sur la réplique de ce PNJ et sur l'avatar de l'hôte, sans menu, caméra ni blocage.
+- **Hôte, détection** : détour de `gCScriptProcessingUnit::StartOutput` (copie du locuteur, de
+  l'échantillon, du type et de l'état d'`InfoSystem` à cet instant) ; la frame émet si un dialogue
+  était en cours (`InfoSystem::IsRunning`) et que le locuteur est son héros (NetId 1, type 3) ou le
+  partenaire de dialogue (`InfoSystem::GetNPC`, NetId par son GUID). Debug : `[sync] réplique de
+  dialogue du héros|du PNJ N (type T, « INFO_….wav ») : DialogLine envoyé`, ou `… : ignorée (PNJ non
+  annoncé|PNJ mort)`, ou `[sync] dialogues : réplique « … » ignorée (autre locuteur|locuteur
+  illisible|échantillon ou type invalide)`. Commentaires ambiants des PNJ : rien, ni compté.
+- **Invité, rejeu** : aussitôt reçu, sur l'avatar de l'hôte (1) ou la réplique (≥ 1000) :
+  `sStartOutput(entité, échantillon, type)` puis `StartFacialAni(échantillon)` (sous garde de rejeu) :
+  Debug `[sync] DialogLine (locuteur N, type T, « … ») rejouée sur la réplique|l'avatar de l'hôte à X
+  m`. Ignoré (Debug, compté) : entité absente ou morte, à plus de 20 m (2000 cm inclus), invité
+  lui-même en dialogue. SEH : Warn une fois par session ; `sStartOutput` qui rend false : Debug `voix
+  absente`. Le bilan de 5 s reste la trace Info (lignes par réplique en debug seulement).
+- **Installation** : `[hooks] dialogues : hook StartOutput posé (répliques de l'hôte vues par
+  l'invité)`, ou `[hooks] dialogues désactivés (dialogues = 0)`, ou Warn `[hooks] dialogues inactifs
+  : …` (session sans dialogues).
+- Clé `dialogues` (défaut `1`) : à `0`, ni envoi ni rejeu (reçus ignorés et comptés, Info une fois par
+  session chez l'invité) : **interrupteur de diagnostic**.
+- Bilan `[sync] snapshots (5 s)` : en fin de ligne, `dialogues : DialogLine envoyés …, reçus …,
+  rejoués …, ignorés …`.
+- Pas de sous-titres (H5 du spike non résolue), pas de synchronisation des effets du dialogue.
+- Faux invité : chaque `DialogLine` est journalisé `<- DialogLine locuteur=N type=T échantillon=S` ;
+  scénario `dialogues` de `tests/session_fake_guest.sh` (`session_host --dialog-ms N`).
+
+Prérequis : `log_level = debug` (les lignes par réplique sont en debug), DLL et configs installées
+(`tools/installer-local.sh`).
+
+1. **Installation** : la ligne `dialogues : hook StartOutput posé` dans les deux logs.
+2. **Une machine, hôte + faux invité** (`fake-guest --host 127.0.0.1 --duration 180s --echo`), avatar
+   près d'un PNJ : l'hôte lui parle. Chez l'hôte, une ligne `DialogLine envoyé` par réplique (héros et
+   PNJ) ; chez le faux invité, `<- DialogLine …`. Un commentaire ambiant ne doit rien envoyer.
+3. **Deux instances** (`~/Games/lancer-risen-coop.sh`), l'invité à moins de 20 m : l'hôte parle à un
+   PNJ jusqu'à la fin du dialogue. Chez l'invité : chaque réplique entendue, lèvres du PNJ et de
+   l'avatar qui bougent, héros libre (pas de caméra ni de menu) ; log invité `DialogLine … rejouée`
+   pour chaque réplique. Voix absente ou lèvres immobiles : rapporter les lignes `rejouée` (distance,
+   `sans lèvres`) et `voix absente`. **Répliques du héros de l'hôte (type 3)** rejouées sur l'avatar
+   de l'hôte : vérifier qu'elles ne sont pas traitées comme celles du joueur local de l'invité (son
+   joué en 2D « sur » le héros de l'invité, caméra ou cadrage de dialogue déclenché chez lui) : la voix
+   doit venir de l'avatar, en 3D, et la caméra de l'invité ne doit pas bouger. Sinon, rapporter les
+   lignes `rejouée` (type 3).
+4. **Invité à plus de 20 m** : rien entendu ; Debug `ignorée (trop loin, … m)`.
+5. **Invité en dialogue avec un autre PNJ** pendant celui de l'hôte : Debug `ignorée (invité en
+   dialogue)`, son propre dialogue intact.
+
 ### Overlay à l'écran (rôle et état de session)
 
 Une ligne permanente en haut à gauche de l'image dit quelle fenêtre est l'hôte et laquelle est

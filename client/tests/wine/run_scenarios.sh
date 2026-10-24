@@ -81,6 +81,11 @@ expect_no_log "nominal : attaques natives non résolues" "$d" "attaques natives 
 # Warn nommé, session installée quand même.
 expect_log "nominal : DownOrDeadBy* inactifs, cause nommée" "$d" \
     "\[hooks\] DownOrDeadBy\* inactifs : Script_Game.dll introuvable"
+# Story 4.1 : dialogues par défaut (dialogues = 1) : bloc game/dialogue résolu sur les vraies DLL,
+# détour de StartOutput posé en session.
+expect_log "nominal : dialogues, hook StartOutput posé" "$d" \
+    "\[hooks\] dialogues : hook StartOutput posé (répliques de l'hôte vues par l'invité)"
+expect_no_log "nominal : dialogues actifs" "$d" "dialogues inactifs"
 
 # Spike J1 : sonde explicitement désactivée (hooks de session), puis activée (hooks posés sur les vraies
 # DLL du jeu ; le banc n'appelle jamais OnProcess, donc aucun tick).
@@ -110,6 +115,13 @@ run "native_attacks = 0" "$d2"
 expect_log "native_attacks = 0 : désactivées" "$d2" "\[hooks\] attaques natives des répliques désactivées (native_attacks = 0)"
 expect_no_log "native_attacks = 0 : non résolues" "$d2" "attaques natives des répliques résolues"
 expect_log "native_attacks = 0 : session prête" "$d2" "\[sync\] session prête (rôle invité)"
+
+# Story 4.1 : dialogues = 0 : ni bloc ni détour, ligne Info, session installée quand même.
+d3=$(setup sans_dialogues $'role = host\ndialogues = 0')
+run "dialogues = 0" "$d3"
+expect_log "dialogues = 0 : désactivés" "$d3" "\[hooks\] dialogues désactivés (dialogues = 0)"
+expect_no_log "dialogues = 0 : pas de détour" "$d3" "hook StartOutput posé"
+expect_log "dialogues = 0 : session prête" "$d3" "\[sync\] session prête (rôle hôte)"
 
 # Overlay à l'écran : posé par défaut (device factice sur le d3d9 du préfixe Wine) ; sans GPU, Warn
 # nommé et session intacte. overlay = 0 : aucun détour, ligne Info.
@@ -172,7 +184,7 @@ done
 # Story 3.3 : symboles de resolve_npc présents dans les DLL du jeu (Script, Engine, Game) ;
 # story 3.4b : PSRoutine::PropertyAIMode (lecture et operator=) ; story 3.5 : resolve_damage ;
 # story 3.5 (correctif) : PSNpc::Get/SetCurrentTarget (resolve_damage) ; story 3.7 : PSSkills::GetHitPointsMax (resolve_npc) ;
-# story 4.0 : resolve_dialogue (sonde J3).
+# story 4.0 : resolve_dialogue (sonde J3 ; en session depuis la story 4.1).
 for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Script.dll|?UpdateEntityLists@Entity@@KAXXZ' \
     'Script.dll|?IsPlayer@Entity@@QEBA_NXZ' 'Script.dll|?GetHitPoints@PSSkills@@QEBAHXZ' \
     'Script.dll|?GetHitPointsMax@PSSkills@@QEBAHXZ' \

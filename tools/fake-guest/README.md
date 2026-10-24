@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v15 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v16 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, `ErrBadValue`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -76,6 +76,10 @@ Coups subis (v13, story 3.6) : sans option, chaque `HitOnGuest` reçu de l'hôte
 `<- HitOnGuest source=N dégâts=D` (source 0 = inconnue) et compté, jamais appliqué. Le bilan final
 `Bilan coups : HitRequest envoyés=… HitOnGuest reçus=… NpcAttack reçus=…` s'affiche dès qu'il en a
 reçu un (ou avec `--hit-interval`).
+
+Dialogues (v16, story 4.1) : chaque `DialogLine` reçu de l'hôte est journalisé
+`<- DialogLine locuteur=N type=T échantillon=S` (locuteur 1 = héros de l'hôte, ≥ 1000 = PNJ) et compté
+au bilan final `Bilan dialogues : DialogLine reçus=…`, jamais rejoué.
 
 Attaques des PNJ (v15, story 3.8) : chaque `NpcAttack` reçu de l'hôte est journalisé
 `<- NpcAttack netid=N move=M cible=C` (cible 1 = héros de l'hôte, 2 = avatar de l'invité, ≥ 1000 = PNJ,

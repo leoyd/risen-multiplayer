@@ -3,7 +3,7 @@
 // monde, vider poll(), tick, exécuter les commandes, écrire les logs.
 //
 // Usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N]
-//                     [--pause-at MS --pause-ms MS] [--hit-guest-ms N]
+//                     [--pause-at MS --pause-ms MS] [--hit-guest-ms N] [--dialog-ms N]
 // Sort après la E-ième fin de session (défaut 1), une fois le maintien terminé (Ended →
 // Inactive), ou après T ms (défaut 30000). Log sur stdout ; la dernière ligne est
 // « état final : <état> ». Code de sortie : 0, ou 1 sur erreur d'usage.
@@ -36,6 +36,9 @@
 // la session l'ignore (compté) une fois le PNJ mort.
 // Attaques de l'avatar (story 3.8b) : chaque ApplyAvatarAttack est journalisé « [test]
 // ApplyAvatarAttack mouvement M cible C », comme l'exécuterait sync/avatar::attack.
+// Dialogues (story 4.1) : --dialog-ms N injecte en session, toutes les N ms, une réplique du héros de
+// l'hôte (LocalDialogLine, type 3) et, avec --npcs ≥ 3, une réplique du PNJ 2 (GUID du PNJ d'indice 2,
+// NetId 1002, type 0), comme sync/dialogue pendant un dialogue.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -103,7 +106,9 @@ int main(int argc, char** argv) {
     long pause_at = -1;
     long pause_ms = 0;
     long hit_guest_ms = 0;
+    long dialog_ms = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
+        if (std::strcmp(argv[i], "--dialog-ms") == 0) dialog_ms = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--hit-guest-ms") == 0) hit_guest_ms = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--pause-at") == 0) pause_at = std::strtol(argv[i + 1], nullptr, 10);
         if (std::strcmp(argv[i], "--pause-ms") == 0) pause_ms = std::strtol(argv[i + 1], nullptr, 10);
@@ -115,10 +120,10 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--ends") == 0) max_ends = std::strtol(argv[i + 1], nullptr, 10);
     }
     if (port <= 0 || port > 65535 || max_ms <= 0 || max_ends <= 0 || npc_count < 0 || npc_count > 255 ||
-        pause_ms < 0 || (pause_ms > 0 && pause_at < 0) || hit_guest_ms < 0 || argc % 2 == 0) {
+        pause_ms < 0 || (pause_ms > 0 && pause_at < 0) || hit_guest_ms < 0 || dialog_ms < 0 || argc % 2 == 0) {
         std::fprintf(stderr,
                      "usage : session_host --port N [--max-ms T] [--ends E] [--weapon NOM] [--armor NOM] [--npcs N] "
-                     "[--pause-at MS --pause-ms MS] [--hit-guest-ms N]\n");
+                     "[--pause-at MS --pause-ms MS] [--hit-guest-ms N] [--dialog-ms N]\n");
         return 1;
     }
     std::signal(SIGUSR1, on_sigusr1);
@@ -211,6 +216,7 @@ int main(int argc, char** argv) {
     bool armor_pushed = false;
     bool paused = false;  // story 3.4a : la pause n'a lieu qu'une fois
     std::uint64_t next_guest_hit = 0;  // story 3.6 : prochain LocalHitOnGuest (ms)
+    std::uint64_t next_dialog = 0;     // story 4.1 : prochaine réplique de dialogue (ms)
     std::uint64_t keepalives_seen = 0, keepalive_capped_seen = 0;
     while (now_ms() < static_cast<std::uint64_t>(max_ms)) {
         if (!paused && pause_ms > 0 && in_session &&
@@ -297,6 +303,23 @@ int main(int argc, char** argv) {
             session_start = now;
             npc_damage.clear();  // story 3.5 : nouvelle session, PNJ intacts
             next_guest_hit = now + static_cast<std::uint64_t>(hit_guest_ms);
+            next_dialog = now + static_cast<std::uint64_t>(dialog_ms);
+        }
+        // Story 4.1 : répliques d'un dialogue de l'hôte, relevées par le détour de StartOutput (simulé).
+        if (dialog_ms > 0 && session.state() == State::InSession && in_session && now >= next_dialog) {
+            next_dialog = now + static_cast<std::uint64_t>(dialog_ms);
+            LocalDialogLine hero;
+            hero.hero = true;
+            hero.output_type = 3;
+            hero.sample = "INFO_Test_1_PC_Hero_DE_%_PC_Hero.wav";
+            inputs.push_back(hero);
+            if (npc_count >= 3) {
+                LocalDialogLine npc;
+                for (std::size_t b = 0; b < npc.guid.size(); ++b) npc.guid[b] = static_cast<std::uint8_t>(0xa0 + b);
+                npc.guid[0] = 2;  // même GUID que le PNJ simulé d'indice 2
+                npc.sample = "INFO_Test_2_Sara_DE_%_Sara.wav";
+                inputs.push_back(npc);
+            }
         }
         // Story 3.6 : coup d'un monstre sur l'avatar invité, bloqué par le détour (simulé).
         if (hit_guest_ms > 0 && session.state() == State::InSession && in_session && now >= next_guest_hit) {

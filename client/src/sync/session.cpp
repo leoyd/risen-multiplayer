@@ -8,6 +8,7 @@
 #include "net/transport.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/dialogue.h"
 #include "sync/guest_health.h"
 #include "sync/hits.h"
 #include "sync/local_capture.h"
@@ -284,6 +285,12 @@ void execute(cs::Output out) {
                 avatar::attack(aa->move, target, target != nullptr ? aa->target : 0);
                 continue;
             }
+            if (const auto* ad = std::get_if<cs::ApplyDialogLine>(&cmd)) {  // story 4.1 : chez l'invité
+                game::Entity player;
+                if (!game::get_player(player)) player.ptr = nullptr;
+                dialogue::replay(player.ptr, ad->net_id, ad->output_type, ad->sample);
+                continue;
+            }
             if (const auto* rh = std::get_if<cs::RespawnHero>(&cmd)) {  // story 3.7 : chez l'invité
                 guest_health::respawn(rh->pose, rh->teleport);
                 continue;
@@ -456,6 +463,14 @@ void frame() {
     if (g_role == Role::Guest && g_native_attacks && world.loaded() && g_session->state() == cs::State::InSession) {
         npc::detect_hero_attack(reinterpret_cast<void*>(world.player), g_inputs);
     }
+    // Story 4.1 : répliques relevées par le détour de StartOutput (hôte, en session) ; bilan des rejeux
+    // de la frame précédente (invité).
+    if (g_role == Role::Host) {
+        dialogue::host_frame(world.loaded() ? reinterpret_cast<void*>(world.player) : nullptr,
+                             g_session->state() == cs::State::InSession, g_inputs);
+    } else {
+        dialogue::guest_frame(g_inputs);
+    }
     world.routine_blocked = sync::anim_filter().take_routine_blocked();
     execute(g_session->tick(now, world, g_inputs));
     // Story 3.5 : héros, rôle et état vus par le détour des dégâts (hors session dès Ended).
@@ -464,6 +479,8 @@ void frame() {
     // Filet de sécurité : hors session, aucune réplique ne reste au registre (ReleaseNpc déjà
     // exécutés à Ended).
     if (g_session->state() != cs::State::InSession) npc::release_all("hors session");
+    // Story 4.1 : avertissements des dialogues de nouveau possibles à la session suivante.
+    if (state == cs::State::InSession && g_session->state() != cs::State::InSession) dialogue::reset();
     push_overlay();
 }
 
@@ -494,6 +511,8 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
     g_native_attacks = config.native_attacks && game::native_attacks_resolved();
     s.native_attacks = g_native_attacks;
     hits::set_native_attacks(g_native_attacks);
+    // Story 4.1 : dialogues seulement si la config les veut et que win/hooks a posé le détour de StartOutput.
+    s.dialogues = config.dialogues && dialogue::active();
     LARGE_INTEGER t{};
     QueryPerformanceCounter(&t);
     s.seed = static_cast<std::uint64_t>(t.QuadPart) ^ (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32) ^

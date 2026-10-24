@@ -289,6 +289,11 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_local_down(now, *ld, out);
         } else if (const auto* la = std::get_if<LocalNpcAttack>(&in)) {  // story 3.8
             on_local_npc_attack(*la, out);
+        } else if (const auto* dl = std::get_if<LocalDialogLine>(&in)) {  // story 4.1
+            on_local_dialog_line(*dl, out);
+        } else if (const auto* dr = std::get_if<LocalDialogReplayed>(&in)) {
+            dialog_.played += dr->played;
+            dialog_.ignored += dr->ignored;
         } else {
             on_local_param(now, std::get<LocalParam>(in), out);
         }
@@ -689,6 +694,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         on_npc_attack(*na, out);
         return;
     }
+    if (const auto* dl = std::get_if<proto::DialogLine>(&decoded.message)) {  // story 4.1
+        on_dialog_line(*dl, out);
+        return;
+    }
     if (const auto* rs = std::get_if<proto::Respawn>(&decoded.message)) {  // story 3.7
         on_respawn(now, *rs, out);
         return;
@@ -743,6 +752,9 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     guest_hits_ = GuestHitCounters{};  // story 3.6
     attacks_ = NpcAttackCounters{};    // story 3.8
     attacks_off_logged_ = false;
+    dialog_ = DialogCounters{};        // story 4.1
+    dialog_off_logged_ = false;
+    dialog_host_warned_ = false;
     reset_respawn();                   // story 3.7
     respawn_ = RespawnCounters{};
     avatar_pose_ok_ = false;
@@ -1227,6 +1239,90 @@ void Session::on_avatar_attack(const proto::NpcAttack& m, Output& out) {
     // Comme un Weapon ou un Death de l'avatar : à l'instant d'affichage du dernier snapshot reçu.
     avatar_attacks_.push_back({interp_.empty() ? 0.0 : interp_.last_time(), m.move, target});
     out.logs.push_back({Level::Debug, what + " reçu : en attente d'affichage"});
+}
+
+void Session::on_local_dialog_line(const LocalDialogLine& in, Output& out) {
+    std::uint32_t speaker = 0;
+    std::string who = in.hero ? std::string("du héros") : "du PNJ";
+    const char* why = nullptr;
+    if (state_ != State::InSession) {
+        why = "hors session";
+    } else if (settings_.role != Role::Host) {
+        why = "pas hôte";
+    } else if (!settings_.dialogues) {
+        why = "dialogues = 0";
+    } else if (!proto::valid_dialog_sample(in.sample) || in.output_type > proto::kMaxDialogOutputType) {
+        why = "échantillon ou type invalide";
+    } else if (in.hero) {
+        speaker = proto::kHostNetId;
+    } else {
+        // Un PNJ mort sort de npc_active_ : npc_dead_ d'abord, pour garder les deux raisons distinctes.
+        const auto it = npc_ids_.find(in.guid);
+        if (it != npc_ids_.end() && npc_dead_.count(it->second) != 0) {
+            why = "PNJ mort";
+        } else if (it == npc_ids_.end() || npc_active_.count(it->second) == 0) {
+            why = "PNJ non annoncé";
+        } else {
+            speaker = it->second;
+            who += " " + std::to_string(speaker);
+        }
+    }
+    const std::string what = "[sync] réplique de dialogue " + who + " (type " + std::to_string(in.output_type) +
+                             ", « " + in.sample + " »)";
+    if (why != nullptr) {
+        // Hors session : chaque réplique de l'hôte en solo passerait ici, en debug seulement.
+        if (state_ == State::InSession) ++dialog_.ignored;
+        // Une ligne par réplique : Debug (le bilan de 5 s compte les ignorées).
+        out.logs.push_back({Level::Debug, what + " : ignorée (" + why + ")"});
+        return;
+    }
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::DialogLine{speaker, in.output_type, in.sample}, bytes)) return;
+    ++dialog_.sent;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    out.logs.push_back({Level::Debug, what + " : DialogLine envoyé"});
+}
+
+void Session::on_dialog_line(const proto::DialogLine& m, Output& out) {
+    const std::string what = "[sync] DialogLine (locuteur " + std::to_string(m.speaker_net_id) + ", type " +
+                             std::to_string(m.output_type) + ", « " + m.sample + " »)";
+    if (settings_.role != Role::Guest) {
+        ++dialog_.ignored;
+        out.logs.push_back({dialog_host_warned_ ? Level::Debug : Level::Warn,
+                            what + " ignoré : l'hôte ne rejoue pas de dialogue"});
+        dialog_host_warned_ = true;  // Warn une fois par session, puis Debug
+        return;
+    }
+    const char* why = nullptr;
+    if (!settings_.dialogues) {
+        why = "dialogues = 0";
+    } else if (m.speaker_net_id == proto::kHostNetId) {
+        if (!avatar_present_) {
+            why = "pas d'avatar de l'hôte";
+        } else if (avatar_dead_ || death_pending_) {
+            why = "avatar de l'hôte mort";
+        }
+    } else {
+        const auto it = replicas_.find(m.speaker_net_id);
+        if (it == replicas_.end()) {
+            why = "NetId non annoncé";
+        } else if (it->second.dead || it->second.death_pending) {
+            why = "réplique morte";
+        }
+    }
+    if (why != nullptr) {
+        ++dialog_.ignored;
+        out.logs.push_back({Level::Debug, what + " ignoré (" + why + ")"});
+        if (!settings_.dialogues && !dialog_off_logged_) {  // réglage différent de l'hôte : visible
+            dialog_off_logged_ = true;
+            out.logs.push_back({Level::Info, "[sync] DialogLine reçus de l'hôte mais dialogues inactifs ici "
+                                             "(dialogues = 0 ou bloc non résolu) : ignorés (une fois par session)"});
+        }
+        return;
+    }
+    ++dialog_.received;
+    out.commands.push_back(ApplyDialogLine{m.speaker_net_id, m.output_type, m.sample});
+    out.logs.push_back({Level::Debug, what + " reçu : ApplyDialogLine"});
 }
 
 void Session::drop_avatar_attacks() {
@@ -1989,7 +2085,7 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
 void Session::snapshot_stats(std::uint64_t now, Output& out) {
     if (now < next_stats_) return;
     next_stats_ = now + kSnapshotStatsMs;
-    char buf[1800];  // story 3.8 : marge pour le pire cas (toutes les valeurs au maximum)
+    char buf[2000];  // story 4.1 : marge pour le pire cas (toutes les valeurs au maximum)
     const auto npc_rate = static_cast<unsigned long long>(npc_anim_.bytes * 1000 / kSnapshotStatsMs);
     std::snprintf(buf, sizeof buf,
                   "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
@@ -2004,7 +2100,8 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   "coups : envoyés %u, appliqués %u, ignorés %u, bloqués %u ; "
                   "coups subis : HitOnGuest envoyés %u, reçus %u, ignorés %u ; "
                   "à terre : Death %u, Respawn envoyés %u, reçus %u, accusés %u, ignorés %u, snapshots périmés %u ; "
-                  "attaques natives : NpcAttack envoyés %u, appliqués %u, ignorés %u",
+                  "attaques natives : NpcAttack envoyés %u, appliqués %u, ignorés %u ; "
+                  "dialogues : DialogLine envoyés %u, reçus %u, rejoués %u, ignorés %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
                   anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
@@ -2015,7 +2112,8 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   npc_.early, npc_.deaths_sent, npc_.deaths_applied, npc_.deaths_ignored, hits_.sent,
                   hits_.applied, hits_.ignored, hits_.blocked, guest_hits_.sent, guest_hits_.received,
                   guest_hits_.ignored, respawn_.deaths, respawn_.sent, respawn_.received, respawn_.acks,
-                  respawn_.ignored, respawn_.stale, attacks_.sent, attacks_.applied, attacks_.ignored);
+                  respawn_.ignored, respawn_.stale, attacks_.sent, attacks_.applied, attacks_.ignored, dialog_.sent,
+                  dialog_.received, dialog_.played, dialog_.ignored);
     out.logs.push_back({Level::Debug, buf});
     // Story 3.4 (Q12) : budget des animations des PNJ, une ligne par bilan au plus.
     if (npc_rate > kNpcAnimBudgetBytesPerSec) {
@@ -2032,6 +2130,7 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
     guest_hits_ = GuestHitCounters{};
     respawn_ = RespawnCounters{};
     attacks_ = NpcAttackCounters{};
+    dialog_ = DialogCounters{};
 }
 
 void Session::send_hello(Output& out) {

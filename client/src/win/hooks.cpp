@@ -6,6 +6,7 @@
 #include "game/entity.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
+#include "sync/dialogue.h"
 #include "sync/guest_health.h"
 #include "sync/hits.h"
 #include "sync/probe.h"
@@ -32,7 +33,7 @@ game::WrapperStopMotionFn g_original_wrapper_stop_motion = nullptr;
 game::RoutineOnProcessFn g_original_routine_on_process = nullptr;  // spike J2 (Num4)
 game::ScriptFn g_original_kill = nullptr;                           // spike J2 (Num6)
 game::ScriptFn g_original_down_or_dead[3] = {};  // spike J2 (Num6, 5ᵉ test) ; session (story 3.7) : sonde et session sont exclusives
-game::StartOutputFn g_original_start_output = nullptr;            // spike J3 (journal des répliques)
+game::StartOutputFn g_original_start_output = nullptr;            // spike J3 (journal des répliques) ; session (story 4.1) : sonde et session sont exclusives
 using DamageDoDamageFn = bool (*)(void* damage_ps, void* target);
 DamageDoDamageFn g_original_damage = nullptr;                       // story 3.5 (Q8)
 bool g_initialized = false;
@@ -172,6 +173,14 @@ bool detour_start_output(void* spu, const void* sample, int type) {
     return result;
 }
 
+// Story 4.1 (AD-13) : même détour en session. L'original est toujours appelé ; sync/dialogue ne fait
+// que copier locuteur, échantillon et type dans sa file (accesseurs seuls, AD-2), la frame décide.
+bool detour_start_output_session(void* spu, const void* sample, int type) {
+    const bool result = g_original_start_output(spu, sample, type);
+    sync::dialogue::on_start_output(spu, sample, type);  // noexcept
+    return result;
+}
+
 // Spike J3 : bloc facultatif. Un échec rend le journal des répliques et Num7 à Num9 inactifs ;
 // les sondes J1 et J2 continuent.
 void install_probe_j3() {
@@ -277,7 +286,7 @@ bool install_probe() {
     return true;
 }
 
-bool install_session(bool damage_hook, bool native_attacks) {
+bool install_session(bool damage_hook, bool native_attacks, bool dialogues) {
     const char* missing = nullptr;
     if (!game::resolve_entities(missing)) {
         log::error(std::string("[hooks] session inactive : symbole introuvable : ") + missing);
@@ -360,8 +369,25 @@ bool install_session(bool damage_hook, bool native_attacks) {
         log::warn("[hooks] DownOrDeadBy* inactifs : " + down_or_dead_reason +
                   " (coup natif mortel non intercepté si le point d'accroche des dégâts manque)");
     }
+    // Story 4.1 (AD-13) : dialogues, bloc facultatif en tout ou rien : un échec laisse la session sans
+    // dialogues (Warn). Statut publié à sync/dialogue avant le premier OnProcess.
+    bool dialogue = false;
+    if (!dialogues) {
+        log::info("[hooks] dialogues désactivés (dialogues = 0)");
+    } else if (!game::resolve_dialogue(missing)) {
+        log::warn(std::string("[hooks] dialogues inactifs : symbole introuvable : ") + missing +
+                  " (session sans dialogues)");
+    } else if (create(game::start_output_address(), reinterpret_cast<void*>(&detour_start_output_session),
+                      reinterpret_cast<void**>(&g_original_start_output), "gCScriptProcessingUnit::StartOutput")) {
+        dialogue = true;
+    } else {
+        log::warn("[hooks] dialogues inactifs : hook gCScriptProcessingUnit::StartOutput impossible (session sans "
+                  "dialogues)");
+    }
+    sync::dialogue::set_active(dialogue);
     s = MH_EnableHook(MH_ALL_HOOKS);
     if (s != MH_OK) {
+        sync::dialogue::set_active(false);
         log::error(std::string("[hooks] session inactive : MH_EnableHook : ") + MH_StatusToString(s));
         remove();
         return false;
@@ -387,6 +413,7 @@ bool install_session(bool damage_hook, bool native_attacks) {
         log::info("[hooks] attaques natives des répliques résolues (PSCombatSystem::StartMove)");
     }
     if (down_or_dead) log::info("[hooks] détours DownOrDeadBy* de session posés (mise à terre de l'invité)");
+    if (dialogue) log::info("[hooks] dialogues : hook StartOutput posé (répliques de l'hôte vues par l'invité)");
     watchdog::start();
     return true;
 }
@@ -396,6 +423,7 @@ void remove() {
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();  // supprime aussi les hooks créés
     g_initialized = false;
+    sync::dialogue::set_active(false);  // story 4.1 : plus de détour de StartOutput
     // Les pointeurs vers les trampolines sont conservés : si le retrait échouait en
     // partie, un détour encore actif n'appellerait jamais un original nul.
 }

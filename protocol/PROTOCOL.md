@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 15
+# Protocole Risen Multiplayer — version 16
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -15,7 +15,8 @@ snapshot du canal 1, la v5 (story 2.4) `AniName` et `Death`, la v6 (story 2.4b) 
 terre et réapparition de l'invité, avec accusé ; `Death{2}` signifie désormais « à terre »), la v15
 (story 3.8) `NpcAttack` (début d'une attaque d'un PNJ, rejouée nativement par la réplique de l'invité ;
 story 3.8b, sans changement de format ni de version : aussi invité → hôte, `NetId` 2, début d'une
-attaque du héros invité rejouée par son avatar).
+attaque du héros invité rejouée par son avatar), la v16 (story 4.1) `DialogLine` (réplique d'un dialogue de
+l'hôte, rejouée chez l'invité sur l'entité du locuteur).
 
 ## 1. Règles générales
 
@@ -63,6 +64,7 @@ attaque du héros invité rejouée par son avatar).
 | 23 | `HitOnGuest` | fiable | hôte → invité : coup d'un monstre sur l'avatar de l'invité, dégâts bruts à retirer aux PV de son héros (v13) |
 | 25 | `Respawn` | fiable | hôte → invité : ordre de réapparition de l'invité ; invité → hôte : accusé, avec le premier tick de snapshot valide (v14) |
 | 29 | `NpcAttack` | fiable | hôte → invité : début d'une attaque d'un PNJ capturé (mouvement de combat et cible), lancée nativement par la réplique (v15) ; invité → hôte (story 3.8b) : début d'une attaque du héros invité (`NetId` 2), lancée nativement par son avatar |
+| 30 | `DialogLine` | fiable | hôte → invité : une réplique d'un dialogue de l'hôte (locuteur, type de sortie, fichier voix), rejouée par l'invité sur l'entité du locuteur (v16) |
 
 Aucune valeur n'est réservée (depuis la v14). Toute autre valeur, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -74,7 +76,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `15` en v15 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `16` en v16 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -276,6 +278,19 @@ Taille : 13 octets. Deux sens, même format (v15) :
 Le décodeur ne vérifie aucune valeur (aucun `BadValue`). Un hôte qui reçoit un `net_id` autre que 2
 l'ignore (journalisé) ; un invité qui reçoit `net_id` = 2 l'ignore (NetId non annoncé).
 
+### `DialogLine` (30) — fiable — v16
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `locuteur` | `u32` | NetId du locuteur chez l'hôte : **1** = héros de l'hôte, **≥ 1000** = PNJ annoncé ; autre → `BadValue` |
+| `type` | `u8` | `gEOutputType` brut passé à `gCScriptProcessingUnit::StartOutput` : **0 à 3** (3 pour le héros) ; autre → `BadValue` |
+| `échantillon` | `u8` longueur + octets | nom du fichier voix, **5 à 128** octets, caractères `[A-Za-z0-9_%.]` seulement, jamais `..` (aucun chemin), suffixe **`.wav`** précédé d'un nom non vide (ex. `INFO_Sara_2_Sara_DE_%_Sara.wav`) ; autre → `BadValue` |
+
+Taille : 7 + longueur, soit 12 à 135 octets. Hôte → invité seulement en v16 (§8, « Dialogues ») :
+l'invité rejoue la réplique sur l'entité du locuteur, sans dialogue, caméra ni menu. Les bornes de
+l'échantillon sont vérifiées par l'encodeur, par le décodeur et par l'émetteur avant l'envoi : un nom
+reçu n'est jamais un chemin. Un tampon trop court pour la longueur annoncée → `Truncated`.
+
 ### `MotionParam` (26) — fiable — v6
 
 Un réglage de l'enveloppe EMotionFX (`eCWrapper_emfx3ActorInstance`) que Risen applique chaque
@@ -352,13 +367,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide), ou que les `nombre` entités d'un snapshot |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle, ≠ 1 pour un snapshot |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 13 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 16 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) ; l'encodeur refuse aussi un nom de `Weapon` ou d'`Armor` de plus de 255 octets |
 | `TrailingBytes` | octets restants après la fin du message |
-| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; `Spawn` : `type` autre que 0 ou 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse) |
+| `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; `Spawn` : `type` autre que 0 ou 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse ; `DialogLine` : locuteur autre que 1 ou ≥ 1000, `type` > 3, échantillon de moins de 5 ou de plus de 128 octets, hors `[A-Za-z0-9_%.]`, contenant `..` ou sans suffixe `.wav`) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 13, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 16, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -390,13 +405,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=15`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=16`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 0f00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1000 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -406,7 +421,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `0f 00` | `version_protocole` = 15 |
+| 0x02 | `10 00` | `version_protocole` = 16 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -591,6 +606,24 @@ v15 (story 3.8) : le PNJ `net_id=1005` commence l'attaque `mouvement=11` sur l'a
 | 0x01 | `ed 03 00 00` | `net_id` = 1005 (PNJ) |
 | 0x05 | `0b 00 00 00` | `mouvement` = 11 |
 | 0x09 | `02 00 00 00` | `cible` = 2 (avatar de l'invité) |
+
+#### `dialog_line.bin` — `DialogLine` (fiable, sans octet de canal), 37 octets
+
+v16 (story 4.1) : le PNJ `locuteur=1004` dit la réplique `INFO_Sara_2_Sara_DE_%_Sara.wav`, `type=0`.
+
+<!-- vector: dialog_line.bin -->
+```text
+00000000: 1eec 0300 0000 1e49 4e46 4f5f 5361 7261  .......INFO_Sara
+00000010: 5f32 5f53 6172 615f 4445 5f25 5f53 6172  _2_Sara_DE_%_Sar
+00000020: 612e 7761 76                             a.wav
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `1e` | `MsgType` DialogLine (30) |
+| 0x01 | `ec 03 00 00` | `locuteur` = 1004 (PNJ) |
+| 0x05 | `00` | `type` = 0 |
+| 0x06 | `1e` `49 4e … 76` | `échantillon` = "INFO_Sara_2_Sara_DE_%_Sara.wav" (30 octets) |
 
 #### `spawn.bin` — `Spawn` (fiable, sans octet de canal), 22 octets
 
@@ -830,11 +863,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 15.
+`Truncated` ; `peek_hello_version` → 16.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 0f00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1000 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -844,7 +877,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 0f00 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1000 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -914,7 +947,7 @@ type ; un type inconnu n'est pas lisible).
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité, la v15 les attaques natives des répliques. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité, la v15 les attaques natives des répliques, la v16 les répliques de dialogue de l'hôte. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -1264,6 +1297,25 @@ d'appels.
     PNJ, aucun sur le héros de l'hôte) ; seuls les `HitRequest` blessent.
   - `native_attacks = 0`, d'un côté ou de l'autre : ni envoi ni application (reçus ignorés et
     comptés ; une ligne Info par session chez celui qui les ignore).
+- **Dialogues** (v16, story 4.1) : l'invité voit et entend les répliques des dialogues de l'hôte ;
+  rien d'autre du dialogue n'est synchronisé (ni ses effets, ni sous-titres, ni caméra).
+  - **Hôte, détection** : chaque appel de `gCScriptProcessingUnit::StartOutput` est relevé (locuteur =
+    `GetSelfEntity`, échantillon, type) avec l'état du dialogue **à cet instant** (`InfoSystem::IsRunning`,
+    `InfoSystem::GetNPC`). La frame n'émet que si un dialogue était en cours et que le locuteur est son
+    héros (`locuteur` = 1) ou le partenaire de dialogue ; les commentaires ambiants des PNJ ne partent
+    pas et ne sont pas comptés. Pendant un dialogue, un autre locuteur est ignoré et compté. Le
+    partenaire est traduit par son GUID en NetId : un PNJ non annoncé à l'invité, ou mort, est ignoré
+    et compté. Un échantillon invalide (§4) n'est pas envoyé. `DialogLine` part une fois par réplique, en session
+    seulement.
+  - **Invité, rejeu** : aussitôt reçu (pas de retard d'affichage), `DialogLine` est rejoué sur l'avatar
+    de l'hôte (`locuteur` = 1) ou sur la réplique de ce `NetId` (≥ 1000) :
+    `gCScriptProcessingUnit::sStartOutput(entité, échantillon, type)` puis
+    `Entity::StartFacialAni(échantillon)` (voix et lèvres). Jamais `StartSay` (il recalcule l'échantillon
+    avec la voix locale), ni caméra, menu ou état `ZS_Talk`. Ignoré et compté : avatar absent ou mort,
+    réplique non annoncée ou morte, entité à plus de **20 m** du héros de l'invité, invité lui-même en
+    dialogue (`InfoSystem::IsRunning`).
+  - Un hôte qui reçoit `DialogLine` l'ignore (Warn une fois par session, puis Debug). Clé `dialogues = 0` (diagnostic), d'un côté ou de
+    l'autre : ni envoi ni rejeu (reçus ignorés et comptés ; une ligne Info par session chez l'invité).
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -1278,4 +1330,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v15).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v16).
