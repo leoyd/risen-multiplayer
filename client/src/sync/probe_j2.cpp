@@ -2,6 +2,7 @@
 
 #include "common/log.h"
 #include "game/combat.h"
+#include "sync/probe_j3.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -586,6 +587,7 @@ void kill_summary() {
 void help(const game::Entity& copy) {
     hud("F6 copie | F7 miroir | Num1 arme copie | Num2 collision | Num0 aide");
     hud("Num3 viser PNJ | Num4 figer IA | Num5 blesser | Num6 court: mort->a terre, tenu 1s: releve");
+    hud(probe_j3::help_line());  // spike J3 (story 4.0)
     hud(std::string("Etat : copie ") + (copy.ptr != nullptr ? "oui" : "non (F6)") + ", collision " +
         mode_name(g_mode) + ", PNJ " + (g_npc.ptr != nullptr ? ascii(entity_name(g_npc)) : std::string("aucun")) +
         ", IA figee " + (g_frozen_routine_ps.load() != nullptr ? "oui" : "non") + ", mort interceptee " +
@@ -605,6 +607,10 @@ void set_status(bool combat_resolved, bool routine_hook, bool kill_hook) {
     g_routine_hook = combat_resolved && routine_hook;
     g_kill_hook = combat_resolved && kill_hook;
 }
+
+game::Entity tracked_npc() { return g_npc; }
+
+bool tracked_npc_frozen() { return g_npc.ptr != nullptr && g_frozen_routine_ps.load() != nullptr; }
 
 void find_nearest_npc(const game::Entity& player, const game::Entity& exclude, float max_distance,
                       game::Entity& best, float& distance, std::size_t& total, bool& list_ok) {

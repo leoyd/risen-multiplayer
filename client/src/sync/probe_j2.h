@@ -33,6 +33,10 @@ void reset();
 // Miroir (F7) : place la copie sur `target` selon le mode de collision de Num2.
 void place_copy(const game::Entity& copy, const game::Matrix& target);
 
+// Spike J3 (Num7) : PNJ suivi par Num3 (nul : aucun) et IA de ce PNJ figée par Num4.
+game::Entity tracked_npc();
+bool tracked_npc_frozen();
+
 // PNJ le plus proche du joueur à moins de `max_distance` (cm), hors joueur et `exclude`.
 // `list_ok` = false si GetNPCs a échoué. `best.ptr` nul : aucun.
 void find_nearest_npc(const game::Entity& player, const game::Entity& exclude, float max_distance,

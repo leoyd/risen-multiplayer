@@ -6,6 +6,7 @@
 #include "game/motion_desc.h"
 #include "sync/anim_filter.h"
 #include "sync/probe_j2.h"
+#include "sync/probe_j3.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -547,6 +548,7 @@ void frame() {
         g_last_ragdoll = -1;
         g_copy_dead = false;
         probe_j2::reset();  // spike J2 : PNJ suivi, IA figée, mode de collision, arme de la copie
+        probe_j3::reset();  // spike J3 : répliques capturées, suivis, page de dialogue
         // Captures de l'ancien monde : leurs ressources sont peut-être libérées, on les jette.
         static Capture stale[sync::kCaptureRing];
         unsigned dropped = 0;
@@ -582,6 +584,8 @@ void frame() {
     }
     // Spike J2 : pavé numérique (Num1 à Num6), journaux différés, héros publié pour le détour de Kill.
     probe_j2::frame(player, g_copy, focus, now);
+    // Spike J3 : journal des répliques et d'InfoSystem, Num7 à Num9.
+    probe_j3::frame(player, g_copy, focus, now);
 
     if (now - g_window_start >= kTickPeriodMs) {
         log_tick(now);

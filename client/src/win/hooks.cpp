@@ -2,6 +2,7 @@
 
 #include "common/log.h"
 #include "game/combat.h"
+#include "game/dialogue.h"
 #include "game/entity.h"
 #include "sync/anim_filter.h"
 #include "sync/avatar.h"
@@ -9,6 +10,7 @@
 #include "sync/hits.h"
 #include "sync/probe.h"
 #include "sync/probe_j2.h"
+#include "sync/probe_j3.h"
 #include "sync/session.h"
 #include "win/watchdog.h"
 
@@ -30,6 +32,7 @@ game::WrapperStopMotionFn g_original_wrapper_stop_motion = nullptr;
 game::RoutineOnProcessFn g_original_routine_on_process = nullptr;  // spike J2 (Num4)
 game::ScriptFn g_original_kill = nullptr;                           // spike J2 (Num6)
 game::ScriptFn g_original_down_or_dead[3] = {};  // spike J2 (Num6, 5ᵉ test) ; session (story 3.7) : sonde et session sont exclusives
+game::StartOutputFn g_original_start_output = nullptr;            // spike J3 (journal des répliques)
 using DamageDoDamageFn = bool (*)(void* damage_ps, void* target);
 DamageDoDamageFn g_original_damage = nullptr;                       // story 3.5 (Q8)
 bool g_initialized = false;
@@ -161,6 +164,36 @@ void install_probe_j2() {
     }
 }
 
+// Spike J3 : chaque réplique passe par gCScriptProcessingUnit::StartOutput. Le détour appelle
+// l'original, puis copie locuteur, échantillon, type et retour pour la frame (accesseurs seuls, AD-2).
+bool detour_start_output(void* spu, const void* sample, int type) {
+    const bool result = g_original_start_output(spu, sample, type);
+    sync::probe_j3::on_start_output(spu, sample, type, result);  // noexcept
+    return result;
+}
+
+// Spike J3 : bloc facultatif. Un échec rend le journal des répliques et Num7 à Num9 inactifs ;
+// les sondes J1 et J2 continuent.
+void install_probe_j3() {
+    const char* missing = nullptr;
+    if (!game::resolve_dialogue(missing)) {
+        sync::probe_j3::set_status(false);
+        log::warn(std::string("[hooks] J3 : journal des répliques et expériences Num7 à Num9 inactifs : symbole "
+                              "introuvable : ") +
+                  missing);
+        return;
+    }
+    const bool hook = create(game::start_output_address(), reinterpret_cast<void*>(&detour_start_output),
+                             reinterpret_cast<void**>(&g_original_start_output), "gCScriptProcessingUnit::StartOutput");
+    sync::probe_j3::set_status(hook);
+    if (hook) {
+        log::info("[hooks] J3 : hook StartOutput posé (journal des répliques, Num7 à Num9)");
+    } else {
+        log::warn("[hooks] J3 : journal des répliques et expériences Num7 à Num9 inactifs : hook "
+                  "gCScriptProcessingUnit::StartOutput impossible");
+    }
+}
+
 // Session : capture du héros local (story 2.4), blocage du moteur sur les avatars (2.2).
 void detour_play_motion_session(void* animation_ps, int type, void* desc, bool flag) {
     if (sync::avatar::on_play_motion(animation_ps, type, desc, flag)) {
@@ -232,6 +265,7 @@ bool install_probe() {
         return false;
     }
     install_probe_j2();  // facultatif : créés ici, activés avec les autres
+    install_probe_j3();  // idem (spike J3)
     // Activation groupée : MinHook suspend les autres threads pendant l'écriture.
     s = MH_EnableHook(MH_ALL_HOOKS);
     if (s != MH_OK) {

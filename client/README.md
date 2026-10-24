@@ -962,6 +962,37 @@ refaire F6.
 Avec `probe = 0` ou sans la clé, la sonde est désactivée et seule la
 session est installée (hook `OnProcess` seul). Sonde et session sont exclusives.
 
+## Sonde du spike J3 (`probe = 1`, story 4.0)
+
+Dialogues : hypothèses H1 à H5 de [`docs/re/spike-j3.md`](../docs/re/spike-j3.md). Bloc facultatif
+en tout ou rien (`game/dialogue`) : au démarrage, `[hooks] J3 : hook StartOutput posé (journal des
+répliques, Num7 à Num9)`, sinon un Warn `[hooks] J3 : journal des répliques et expériences Num7 à
+Num9 inactifs : …` qui nomme le symbole manquant (sondes J1 et J2 intactes). Jamais en session.
+Lignes du log préfixées `[probe] J3` ; Verr. Num actif ; Num0 (aide J2) liste aussi Num7 à Num9.
+
+- **Passif (H1)** : chaque `gCScriptProcessingUnit::StartOutput` donne une ligne
+  `StartOutput : locuteur=0x… « nom » (HÉROS|autre|copie F6), échantillon=« … », type=…,
+  retour=…, dialogue en cours=…, texte Say=« … », spu=0x…`, puis `réplique de « nom » :
+  sIsOutputPlaying à la 1re frame=oui` et `… : fin de la sortie (sIsOutputPlaying=non) après N ms`.
+  Le système de dialogue (façade `InfoSystem`) donne une ligne par changement : `dialogue : en
+  cours=oui partenaire PNJ=0x… « nom », commande=Say (0x1b), texte=« id », locuteur de la
+  commande=0x… « nom » — DÉBUT`, … `— FIN`. Une fois : `StartOutput : thread du détour=… (celui
+  d'OnProcess)`.
+- **Num7 (H2, H3)** : rejoue la dernière réplique capturée sur le PNJ suivi par Num3 (s'il est à
+  moins de 15 m), sinon sur le PNJ le plus proche, jamais le partenaire du dialogue en cours :
+  `Num7 : réplique « … » de « … » -> PNJ 0x… « … » à N cm (…), IA figée (Num4)=…, PS 0x24=oui, …`,
+  `Num7 : sStartOutput(cible, « … », type …) OK -> true`, `Num7 : StartFacialAni(« … ») OK`, puis
+  `Num7 sur « … » : sIsOutputPlaying …`. **Num7 à nouveau en moins de 2 s** :
+  `Num7 bis : StartSay(cible « … », auditeur = héros, texte « id », afficher le texte=true,
+  2e bool=false) OK`, suivi d'une ligne `StartOutput (rejeu de la sonde)` qui montre l'échantillon
+  calculé par le jeu. Pour H3 : Num3 (viser le PNJ), Num4 (figer son IA), puis Num7.
+- **Num8 (H4)** : même chose avec la dernière réplique **du héros**, sur la copie (F6) :
+  `Num8 : réplique du héros « … » -> copie 0x…, PS 0x24=…`, puis les mêmes lignes que Num7.
+- **Num9 (H5)** : `Num9 : eCLocAdmin2::GetString(« id ») OK -> « texte » (N car.)`, puis
+  `Num9 : gCHudSystem2::ShowSubtitle(texte localisé « … ») OK, gCHudSystem2=0x…` (sans identifiant
+  de texte : l'échantillon brut). Num9 à nouveau en moins de 2 s : `Num9 bis : GUI2::StartTalk(« … »,
+  « id ») OK -> true` (page de dialogue du HUD) ; l'appui suivant la ferme (`Num9 : GUI2::StopTalk OK`).
+
 ## Organisation
 
 ```
@@ -970,7 +1001,7 @@ src/core/                   logique pure (config, version, codec du protocole, m
 src/common/                 log
 src/net/                    transport UDP + KCP : socket, canaux, thread réseau (testé sous Linux et Wine)
 src/game/                   adaptateur ABI du jeu (GetProcAddress) — seul code qui appelle le jeu
-src/sync/                   pilote de session (tick par frame) ; filtre PlayMotion (AnimFilter) ; sonde du spike J1
+src/sync/                   pilote de session (tick par frame) ; filtre PlayMotion (AnimFilter) ; sondes des spikes J1 à J3
 src/win/                    ScriptInit, hooks MinHook, overlay à l'écran (détour de Present)
 third_party/minhook/        MinHook, figé sur un commit (voir VERSION.txt)
 third_party/kcp/            KCP 2.1.1, figé sur un commit (voir VERSION.txt), compilé dans mp_net

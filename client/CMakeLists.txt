@@ -65,6 +65,7 @@ if(WIN32)
         src/common/log.cpp
         src/game/abi.cpp
         src/game/combat.cpp
+        src/game/dialogue.cpp
         src/game/entity.cpp
         src/game/motion_desc.cpp
         src/sync/anim_filter.cpp
@@ -72,6 +73,7 @@ if(WIN32)
         src/sync/local_capture.cpp
         src/sync/probe.cpp
         src/sync/probe_j2.cpp
+        src/sync/probe_j3.cpp
         src/sync/npc.cpp
         src/sync/hits.cpp
         src/sync/guest_health.cpp

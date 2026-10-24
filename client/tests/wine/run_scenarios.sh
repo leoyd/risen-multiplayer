@@ -92,6 +92,7 @@ expect_log "probe = 0 : hooks de session installés" "$d" "hooks de session inst
 expect_no_log "probe = 0 : pas de hooks de la sonde" "$d" "hooks installés (OnProcess, PlayMotion"
 expect_log "probe = 0 : session prête" "$d" "\[sync\] session prête (rôle hôte)"
 expect_no_log "probe = 0 : aucun hook J2" "$d" "\[hooks\] J2"
+expect_no_log "probe = 0 : aucun hook J3" "$d" "\[hooks\] J3"
 expect_log "log_level = DEBUG : lignes DEBUG écrites" "$d" "DEBUG .*\[sync\] empreinte locale SharedBase.dll"
 
 # Story 3.5 : damage_hook = 0 : pas de détour des dégâts, la session est installée quand même.
@@ -136,6 +137,11 @@ expect_log "probe = 1 : J2 : hook Routine posé" "$d" "\[hooks\] J2 : hook Routi
 expect_no_log "probe = 1 : J2 : ABI du combat résolue" "$d" "expériences Num1 à Num6 inactives"
 expect_log "probe = 1 : J2 : Q7 inactive, cause nommée" "$d" \
     "\[hooks\] J2 : expérience Q7 (Num6, mort interceptée) inactive : Script_Game.dll introuvable"
+# Spike J3 (story 4.0) : ABI des dialogues résolue en tout ou rien sur les vraies DLL, détour de
+# gCScriptProcessingUnit::StartOutput posé ; jamais en session (vérifié par les scénarios probe = 0).
+expect_log "probe = 1 : J3 : hook StartOutput posé" "$d" \
+    "\[hooks\] J3 : hook StartOutput posé (journal des répliques, Num7 à Num9)"
+expect_no_log "probe = 1 : J3 : ABI des dialogues résolue" "$d" "\[hooks\] J3 : journal des répliques et expériences"
 # Noms décorés de Kill, Defeat et DownOrDeadBy* (sonde J2, session depuis la story 3.7) présents dans
 # la Script_Game.dll du jeu (résolus en jeu seulement).
 for sym in '?Kill@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' '?Defeat@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z' \
@@ -165,7 +171,8 @@ done
 
 # Story 3.3 : symboles de resolve_npc présents dans les DLL du jeu (Script, Engine, Game) ;
 # story 3.4b : PSRoutine::PropertyAIMode (lecture et operator=) ; story 3.5 : resolve_damage ;
-# story 3.5 (correctif) : PSNpc::Get/SetCurrentTarget (resolve_damage) ; story 3.7 : PSSkills::GetHitPointsMax (resolve_npc).
+# story 3.5 (correctif) : PSNpc::Get/SetCurrentTarget (resolve_damage) ; story 3.7 : PSSkills::GetHitPointsMax (resolve_npc) ;
+# story 4.0 : resolve_dialogue (sonde J3).
 for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Script.dll|?UpdateEntityLists@Entity@@KAXXZ' \
     'Script.dll|?IsPlayer@Entity@@QEBA_NXZ' 'Script.dll|?GetHitPoints@PSSkills@@QEBAHXZ' \
     'Script.dll|?GetHitPointsMax@PSSkills@@QEBAHXZ' \
@@ -190,7 +197,23 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Script.dll|?SetCurrentTarget@PSCombatSystem@@QEAA_NAEBVEntity@@@Z' \
     'Script.dll|?StartMove@PSCombatSystem@@QEBA_NW4gECombatMove@@@Z' \
     'Script.dll|?StopCurrentMove@PSCombatSystem@@QEAA_NXZ' \
-    'Script.dll|?GetRightFistItem@PSCombatSystem@@QEBA?AVTemplate@@XZ'; do
+    'Script.dll|?GetRightFistItem@PSCombatSystem@@QEBA?AVTemplate@@XZ' \
+    'Game.dll|?StartOutput@gCScriptProcessingUnit@@QEAA_NAEBVbCString@@W4gEOutputType@@@Z' \
+    'Game.dll|?GetSelfEntity@gCScriptProcessingUnit@@QEAAPEAVeCGeometryEntity@@XZ' \
+    'Game.dll|?sStartOutput@gCScriptProcessingUnit@@KA_NPEAVeCGeometryEntity@@AEBVbCString@@W4gEOutputType@@@Z' \
+    'Game.dll|?sIsOutputPlaying@gCScriptProcessingUnit@@KA_NPEAVeCGeometryEntity@@@Z' \
+    'Game.dll|?GetSystem@gCHudModule2@@SAPEAVgCHudSystem2@@XZ' \
+    'Game.dll|?ShowSubtitle@gCHudSystem2@@QEAAXAEBVbCUnicodeString@@@Z' \
+    'Script.dll|?IsRunning@InfoSystem@@SA_NXZ' 'Script.dll|?GetNPC@InfoSystem@@SA?AVEntity@@XZ' \
+    'Script.dll|?GetCurrentCommandType@InfoSystem@@SA?AW4gEInfoCommand@@XZ' \
+    'Script.dll|?GetCurrentCommandSay@InfoSystem@@SAAEAVInfComSay@@XZ' \
+    'Script.dll|?GetTextID@InfComSay@@QEAA?AVbCString@@XZ' 'Script.dll|?GetSpeaker@InfComSay@@QEAA?AVEntity@@XZ' \
+    'Script.dll|?StartFacialAni@Entity@@QEAAXVbCString@@@Z' 'Script.dll|?StartSay@Entity@@QEAAXAEAV1@VbCString@@_N2@Z' \
+    'Script.dll|?StartTalk@GUI2@@QEAA_NVEntity@@VbCString@@@Z' 'Script.dll|?StopTalk@GUI2@@QEAAXXZ' \
+    'Engine.dll|?GetInstance@eCLocAdmin2@@SAAEAV1@XZ' \
+    'Engine.dll|?GetString@eCLocAdmin2@@QEBA?AVbCUnicodeString@@AEBVbCString@@@Z' \
+    'SharedBase.dll|?GetText@bCString@@QEBAPEBDXZ' 'SharedBase.dll|??0bCUnicodeString@@QEAA@PEB_W@Z' \
+    'SharedBase.dll|??1bCUnicodeString@@QEAA@XZ' 'SharedBase.dll|?GetText@bCUnicodeString@@QEBAPEB_WXZ'; do
     dll=${entry%%|*}
     sym=${entry#*|}
     if grep -qaF -- "$sym" "$risen_bin/$dll"; then
@@ -212,6 +235,7 @@ run "sonde sans Script.dll" "$d" "$no_script_bin"
 expect_log "hook impossible : erreur explicite" "$d" "sonde inactive : symbole introuvable : Script.dll"
 expect_no_log "hook impossible : aucun hook" "$d" "hooks installés"
 expect_no_log "hook impossible : aucun hook J2" "$d" "\[hooks\] J2"
+expect_no_log "hook impossible : aucun hook J3" "$d" "\[hooks\] J3"
 expect_log "hook impossible : mod actif" "$d" "mod actif"
 
 # Même jeu sans Script.dll, sans sonde : la session ne peut pas poser son hook. Attendu :

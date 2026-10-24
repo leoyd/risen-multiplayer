@@ -75,4 +75,50 @@ But : savoir comment Risen lance, joue et termine un dialogue, et comment rejoue
   mod comme l'avatar — H4.
 - **Num9** : affiche le sous-titre de la dernière réplique — H5.
 
+### Utilisation de la sonde
+
+`multiplayer.ini` : `probe = 1`. Au démarrage, le log doit contenir `[hooks] J3 : hook StartOutput
+posé (journal des répliques, Num7 à Num9)` ; sinon un Warn nomme le symbole manquant et seules les
+sondes J1 et J2 restent. Verr. Num actif ; Num0 rappelle les touches. Lignes du log : `[probe] J3`.
+
+1. **H1** : parler à un PNJ (plusieurs répliques, dont au moins une du héros), jusqu'à la fin du
+   dialogue. Relever les lignes `dialogue : … — DÉBUT` / `— FIN` (partenaire, commande `Say (0x1b)`,
+   `texte=« id »`), et pour chaque réplique `StartOutput : locuteur=… (HÉROS|autre) échantillon=« … »
+   type=… texte Say=« … »` puis `fin de la sortie … après N ms`. H1 est confirmée si chaque
+   réplique entendue a **une** ligne `StartOutput`, celles du héros comprises (`HÉROS`), et si
+   `texte Say` correspond à la réplique (sinon, noter le décalage d'une frame). Noter aussi la
+   ligne `thread du détour` (attendu : celui d'OnProcess).
+2. **H2** : hors dialogue, près d'un autre PNJ, **Num7** : voix entendue ? lèvres qui bougent ?
+   le héros reste-t-il libre (pas de caméra de dialogue) ? Lignes `sStartOutput … -> true`,
+   `StartFacialAni … OK`, `sIsOutputPlaying à la 1re frame=oui` puis `fin de la sortie … après N
+   ms`. Puis **Num7 deux fois** (< 2 s) : `StartSay … OK`, texte « nom : réplique » dans le journal
+   à l'écran ? voix (celle du PNJ cible : le fichier peut manquer) ?
+3. **H3** : **Num3** sur ce PNJ, **Num4** (IA figée), puis **Num7** (`IA figée (Num4)=oui`). Voix
+   et lèvres ? Attendu possible : `sortie toujours en attente après 30000 ms` (désassemblage :
+   `StartOutput` ne fait que ranger la ressource à `+0x188` de l'unité, la lecture vient du
+   traitement de l'unité, peut-être bloqué avec `gCScriptRoutine_PS::OnProcess`). Num4 pour libérer.
+4. **H4** : **F6** (copie), **F7** facultatif, puis **Num8** (dernière réplique du héros sur la
+   copie) et Num8 deux fois. Relever `PS 0x24=` de la copie (sans lui, `sStartOutput` rend false),
+   voix, lèvres.
+5. **H5** : **Num9** après une réplique dite pendant un dialogue : `eCLocAdmin2::GetString(« id »)
+   -> « texte »` (texte localisé lisible ?), `gCHudSystem2::ShowSubtitle … gCHudSystem2=0x…` : un
+   sous-titre apparaît-il, combien de temps ? Puis **Num9 deux fois** : `GUI2::StartTalk … -> true`,
+   la page de dialogue du HUD s'ouvre-t-elle avec le nom et le texte ? bloque-t-elle le héros ?
+   Num9 pour la fermer (`StopTalk`).
+
+Coller ensuite tout `Script_Multiplayer.log` (lignes `[probe] J3` et `[hooks] J3`).
+
+Faits du désassemblage utiles à la lecture du log (Steam x64 de janvier 2023) :
+- `StartSay(auditeur, texte, bool, bool)` calcule l'échantillon par `GetSampleTitle(texte)`
+  (format `%s_%s_%s_%%_%s.wav`, lu comme texte, voix du PNJ (PS 0x1e), langue des voix, nom de
+  l'entité : ordre à confirmer dans le log ; sans PS 0x1e, échantillon vide et StartSay ne fait rien), puis appelle
+  `StartSayEx(auditeur, échantillon, texte, bool, bool)` (ordre corrigé par rapport au § 2), qui
+  passe `échantillon + ".wav"` à `StartOutput` et à `StartFacialAni`. Type : 0 par défaut, 1 si
+  l'auditeur est le joueur, 2 si le locuteur est le joueur, 3 si le 2ᵉ bool est vrai. Le 1ᵉʳ bool
+  écrit « nom : texte localisé » dans le journal à l'écran.
+- L'identifiant de texte ne se déduit donc pas sûrement de l'échantillon : la sonde le lit dans la
+  commande `Say` courante d'`InfoSystem` (`InfComSay::GetTextID`) à la frame de la réplique.
+- `GUI2::ShowSubtitle` (Script.dll) est un simple `ret` : la sonde utilise
+  `gCHudSystem2::ShowSubtitle` (Game.dll). `InfoSystem::GetNPC` = `gCInfoSystem::GetDialogPartnerNPC`.
+
 Résultats : section 5, à remplir après le test.
