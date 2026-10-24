@@ -8,7 +8,10 @@ inputDocuments:
   - 'docs/re/spike-j1.md'
   - 'docs/re/spike-j2.md'
   - '_bmad-output/implementation-artifacts/epic-3-context.md'
-scope: 'J0 et J1 faits ; J2 (Epic 3) en cours de détail après le spike J2'
+  - '_bmad-output/planning-artifacts/briefs/brief-risen-multiplayer-2026-10-15/brief.md'
+  - 'docs/REPRISE.md'
+  - '~/.local/share/coop-anything (playbook effect-capture-story-sync, annuaire : G3 Together)'
+scope: 'J0 à J2 faits (Epics 1 à 3) ; J3 (Epic 4) en préparation'
 ---
 
 # risen-multiplayer - Epic Breakdown
@@ -33,6 +36,12 @@ Ce document découpe en epics et en stories les exigences du PRD et les décisio
 - **FR-10 : Dégâts de l’invité** *(J2)* — Un coup de l’invité inflige des dégâts au monstre chez l’hôte, et les PV visibles baissent chez les deux.
 - **FR-11 : Dégâts subis par l’invité** *(J2)* — Les attaques des monstres sur l’invité réduisent ses PV dans son jeu.
 - **FR-12 : Mort et réapparition** *(J2)* — L’invité mort réapparaît près de l’hôte, PV pleins. Si l’hôte meurt, la session prend fin.
+
+- **FR-13 : Dialogue en miroir** *(J3, ajouté le 2026-10-24 d’après le brief)* — Quand un joueur engage un dialogue avec un PNJ, l’autre voit ce PNJ et l’avatar du joueur jouer le dialogue (animations de parole, voix), s’il est à portée de voix (environ 20 m). Les sous-titres chez le spectateur sont un bonus, si le spike montre qu’ils s’affichent sans menu.
+- **FR-14 : Dialogues simultanés** *(J3)* — Chacun peut parler à un PNJ différent en même temps, sans gêner l’autre.
+- **FR-15 : Choix réservés à celui qui parle** *(J3)* — Seul le joueur qui a engagé le dialogue choisit les répliques. L’autre est spectateur : pas de menu de choix, personnage libre de ses mouvements.
+- **FR-16 : Conséquences locales** *(J3)* — Les effets d’un dialogue (objets, XP, état de quête) ne s’appliquent que dans le jeu de celui qui parle. La synchronisation des quêtes entre joueurs relève de J4.
+- **FR-17 : Session robuste aux dialogues** *(J3)* — Un dialogue, même long ou avec cinématique, ne coupe jamais la session ; une fin de session pendant un dialogue ramène chaque jeu au solo proprement.
 
 ### NonFunctional Requirements
 
@@ -153,6 +162,7 @@ Aucun document UX : le PRD exclut toute interface en jeu (NFR-6). Le seul « aff
 - FR-7 : Epic 2 — déplacement et animations de l’avatar, fluides
 - FR-8 : Epic 1 (fin de session, retour au solo) + Epic 2 (retrait des avatars)
 - FR-9 à FR-12 : Epic 3 — détaillé après le spike J2 (plus l’équipement de l’invité, reporté de FR-6)
+- FR-13 à FR-17 : Epic 4 — dialogues en miroir, simultanés, choix et conséquences chez celui qui parle, session robuste
 
 ## Epic List
 
@@ -167,6 +177,10 @@ En session, chacun voit apparaître l’avatar de l’autre (celui de l’invit�
 ### Epic 3 : Combattre ensemble
 Les deux joueurs combattent les mêmes monstres en mêlée. L’invité porte son équipement ; son avatar tient son arme et bloque le passage. Chez l’invité, les PNJ proches suivent l’hôte, sans IA locale. Ses coups blessent les monstres chez l’hôte, ceux des monstres le blessent dans son propre jeu, sans jamais compter deux fois. À zéro PV, il tombe à terre, puis réapparaît près de l’hôte, PV pleins. Le spike J2 (story 3.0) est fait.
 **FRs covered:** FR-9, FR-10, FR-11, FR-12, FR-6 (équipement de l’invité, reporté de J1)
+
+### Epic 4 : Parler au monde ensemble
+Quand l’un des deux joueurs parle à un PNJ, l’autre, s’il est à portée de voix, voit le PNJ et l’avatar jouer la conversation et entend la voix ; il ne choisit pas les répliques et n’est pas bloqué. Chacun peut parler à un PNJ différent en même temps. Les effets du dialogue (objets, XP, quêtes) restent chez celui qui parle ; un dialogue ne coupe jamais la session. Commence par une étude de G3 Together (Gothic 3, même moteur Genome) et un spike de rétro-ingénierie des dialogues.
+**FRs covered:** FR-13, FR-14, FR-15, FR-16, FR-17
 
 ## Epic 1 : Se retrouver en session (hôte ↔ invité)
 
@@ -661,3 +675,92 @@ So that le combat à deux se lise dans les deux sens, sans que les dégâts aien
 **And** ses PV ne baissent que du `HitRequest`.
 
 *Note (implémentation 3.8b, protocole v15 inchangé) :* `NpcAttack` devient bidirectionnel : invité → hôte avec `NetId` 2 seulement (tout autre NetId reçu par l’hôte est ignoré, Warn). L’invité détecte le début d’une attaque de son héros (même règle que la 3.8 ; cible : avatar de l’hôte → 1, réplique → son NetId, sinon 0). L’hôte, à l’instant d’affichage de l’avatar (file de 8, vidée au retrait), reprend l’arme du dernier `Weapon`, fixe les cibles `PSNpc` et `PSCombatSystem` (PNJ capturé ; 1 ou 0 → effacées) et lance `StartMove`. Le coup local de l’avatar reste bloqué par la règle 4 (effet d’impact gardé). Faux invité : `--attack-move`. À valider en jeu.
+
+## Epic 4 : Parler au monde ensemble
+
+Quand l’un des deux joueurs parle à un PNJ, l’autre, s’il est à portée de voix (environ 20 m), voit le PNJ et l’avatar jouer la conversation et entend la voix. Il ne choisit pas les répliques et n’est pas bloqué. Chacun peut parler à un PNJ différent en même temps. Les effets du dialogue (objets, XP, quêtes) restent chez celui qui parle (la synchronisation des quêtes relève de J4). Un dialogue ne coupe jamais la session. Comme l’Epic 3, l’epic commence par un spike : les stories 4.1 à 4.4 seront précisées après lui.
+
+### Story 4.0 : Étude de G3 Together et spike des dialogues (sonde)
+
+As a développeur du mod,
+I want savoir comment Risen lance, joue et termine un dialogue,
+So that je choisisse comment le rejouer chez l’autre joueur.
+
+**Acceptance Criteria:**
+
+**Given** le code de G3 Together (Gothic 3, moteur Genome) et le SDK Gothic 3
+**When** je les étudie
+**Then** `docs/re/spike-j3.md` résume comment ils détectent et rejouent un dialogue, et ce qui se transpose à Risen (classes et fonctions exportées, voix, sous-titres).
+
+**Given** la sonde (`probe = 1`) et un dialogue lancé en jeu
+**When** il se déroule
+**Then** le log trace son début, chaque réplique (identifiant, locuteur, fichier voix si possible) et sa fin.
+
+**Given** une réplique identifiée
+**When** la sonde la rejoue sur un PNJ
+**Then** l’animation et la voix sont jouées sans menu de choix ni blocage du héros, ou la raison de l’échec est consignée.
+**And** la spine reçoit une décision pour les dialogues et les questions ouvertes de J3, et les stories 4.1 à 4.4 sont précisées.
+
+### Story 4.1 : Dialogue de l’hôte vu par l’invité
+
+As a invité,
+I want voir et entendre l’hôte parler à un PNJ près de moi,
+So that je suive l’histoire avec lui.
+
+**Acceptance Criteria:**
+
+**Given** une session et l’invité à moins de 20 m
+**When** l’hôte parle à un PNJ
+**Then** chez l’invité, la réplique de ce PNJ et l’avatar de l’hôte jouent chaque réplique avec la voix (FR-13).
+**And** l’invité n’a pas de menu de choix et garde le contrôle de son héros (FR-15) ; les effets du dialogue restent chez l’hôte (FR-16).
+
+**Given** l’invité au-delà de 20 m
+**When** l’hôte parle à un PNJ
+**Then** rien n’est rejoué chez l’invité.
+**And** le nouveau message fiable est ajouté au protocole (v16, `PROTOCOL.md`, vecteurs), au faux invité et aux tests.
+
+### Story 4.2 : Dialogue de l’invité vu par l’hôte
+
+As a hôte,
+I want voir et entendre l’invité parler à un PNJ,
+So that je sache ce qu’il fait.
+
+**Acceptance Criteria:**
+
+**Given** l’invité qui engage un dialogue avec un PNJ
+**When** il parle
+**Then** le dialogue se déroule normalement chez lui (malgré l’IA figée de la réplique, ou en la libérant le temps du dialogue, selon le spike).
+**And** chez l’hôte, le PNJ et l’avatar de l’invité jouent les répliques avec la voix (FR-13).
+**And** les effets restent chez l’invité (FR-16) et le PNJ de l’hôte reprend sa routine à la fin.
+
+### Story 4.3 : Dialogues simultanés et spectateur libre
+
+As a joueur,
+I want parler à mon PNJ pendant que l’autre parle au sien,
+So that je n’attende pas.
+
+**Acceptance Criteria:**
+
+**Given** deux dialogues simultanés avec deux PNJ différents
+**When** ils se déroulent
+**Then** chacun mène le sien, et voit et entend celui de l’autre s’il est à portée (FR-14, FR-15).
+
+**Given** les deux joueurs qui parlent au même PNJ
+**When** le second engage le dialogue
+**Then** il est refusé ou mis en attente (à trancher au spike), avec la raison au log.
+
+### Story 4.4 : Dialogues et robustesse de la session
+
+As a joueur,
+I want qu’un dialogue ne casse jamais la session,
+So that la partie continue.
+
+**Acceptance Criteria:**
+
+**Given** un dialogue long ou avec cinématique
+**When** il se déroule
+**Then** la session ne se coupe pas (heartbeat de secours, story 3.4a) (FR-17).
+
+**Given** une fin de session pendant un dialogue
+**When** elle survient
+**Then** chaque jeu revient au solo, et les PNJ comme les avatars sont libérés proprement.
