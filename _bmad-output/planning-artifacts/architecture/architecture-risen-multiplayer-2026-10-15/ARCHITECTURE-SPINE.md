@@ -192,18 +192,7 @@ graph TD
     - **Mort native (question 9, limite)** : chute (`OnMovementModeChanged` → `RagDollKill`) et eau profonde (`PlayerInDeepWater`) ne passent ni par le point d’accroche des dégâts ni par `DownOrDeadBy*` ; elles ne sont pas interceptées (pas de nouveau hook, pas de mode dieu). Quand `Entity::IsDead` passe à 1 chez l’invité, il envoie `Death{2}` s’il ne l’a pas déjà fait (même verrou), refuse le `Respawn` (pas de relève d’un mort) et n’a pas de repli ; la session finit à son rechargement (fin de monde, `SessionEnd{2}`), l’hôte reste en jeu et se réarme.
   - Écartés au spike : `Kill → Defeat` (mène au menu de chargement), état `ZS_Unconscious` forcé, relève d’un mort.
 
-#### AD-13 — Dialogues : détection par `StartOutput`, rejeu de l'échantillon (J3, spike 4.0)
-
-- **Binds:** FR-13, FR-14, FR-15, FR-16, FR-17
-- **Prevents:** un dialogue joué deux fois, un spectateur bloqué ou pris dans le dialogue de l'autre, une voix de PNJ jouée par la mauvaise entité.
-- **Rule :**
-  - Le dialogue ne tourne que chez celui qui parle (système natif `gCInfoSystem`) ; ses effets y restent (FR-16, J4 pour les quêtes).
-  - Détection : détour de `gCScriptProcessingUnit::StartOutput(bCString const&, gEOutputType)` (Game.dll, nom exporté), réservé aux répliques d'un dialogue en cours (`InfoSystem::IsRunning`) dont le locuteur est le héros local ou le partenaire de dialogue. Le détour ne fait que copier (locuteur, échantillon, type) dans une file ; la frame émet.
-  - Rejeu chez l'autre : `gCScriptProcessingUnit::sStartOutput(entité, échantillon, type)` puis `Entity::StartFacialAni(échantillon)` sur l'entité du locuteur (avatar, ou PNJ par NetId), si elle est à 20 m au plus du héros local et que celui-ci n'est pas en dialogue. Jamais `StartSay` (il recalcule l'échantillon avec la voix de l'entité qui parle), jamais de caméra ni d'état `ZS_Talk` chez le spectateur.
-  - L'échantillon reçu est validé (`[A-Za-z0-9_%.]`, 1 à 128 octets, suffixe `.wav`) : c'est un nom de fichier.
-  - Spike du 2026-10-24 (`docs/re/spike-j3.md`) : détection, rejeu sur PNJ libre, sur PNJ à l'IA figée et sur entité créée par le mod validés en jeu ; sous-titres reportés.
-
-## AD-12 — Hooks de combat et registre des entités (J2)
+### AD-12 — Hooks de combat et registre des entités (J2)
 
 - **Binds:** FR-9, FR-10, FR-11, FR-12
 - **Prevents:** deux stories qui posent le même hook (le second `MH_CreateHook` échoue) ; deux filtres de répliques qui divergent.
@@ -222,6 +211,17 @@ graph TD
     - Une entité en sort avant d’être oubliée ou libérée.
     - Les détours ne font que lire le registre.
   - La sonde (`probe = 1`) et la session sont exclusives pour **tous** ces détours.
+
+### AD-13 — Dialogues : détection par `StartOutput`, rejeu de l'échantillon (J3, spike 4.0)
+
+- **Binds:** FR-13, FR-14, FR-15, FR-16, FR-17
+- **Prevents:** un dialogue joué deux fois, un spectateur bloqué ou pris dans le dialogue de l'autre, une voix de PNJ jouée par la mauvaise entité.
+- **Rule :**
+  - Le dialogue ne tourne que chez celui qui parle (système natif `gCInfoSystem`) ; ses effets y restent (FR-16, J4 pour les quêtes).
+  - Détection : détour de `gCScriptProcessingUnit::StartOutput(bCString const&, gEOutputType)` (Game.dll, nom exporté), réservé aux répliques d'un dialogue en cours (`InfoSystem::IsRunning`) dont le locuteur est le héros local ou le partenaire de dialogue. Le détour ne fait que copier (locuteur, échantillon, type) dans une file ; la frame émet.
+  - Rejeu chez l'autre : `gCScriptProcessingUnit::sStartOutput(entité, échantillon, type)` puis `Entity::StartFacialAni(échantillon)` sur l'entité du locuteur (avatar, ou PNJ par NetId), si elle est à 20 m au plus du héros local et que celui-ci n'est pas en dialogue. Jamais `StartSay` (il recalcule l'échantillon avec la voix de l'entité qui parle), jamais de caméra ni d'état `ZS_Talk` chez le spectateur.
+  - L'échantillon reçu est validé (`[A-Za-z0-9_%.]`, 1 à 128 octets, suffixe `.wav`) : c'est un nom de fichier.
+  - Spike du 2026-10-24 (`docs/re/spike-j3.md`) : détection, rejeu sur PNJ libre, sur PNJ à l'IA figée et sur entité créée par le mod validés en jeu ; sous-titres reportés.
 
 ## Consistency Conventions
 
