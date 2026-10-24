@@ -1,6 +1,7 @@
 // Adaptateur ABI des dialogues : sonde du spike J3 (story 4.0, `probe = 1`) et, depuis la story 4.1
-// (AD-13), session (sync/dialogue : détour de StartOutput, InfoSystem::IsRunning et GetNPC chez l'hôte,
-// sStartOutput et StartFacialAni chez l'invité). Plan et résultats : docs/re/spike-j3.md.
+// (AD-13), session (sync/dialogue : détour de StartOutput, InfoSystem::IsRunning et GetNPC, puis
+// sStartOutput et StartFacialAni chez le pair ; story 4.2 : dans les deux sens). Plan et résultats :
+// docs/re/spike-j3.md.
 //
 // Faits établis par désassemblage (Steam x64, janvier 2023) :
 // - gCScriptProcessingUnit (SPU, Game.dll) vit à `+0x118` du gCScriptRoutine_PS (PS 0x24) de
@@ -67,6 +68,9 @@ bool info_command_type(int& out);    // kInfoCommandNone : aucune commande
 // Commande courante de type Say (vérifié ici) : identifiant de texte et locuteur.
 bool info_say_text_id(std::string& out);
 bool info_say_speaker(Entity& out);
+// Story 4.2 (H1, journal debug) : PSDialog::IsBeingTalkedTo de l'entité. Symbole facultatif, hors du
+// bloc en tout ou rien : absent, false.
+bool dialog_being_talked_to(const Entity& e, bool& out);
 
 // --- Parole --------------------------------------------------------------------------------
 // gCScriptProcessingUnit::sIsOutputPlaying(entité) : ressource de sortie en attente ou en cours.

@@ -58,11 +58,28 @@ TEST("dialogue_rules invité : 2000 cm rejoué, 2001 cm trop loin") {
     CHECK_EQ(std::string(far.reason), std::string("trop loin"));
 }
 
-TEST("dialogue_rules invité : invité en dialogue, locuteur mort → ignorés") {
+TEST("dialogue_rules rejeu : joueur local en dialogue, locuteur mort → ignorés") {
     GuestDecision d = guest_decide(800.0f, true, true);
     CHECK(d.action == GuestAction::Ignore);
-    CHECK_EQ(std::string(d.reason), std::string("invité en dialogue"));
+    CHECK_EQ(std::string(d.reason), std::string("joueur local en dialogue"));
     d = guest_decide(800.0f, false, false);
     CHECK(d.action == GuestAction::Ignore);
     CHECK_EQ(std::string(d.reason), std::string("locuteur mort"));
+}
+
+TEST("dialogue_rules invité (4.2) : transitions du dialogue de l'invité") {
+    GuestTransition t = guest_transition(0, 1033, true);  // début
+    CHECK(t.start == 1033u && t.end == 0u && t.next == 1033u);
+    t = guest_transition(1033, 1033, true);  // en cours
+    CHECK(t.start == 0u && t.end == 0u && t.next == 1033u);
+    t = guest_transition(1033, 0, true);  // fin
+    CHECK(t.start == 0u && t.end == 1033u && t.next == 0u);
+    t = guest_transition(1033, 1040, true);  // nouveau partenaire dans la même frame
+    CHECK(t.start == 1040u && t.end == 1033u && t.next == 1040u);
+    t = guest_transition(1033, 0, false);  // frame illisible : état gardé
+    CHECK(t.start == 0u && t.end == 0u && t.next == 1033u);
+    t = guest_transition(0, 1033, false);
+    CHECK(t.start == 0u && t.end == 0u && t.next == 0u);
+    t = guest_transition(0, 0, true);
+    CHECK(t.start == 0u && t.end == 0u && t.next == 0u);
 }

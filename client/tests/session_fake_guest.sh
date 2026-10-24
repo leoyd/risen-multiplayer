@@ -563,6 +563,34 @@ if start_host dialogues $p 30000 1 --npcs 3 --dialog-ms 400; then
     expect_log "dialogues : bilan de l'invité" "$g" "Bilan dialogues : DialogLine reçus=[1-9]"
 fi
 
+# --- Story 4.2 : dialogue de l'invité (DialogState, DialogLine{2} et du PNJ) → tenue et rejeu chez l'hôte ---
+p=$((base_port + 26))
+if start_host_npcs dialogues_invite $p 30000 3; then
+    h=$work/dialogues_invite.host.log
+    g=$work/dialogues_invite.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 3s --quit --dialog-every 800ms > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "dialogues de l'invité : invité" 0 $rc "$g"
+    expect_log "dialogues de l'invité : DialogState envoyé" "$g" "-> DialogState pnj=1000 actif=1"
+    expect_log "dialogues de l'invité : PNJ tenu" "$h" "\[test\] HoldNpc NetId 1000"
+    expect_log "dialogues de l'invité : tenue journalisée" "$h" "PNJ 1000 tenu (routine figée) pendant le dialogue de l'invité"
+    expect_log "dialogues de l'invité : réplique du héros rejouée" "$h" "\[test\] ApplyDialogLine locuteur 2 type 3 « INFO_Sara_1_PC_Hero_DE_%_PC_Hero.wav »"
+    expect_log "dialogues de l'invité : réplique du PNJ rejouée" "$h" "\[test\] ApplyDialogLine locuteur 1000 type 0 « INFO_Sara_2_Sara_DE_%_Sara.wav »"
+    expect_log "dialogues de l'invité : fin, PNJ rendu" "$h" "\[test\] UnholdNpc NetId 1000"
+    expect_log "dialogues de l'invité : bilan de l'invité" "$g" "Bilan dialogues : DialogLine reçus=0 envoyés=[1-9]"
+fi
+p=$((base_port + 27))
+if start_host_npcs dialogues_netid $p 30000 3; then
+    h=$work/dialogues_netid.host.log
+    g=$work/dialogues_netid.guest.log
+    "$guest" --host 127.0.0.1 --port $p --duration 2s --quit --dialog-every 500ms --dialog-npc 4242 > "$g" 2>&1; rc=$?
+    wait $host_pid
+    expect_code "dialogues NetId inconnu : invité" 0 $rc "$g"
+    expect_log "dialogues NetId inconnu : refusé par l'hôte" "$h" "DialogState (PNJ 4242, début) ignoré (PNJ non annoncé)"
+    expect_count "dialogues NetId inconnu : aucun PNJ tenu" "$h" "HoldNpc" 0
+    expect_count "dialogues NetId inconnu : réplique du PNJ non rejouée" "$h" "ApplyDialogLine locuteur 4242" 0
+fi
+
 # --- Story 3.7 : invité à terre toutes les secondes : Respawn de l'hôte, accusé de l'invité -----
 p=$((base_port + 22))
 if start_host respawn $p 30000; then

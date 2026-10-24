@@ -39,6 +39,9 @@
 // Dialogues (story 4.1) : --dialog-ms N injecte en session, toutes les N ms, une réplique du héros de
 // l'hôte (LocalDialogLine, type 3) et, avec --npcs ≥ 3, une réplique du PNJ 2 (GUID du PNJ d'indice 2,
 // NetId 1002, type 0), comme sync/dialogue pendant un dialogue.
+// Dialogues de l'invité (story 4.2) : chaque HoldNpc, UnholdNpc et ApplyDialogLine est journalisé
+// « [test] HoldNpc NetId N », « [test] UnholdNpc NetId N », « [test] ApplyDialogLine locuteur N type T
+// « échantillon » », comme l'exécuteraient sync/npc et sync/dialogue.
 #include "core/session.h"
 #include "net/transport.h"
 
@@ -412,6 +415,13 @@ int main(int argc, char** argv) {
                     print("INFO", "[test] ApplyHit NetId " + std::to_string(ah->net_id) + " : PNJ simulé " +
                                       std::to_string(index) + ", PV −10 (dégâts cumulés " +
                                       std::to_string(npc_damage[index]) + ")");
+                } else if (const auto* hn = std::get_if<HoldNpc>(&cmd)) {  // story 4.2
+                    print("INFO", "[test] HoldNpc NetId " + std::to_string(hn->net_id));
+                } else if (const auto* un = std::get_if<UnholdNpc>(&cmd)) {
+                    print("INFO", "[test] UnholdNpc NetId " + std::to_string(un->net_id));
+                } else if (const auto* ad = std::get_if<ApplyDialogLine>(&cmd)) {
+                    print("INFO", "[test] ApplyDialogLine locuteur " + std::to_string(ad->net_id) + " type " +
+                                      std::to_string(ad->output_type) + " « " + ad->sample + " »");
                 } else if (const auto* aa = std::get_if<ApplyAvatarAttack>(&cmd)) {  // story 3.8b
                     print("INFO", "[test] ApplyAvatarAttack mouvement " + std::to_string(aa->move) + " cible " +
                                       std::to_string(aa->target));

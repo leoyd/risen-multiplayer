@@ -99,18 +99,20 @@ type hostRecord struct {
 	motions      []protocol.Motion
 	params       []protocol.MotionParam
 	deaths       []uint32
-	hits         []uint32             // NetId des HitRequest reçus (v12)
-	hitsOnGuest  int                  // HitOnGuest envoyés à l'invité (v13)
-	respawnsSent int                  // Respawn (ordres) envoyés à l'invité (v14)
-	npcAttacks   int                  // NpcAttack envoyés à l'invité (v15)
-	dialogLines  int                  // DialogLine envoyés à l'invité (v16)
-	guestAttacks []protocol.NpcAttack // NpcAttack reçus de l'invité (v15, story 3.8b)
-	respawnAcks  []protocol.Respawn   // accusés reçus de l'invité (v14)
-	weapons      []protocol.Weapon    // reçus de l'invité (v7)
-	armors       []protocol.Armor     // reçus de l'invité (v8)
-	snapshotAt   []time.Time          // heure de réception de chacun
-	lastDatagram time.Time            // dernier datagramme du pair de session
-	timeoutAt    time.Time            // fin « timeout » constatée
+	hits         []uint32               // NetId des HitRequest reçus (v12)
+	hitsOnGuest  int                    // HitOnGuest envoyés à l'invité (v13)
+	respawnsSent int                    // Respawn (ordres) envoyés à l'invité (v14)
+	npcAttacks   int                    // NpcAttack envoyés à l'invité (v15)
+	dialogLines  int                    // DialogLine envoyés à l'invité (v16)
+	guestAttacks []protocol.NpcAttack   // NpcAttack reçus de l'invité (v15, story 3.8b)
+	dialogStates []protocol.DialogState // DialogState reçus de l'invité (v17, story 4.2)
+	guestLines   []protocol.DialogLine  // DialogLine reçus de l'invité (v17, story 4.2)
+	respawnAcks  []protocol.Respawn     // accusés reçus de l'invité (v14)
+	weapons      []protocol.Weapon      // reçus de l'invité (v7)
+	armors       []protocol.Armor       // reçus de l'invité (v8)
+	snapshotAt   []time.Time            // heure de réception de chacun
+	lastDatagram time.Time              // dernier datagramme du pair de session
+	timeoutAt    time.Time              // fin « timeout » constatée
 	ended        string
 }
 
@@ -431,6 +433,14 @@ func (h *simHost) drain() {
 		case protocol.HitRequest:
 			h.mu.Lock()
 			h.rec.hits = append(h.rec.hits, m.NetId)
+			h.mu.Unlock()
+		case protocol.DialogState:
+			h.mu.Lock()
+			h.rec.dialogStates = append(h.rec.dialogStates, m)
+			h.mu.Unlock()
+		case protocol.DialogLine:
+			h.mu.Lock()
+			h.rec.guestLines = append(h.rec.guestLines, m)
 			h.mu.Unlock()
 		case protocol.NpcAttack:
 			h.mu.Lock()

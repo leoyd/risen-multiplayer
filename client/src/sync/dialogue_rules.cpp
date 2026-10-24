@@ -20,8 +20,13 @@ HostDecision host_decide(bool running, const void* speaker, const void* hero, co
 GuestDecision guest_decide(float distance_cm, bool guest_running, bool alive) {
     if (!alive) return {GuestAction::Ignore, "locuteur mort"};
     if (!(distance_cm <= kReplayRadius)) return {GuestAction::Ignore, "trop loin"};
-    if (guest_running) return {GuestAction::Ignore, "invité en dialogue"};
+    if (guest_running) return {GuestAction::Ignore, "joueur local en dialogue"};
     return {GuestAction::Replay, nullptr};
+}
+
+GuestTransition guest_transition(std::uint32_t prev, std::uint32_t now, bool readable) {
+    if (!readable || now == prev) return {0, 0, prev};
+    return {now, prev, now};
 }
 
 }  // namespace mp::sync::dialogue_rules

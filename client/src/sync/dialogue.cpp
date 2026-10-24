@@ -55,6 +55,15 @@ bool g_sample_warned = false;
 bool g_guid_warned = false;
 bool g_output_warned = false;
 bool g_facial_warned = false;
+// Story 4.2, invité : dialogue en cours vu à la frame précédente (IsRunning, NetId du partenaire s'il
+// est une réplique, 0 sinon), et InfoSystem illisible déjà signalé.
+bool g_guest_running = false;
+std::uint32_t g_guest_partner = 0;
+bool g_running_warned = false;
+bool g_npc_warned = false;
+// Story 4.2 : vrai pendant le sStartOutput d'un rejeu (même thread que le détour) : le détour ne relève
+// pas ces répliques rejouées, qui ne sont pas celles du joueur local.
+thread_local bool t_replaying = false;
 
 std::size_t drain(Captured (&batch)[kRing], unsigned& dropped) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -86,6 +95,7 @@ void set_active(bool active) { g_active = active; }
 bool active() { return g_active; }
 
 void on_start_output(void* spu, const void* sample, int type) noexcept {
+    if (t_replaying) return;  // story 4.2 : rejeu d'une réplique du pair, pas une réplique locale
     Captured c;
     c.type = type;
     c.self_ok = game::spu_self_entity(spu, c.self);
@@ -107,14 +117,12 @@ void on_start_output(void* spu, const void* sample, int type) noexcept {
     }
 }
 
-void host_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
-    Captured batch[kRing];
-    unsigned dropped = 0;
-    const std::size_t n = drain(batch, dropped);
-    if (!g_active || !in_session || hero == nullptr) {
-        g_ignored = 0;
-        return;
-    }
+namespace {
+
+// Répliques relevées par le détour (hôte et, story 4.2, invité) : règles de sync/dialogue_rules, puis
+// LocalDialogLine (hôte : partenaire par son GUID ; invité : par le NetId de sa réplique, 0 sinon).
+void process_lines(const Captured* batch, std::size_t n, unsigned dropped, void* hero, bool guest,
+                   std::vector<cs::Input>& out) {
     if (dropped != 0) {
         const std::string line =
             "[sync] dialogues : " + std::to_string(dropped) + " StartOutput perdus (plus de 32 par frame)";
@@ -157,7 +165,10 @@ void host_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
         line.hero = d.action == dialogue_rules::HostAction::SendHero;
         line.output_type = static_cast<std::uint8_t>(c.type);
         line.sample = sample;
-        if (!line.hero) {
+        if (!line.hero && guest) {
+            // Story 4.2 : la session n'envoie que le partenaire du dialogue en cours (0 : pas une réplique).
+            line.net_id = npc::replica_net_id(c.partner);
+        } else if (!line.hero) {
             std::uint8_t id[game::kPropertyIdSize];
             if (!game::get_entity_id(game::Entity{c.partner}, id)) {
                 ++g_ignored;
@@ -173,33 +184,107 @@ void host_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
         }
         out.push_back(std::move(line));
     }
-    push_counts(out);
 }
 
-void guest_frame(std::vector<cs::Input>& out) {
+}  // namespace
+
+void host_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
     Captured batch[kRing];
     unsigned dropped = 0;
-    drain(batch, dropped);  // story 4.1 : l'invité n'émet rien (rejeux compris)
+    const std::size_t n = drain(batch, dropped);
+    if (!g_active || !in_session || hero == nullptr) {
+        g_ignored = 0;
+        return;
+    }
+    process_lines(batch, n, dropped, hero, false, out);
     push_counts(out);
 }
 
-void replay(void* hero, std::uint32_t net_id, std::uint8_t output_type, const std::string& sample) {
+void read_host_state(cs::World& world) {
+    world.dialog_running = false;
+    world.dialog_partner_ok = false;
+    if (!g_active || !world.loaded()) return;
+    bool running = false;
+    if (!game::info_is_running(running) || !running) return;
+    world.dialog_running = true;
+    game::Entity partner;
+    std::uint8_t id[game::kPropertyIdSize];
+    if (!game::info_dialog_npc(partner) || partner.ptr == nullptr || !game::get_entity_id(partner, id)) return;
+    std::memcpy(world.dialog_partner.data(), id, world.dialog_partner.size());
+    world.dialog_partner_ok = true;
+}
+
+void guest_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
+    Captured batch[kRing];
+    unsigned dropped = 0;
+    const std::size_t n = drain(batch, dropped);
+    if (!g_active || !in_session || hero == nullptr) {
+        // Monde déchargé pendant un dialogue : fin signalée (la session l'ignore hors session).
+        if (g_guest_partner != 0) out.push_back(cs::LocalDialogState{g_guest_partner, false});
+        g_guest_running = false;
+        g_guest_partner = 0;
+        push_counts(out);  // bilan des rejeux de la frame précédente
+        return;
+    }
+    // Story 4.2 : dialogue de l'invité à cette frame. Illisible : état précédent gardé.
+    bool running = false;
+    bool readable = game::info_is_running(running);
+    game::Entity partner;
+    if (!readable) {
+        running = g_guest_running;
+        if (!g_running_warned) {
+            g_running_warned = true;
+            log::warn("[sync] dialogues : InfoSystem::IsRunning illisible (SEH) à la frame : état du dialogue de "
+                      "l'invité gardé (une fois par session)");
+        }
+    } else if (running && !game::info_dialog_npc(partner)) {
+        readable = false;
+        if (!g_npc_warned) {
+            g_npc_warned = true;
+            log::warn("[sync] dialogues : InfoSystem::GetNPC illisible (SEH) à la frame : état du dialogue de "
+                      "l'invité gardé (une fois par session)");
+        }
+    }
+    const std::uint32_t partner_id = readable && running ? npc::replica_net_id(partner.ptr) : 0;
+    if (readable && running != g_guest_running) {
+        char ptr[24];
+        std::snprintf(ptr, sizeof ptr, "0x%llx",
+                      static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(partner.ptr)));
+        log::debug(std::string("[sync] dialogues : dialogue de l'invité ") + (running ? "commencé" : "fini") +
+                   (!running                ? std::string()
+                    : partner.ptr == nullptr ? std::string(", partenaire nul (GetNPC)")
+                                             : std::string(", partenaire ") + ptr +
+                                                   (partner_id != 0 ? " (réplique " + std::to_string(partner_id) + ")"
+                                                                    : std::string(" (pas une réplique)"))));
+    }
+    if (readable) g_guest_running = running;
+    npc::log_talk_states(running);  // H1, debug seulement
+    const dialogue_rules::GuestTransition t = dialogue_rules::guest_transition(g_guest_partner, partner_id, readable);
+    // Début (ou nouveau partenaire) avant les répliques de la frame, fin après : la première et la
+    // dernière réplique tombent dans le dialogue (la session refuse le partenaire hors dialogue).
+    if (t.start != 0) out.push_back(cs::LocalDialogState{t.start, true});
+    process_lines(batch, n, dropped, hero, true, out);
+    if (t.end != 0) out.push_back(cs::LocalDialogState{t.end, false});
+    g_guest_partner = t.next;
+    push_counts(out);
+}
+
+void replay(void* hero, std::uint32_t net_id, std::uint8_t output_type, const std::string& sample, void* speaker,
+            const char* speaker_name) {
     const std::string what = "[sync] DialogLine (locuteur " + std::to_string(net_id) + ", type " +
                              std::to_string(output_type) + ", « " + sample + " »)";
     const char* why = nullptr;
-    void* speaker = nullptr;
     float distance = 0.0f;
     if (!g_active) {
         why = "dialogues inactifs";
     } else if (!proto::valid_dialog_sample(sample)) {  // déjà vérifié au décodage : défense en profondeur
         why = "échantillon invalide";
     } else {
-        speaker = net_id == proto::kHostNetId ? avatar::entity() : npc::replica_entity(net_id);
         bool dead = false;
         game::Matrix own{}, other{};
         bool running = false;
         if (speaker == nullptr) {
-            why = net_id == proto::kHostNetId ? "pas d'avatar de l'hôte" : "réplique absente ou morte";
+            why = "entité du locuteur absente ou morte";
         } else if (!game::is_dead(game::Entity{speaker}, dead)) {
             why = "Entity::IsDead en échec";
         } else if (hero == nullptr || !game::get_pose(game::Entity{hero}, own) ||
@@ -225,7 +310,9 @@ void replay(void* hero, std::uint32_t net_id, std::uint8_t output_type, const st
     bool facial_ok = false;
     {
         AnimFilter::ReplayGuard guard;  // le registre laisse passer l'animation des lèvres
+        t_replaying = true;             // story 4.2 : le détour de StartOutput ne relève pas ce rejeu
         output_ok = game::start_output(entity, sample.c_str(), output_type, started);
+        t_replaying = false;
         facial_ok = game::start_facial_ani(entity, sample.c_str());
     }
     if (!output_ok && !g_output_warned) {
@@ -242,8 +329,8 @@ void replay(void* hero, std::uint32_t net_id, std::uint8_t output_type, const st
         return;
     }
     ++g_played;
-    log::debug(what + " rejouée sur " + (net_id == proto::kHostNetId ? std::string("l'avatar de l'hôte") : "la réplique") +
-              " à " + distance_text(distance) + (facial_ok ? "" : " (sans lèvres)"));
+    log::debug(what + " rejouée sur " + speaker_name + " à " + distance_text(distance) +
+               (facial_ok ? "" : " (sans lèvres)"));
 }
 
 void reset() {
@@ -255,6 +342,10 @@ void reset() {
     g_guid_warned = false;
     g_output_warned = false;
     g_facial_warned = false;
+    g_guest_running = false;  // story 4.2
+    g_guest_partner = 0;
+    g_running_warned = false;
+    g_npc_warned = false;
 }
 
 }  // namespace mp::sync::dialogue

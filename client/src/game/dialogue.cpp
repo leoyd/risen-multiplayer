@@ -64,6 +64,9 @@ constexpr const char* kStartFacialAni = "?StartFacialAni@Entity@@QEAAXVbCString@
 constexpr const char* kStartSay = "?StartSay@Entity@@QEAAXAEAV1@VbCString@@_N2@Z";
 constexpr const char* kStartTalk = "?StartTalk@GUI2@@QEAA_NVEntity@@VbCString@@@Z";
 constexpr const char* kStopTalk = "?StopTalk@GUI2@@QEAAXXZ";
+// Story 4.2 (H1, diagnostic seulement, hors du bloc en tout ou rien) : `this` = Entity (8 octets),
+// l'entité est lue à [this] puis GetPropertySet(0x37) (gCDialog_PS) : désassemblage, 0x180220290.
+constexpr const char* kBeingTalkedTo = "?IsBeingTalkedTo@PSDialog@@QEBA_NXZ";
 constexpr const char* kEntityCopyCtor = "??0Entity@@QEAA@AEBV0@@Z";
 constexpr const char* kGui2 = "gui2";
 constexpr const char* kLocGetInstance = "?GetInstance@eCLocAdmin2@@SAAEAV1@XZ";
@@ -94,6 +97,7 @@ struct DialogueAbi {
     StartSayFn start_say = nullptr;
     StartTalkFn start_talk = nullptr;
     StopTalkFn stop_talk = nullptr;
+    bool (*being_talked_to)(const Entity* self) = nullptr;  // facultatif (story 4.2)
     EntityCopyCtorFn entity_copy_ctor = nullptr;
     void* gui2 = nullptr;
     LocGetInstanceFn loc_get_instance = nullptr;
@@ -235,6 +239,8 @@ bool resolve_dialogue(const char*& missing) {
                     lookup(shared_base, kUStringDtor, a.ustring_dtor, missing) &&
                     lookup(shared_base, kUStringGetText, a.ustring_get_text, missing);
     if (!ok) return false;
+    const char* optional = nullptr;
+    lookup(script, kBeingTalkedTo, a.being_talked_to, optional);  // absent : dialog_being_talked_to rend false
     g_abi = a;
     g_resolved = true;
     return true;
@@ -271,6 +277,18 @@ bool read_bcstring(const void* bcstring, char* buf, std::size_t cap, std::size_t
 }
 
 // --- InfoSystem ----------------------------------------------------------------------------
+
+bool dialog_being_talked_to(const Entity& e, bool& out) {
+    out = false;
+    if (!g_resolved || g_abi.being_talked_to == nullptr || e.ptr == nullptr) return false;
+    __try {
+        out = g_abi.being_talked_to(&e);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
+        return false;
+    }
+}
 
 bool info_is_running(bool& out) {
     out = false;

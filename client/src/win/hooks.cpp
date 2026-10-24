@@ -70,6 +70,8 @@ void detour_routine_on_process(void* routine_ps) {
 
 // Session (story 3.3) : IA figée des répliques de PNJ. Le détour ne fait que lire le registre
 // (comparaison sous le verrou de l'AnimFilter, AD-2) ; sync/npc seul y inscrit les répliques.
+// Story 4.2 : blocks_routine reflète aussi la libération d'une réplique (dialogue de l'invité, chez
+// l'invité : routine rendue) et la tenue d'un PNJ (dialogue de l'invité, chez l'hôte : routine figée).
 void detour_routine_on_process_session(void* routine_ps) {
     if (!sync::anim_filter().blocks_routine(routine_ps)) {
         g_original_routine_on_process(routine_ps);
@@ -419,7 +421,7 @@ bool install_session(bool damage_hook, bool native_attacks, bool dialogues) {
         log::info("[hooks] attaques natives des répliques résolues (PSCombatSystem::StartMove)");
     }
     if (down_or_dead) log::info("[hooks] détours DownOrDeadBy* de session posés (mise à terre de l'invité)");
-    if (dialogue) log::info("[hooks] dialogues : hook StartOutput posé (répliques de l'hôte vues par l'invité)");
+    if (dialogue) log::info("[hooks] dialogues : hook StartOutput posé (répliques vues par le pair, dans les deux sens)");
     watchdog::start();
     return true;
 }

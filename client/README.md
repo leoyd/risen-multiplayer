@@ -875,8 +875,8 @@ lignes d'installation) seulement. Protocole **v16** (`DialogLine`, type 30, AD-1
   m`. Ignoré (Debug, compté) : entité absente ou morte, à plus de 20 m (2000 cm inclus), invité
   lui-même en dialogue. SEH : Warn une fois par session ; `sStartOutput` qui rend false : Debug `voix
   absente`. Le bilan de 5 s reste la trace Info (lignes par réplique en debug seulement).
-- **Installation** : `[hooks] dialogues : hook StartOutput posé (répliques de l'hôte vues par
-  l'invité)`, ou `[hooks] dialogues désactivés (dialogues = 0)`, ou Warn `[hooks] dialogues inactifs
+- **Installation** : `[hooks] dialogues : hook StartOutput posé (répliques vues par le pair, dans
+  les deux sens)`, ou `[hooks] dialogues désactivés (dialogues = 0)`, ou Warn `[hooks] dialogues inactifs
   : …` (session sans dialogues).
 - Clé `dialogues` (défaut `1`) : à `0`, ni envoi ni rejeu (reçus ignorés et comptés, Info une fois par
   session chez l'invité) : **interrupteur de diagnostic**.
@@ -903,8 +903,73 @@ Prérequis : `log_level = debug` (les lignes par réplique sont en debug), DLL e
    doit venir de l'avatar, en 3D, et la caméra de l'invité ne doit pas bouger. Sinon, rapporter les
    lignes `rejouée` (type 3).
 4. **Invité à plus de 20 m** : rien entendu ; Debug `ignorée (trop loin, … m)`.
-5. **Invité en dialogue avec un autre PNJ** pendant celui de l'hôte : Debug `ignorée (invité en
+5. **Invité en dialogue avec un autre PNJ** pendant celui de l'hôte : Debug `ignorée (joueur local en
    dialogue)`, son propre dialogue intact.
+
+### Dialogue de l'invité vu par l'hôte (story 4.2, à valider en jeu)
+
+**À valider en jeu** : testé au banc (Linux, faux invité `--dialog-every` ; banc Wine : symboles) seulement.
+Protocole **v17** : `DialogLine` aussi invité → hôte (locuteur 2 = héros de l'invité), nouveau
+`DialogState` (type 31, invité → hôte : PNJ, début ou fin). But : quand l'invité parle à un PNJ, son
+dialogue se déroule normalement chez lui, et l'hôte entend et voit (lèvres) l'avatar de l'invité et
+ce PNJ, qui ne repart pas avant la fin. Les effets du dialogue restent chez l'invité (FR-16).
+- **Invité, détection** : à chaque frame, `InfoSystem::IsRunning` et `GetNPC`. Un dialogue avec une
+  réplique (NetId ≥ 1000) : Info `[sync] dialogue de l'invité avec le PNJ N : début : réplique libérée,
+  DialogState envoyé` et `[sync] PNJ N libéré pour le dialogue de l'invité : IA et animations natives` ;
+  sa fin : `… : fin du dialogue, réplique re-figée, DialogState envoyé` et `[sync] PNJ N re-figé`.
+  Debug : `[sync] dialogues : dialogue de l'invité commencé, partenaire 0x… (réplique N | pas une
+  réplique)` / `fini`. Répliques : même filtre que l'hôte (son héros → `DialogLine{2}`, le partenaire
+  → `DialogLine{N}`), Debug `[sync] réplique de dialogue du héros invité|du PNJ N (…) : DialogLine
+  envoyé`, ou `ignorée (PNJ hors du dialogue en cours|partenaire qui n'est pas une réplique)`.
+- **Invité, libération** : pendant le dialogue, la réplique partenaire n'a plus ni routine ni
+  animations bloquées (registre) ; poses, PV, gestes et attaques de l'hôte pour elle sont ignorés
+  (comptés au bilan des animations et des attaques), sauf le dernier geste de chaque type, rejoué au
+  re-gel. À la fin, elle reprend la pose de l'hôte, et ses PV sont réécrits au prochain instant d'affichage.
+- **H1 (journal debug)** : chaque transition de `PSDialog::IsBeingTalkedTo` d'une réplique : `[sync]
+  PNJ N : PSDialog::IsBeingTalkedTo = 1 (IsRunning invité = 0|1, réplique figée|libérée)`. Si le
+  dialogue natif ne démarre pas avec une réplique figée (aucune ligne `dialogue de l'invité commencé`
+  alors que `IsBeingTalkedTo = 1 … figée` apparaît), la libération doit se faire dès la demande :
+  rapporter ces lignes.
+- **Hôte, tenue** : `DialogState{N, 1}` d'un PNJ annoncé et vivant qui ne parle pas à l'hôte : Info
+  `[sync] DialogState (PNJ N, début) : PNJ N tenu (routine figée) pendant le dialogue de l'invité` et
+  `[sync] PNJ N tenu (routine figée) : dialogue de l'invité`. Rendu (`[sync] PNJ N rendu (routine
+  reprise) : …`) à `DialogState{N, 0}`, à sa mort ou sa sortie de la sélection, à la fin de session,
+  quand l'hôte se met à lui parler (`PNJ en dialogue avec l'hôte`), ou après **60 s** sans activité
+  (Warn ; chaque réplique de l'invité relance le délai). Refus (Info) : `ignoré (PNJ non annoncé|PNJ
+  mort|PNJ en dialogue avec l'hôte|hôte en dialogue, partenaire illisible)`. **Un refus est silencieux
+  pour l'invité** : seul le log de l'hôte dit pourquoi, et l'hôte ne voit ni n'entend alors rien du PNJ.
+  Tenue ou libération impossible côté jeu (GUID introuvable, pas de PS de routine, PNJ perdu) : Warn
+  `tenue impossible ou perdue` (hôte) ou `libération impossible … dialogue clos` (invité).
+- **Fin de session** : aucun `DialogState{N, 0}` n'est envoyé ; chaque côté nettoie à `Ended`.
+- **Hôte, rejeu** : comme chez l'invité (20 m, hôte pas lui-même en dialogue) : `DialogLine{2}` sur
+  l'avatar de l'invité, `DialogLine{N}` sur le PNJ tenu ; Debug `[sync] DialogLine (locuteur N, …)
+  rejouée sur l'avatar de l'invité|le PNJ tenu à X m`. La voix du PNJ tenu passe par la pompe du canal
+  de sortie (routine figée, comme une réplique en 4.1).
+- Bilan `[sync] snapshots (5 s)` : `… ; DialogState envoyés …, reçus …` en fin de ligne.
+- Faux invité : `--dialog-every 5s` (et `--dialog-npc N`) commence puis finit un dialogue avec le
+  premier PNJ annoncé (`-> DialogState pnj=N actif=1|0`, `-> DialogLine locuteur=2|N …`) ; scénarios
+  `dialogues_invite` et `dialogues_netid` de `tests/session_fake_guest.sh`.
+
+Prérequis : `log_level = debug` des deux côtés, DLL et configs installées (`tools/installer-local.sh`).
+
+1. **Une machine, hôte + faux invité** (`fake-guest --host 127.0.0.1 --duration 180s --dialog-every
+   5s`), un PNJ près de l'hôte : toutes les 5 s, `PNJ N tenu` puis `rendu` chez l'hôte ; le PNJ s'arrête
+   pendant la tenue et reprend sa routine ensuite ; lignes `rejouée` (voix et lèvres de l'avatar et du
+   PNJ si l'avatar est à moins de 20 m).
+2. **Deux instances** (`~/Games/lancer-risen-coop.sh`), l'hôte près de l'invité : l'invité parle à
+   un PNJ jusqu'à la fin. Chez l'invité : dialogue normal (menu, caméra, voix, gestes du PNJ) ; log
+   `DialogState … début`, `PNJ N libéré`, puis `DialogLine envoyé` à chaque réplique. Chez l'hôte : `PNJ N
+   tenu` puis `rejouée` à chaque réplique ; voix et lèvres de l'avatar et du PNJ ; le PNJ ne repart pas.
+   **H2** : chez l'invité, la réplique libérée se tourne-t-elle vers le héros et gesticule-t-elle ?
+   **H3** : chez l'hôte, voix et lèvres du PNJ tenu ?
+3. **Fin du dialogue** : chez l'invité, `re-figé` et la réplique rejoint la pose de l'hôte ; chez
+   l'hôte, `rendu (routine reprise) : fin du dialogue de l'invité` et le PNJ reprend sa routine.
+4. **H1** : si le dialogue ne s'ouvre pas chez l'invité (le PNJ ne répond pas), relever les lignes
+   `IsBeingTalkedTo` et `dialogue de l'invité commencé` du log de l'invité.
+5. **Fin de session pendant le dialogue** (l'hôte recharge) : chez l'hôte, `PNJ N rendu … fin de
+   session` ; chez l'invité, la réplique est rendue au jeu (`réplique(s) libérée(s)`).
+6. **L'hôte parle au PNJ que l'invité veut aborder** : chez l'hôte, `ignoré (PNJ en dialogue avec
+   l'hôte)`, rien n'est tenu.
 
 ### Overlay à l'écran (rôle et état de session)
 

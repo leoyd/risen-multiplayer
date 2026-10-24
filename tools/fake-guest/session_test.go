@@ -861,3 +861,49 @@ func TestDieEveryRespawn(t *testing.T) {
 	expectLog(t, r, "-> Death netid=2 (à terre, --die-every)", "<- Respawn netid=2 pose=(500, 10, -300, 0.5)",
 		"-> Respawn accusé tick=", "Bilan à terre : Death envoyés=")
 }
+
+// Story 4.2 : --dialog-every alterne début (DialogState{N, 1}, réplique du héros puis du PNJ) et fin
+// (DialogState{N, 0}) d'un dialogue avec le premier PNJ présent.
+func TestGuestDialog(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.SendNpcs = true
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1300 * time.Millisecond
+	cfg.DialogEvery = 300 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	rec := host.record()
+	if r.res.DialogStatesTx < 2 || len(rec.dialogStates) != r.res.DialogStatesTx {
+		t.Fatalf("DialogState envoyés %d, reçus par l'hôte %d", r.res.DialogStatesTx, len(rec.dialogStates))
+	}
+	for i, s := range rec.dialogStates {
+		if s.NpcNetId != 1000 || s.Active != uint8(1-i%2) {
+			t.Errorf("DialogState %d : %+v", i, s)
+		}
+	}
+	if len(rec.guestLines) != r.res.DialogLinesTx || len(rec.guestLines) < 2 ||
+		rec.guestLines[0] != (protocol.DialogLine{Speaker: protocol.GuestNetId, OutputType: 3, Sample: guestDialogHeroSample}) ||
+		rec.guestLines[1] != (protocol.DialogLine{Speaker: 1000, OutputType: 0, Sample: guestDialogNpcSample}) {
+		t.Errorf("DialogLine reçus par l'hôte %+v (envoyés %d)", rec.guestLines, r.res.DialogLinesTx)
+	}
+	expectLog(t, r, "-> DialogState pnj=1000 actif=1", "-> DialogLine locuteur=2 type=3 échantillon="+guestDialogHeroSample,
+		"-> DialogState pnj=1000 actif=0", "Bilan dialogues : DialogLine reçus=")
+}
+
+// --dialog-npc impose le NetId (non vérifié, pour tester le refus de l'hôte).
+func TestGuestDialogFixedNpc(t *testing.T) {
+	t.Parallel()
+	host := startHost(t, defaultHost())
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 500 * time.Millisecond
+	cfg.DialogEvery = 200 * time.Millisecond
+	cfg.DialogNpc = 4242
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	rec := host.record()
+	if len(rec.dialogStates) == 0 || rec.dialogStates[0] != (protocol.DialogState{NpcNetId: 4242, Active: 1}) {
+		t.Errorf("DialogState reçus par l'hôte %+v", rec.dialogStates)
+	}
+}

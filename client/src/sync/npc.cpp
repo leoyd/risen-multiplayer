@@ -2,6 +2,7 @@
 
 #include "common/log.h"
 #include "game/combat.h"
+#include "game/dialogue.h"
 #include "game/entity.h"
 #include "game/motion_desc.h"
 #include "sync/anim_filter.h"
@@ -48,8 +49,20 @@ struct Replica {
     // animations et ragdoll natifs bloqués) jusqu'à sa libération.
     bool dead = false;
     std::uint64_t native_move_ms = 0;  // story 3.8 : départ du mouvement local d'une attaque native
+    bool freed = false;         // story 4.2 : libérée pour le dialogue de l'invité
+    bool talk_known = false;    // story 4.2 (H1) : dernier PSDialog::IsBeingTalkedTo lu
+    bool talked_to = false;
 };
 std::map<std::uint32_t, Replica> g_replicas;
+// Story 4.2, hôte : PNJ tenus pendant le dialogue de l'invité (routine figée), revérifiés par validate.
+struct Held {
+    protocol::Guid guid{};
+    game::Entity entity;
+    void* routine_ps = nullptr;
+};
+std::map<std::uint32_t, Held> g_held;
+bool g_talk_error_logged = false;  // story 4.2 : IsBeingTalkedTo absent ou en SEH, signalé une fois
+std::vector<std::uint32_t> g_lost;  // story 4.2 : tenues ou libérations impossibles, pour la session
 // Story 3.4, invité : ressource de chaque nom d'animation (nul : introuvable) et noms déjà signalés
 // en échec, vidés par release_all, hors session (pointeurs d'un monde peut-être détruit).
 constexpr std::size_t kMaxResources = 4096;
@@ -286,7 +299,7 @@ void spawn(std::uint32_t net_id, const protocol::Guid& guid, const Pose& pose) {
 
 void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.dead || it->second.animation_ps == nullptr) return;
+    if (it == g_replicas.end() || it->second.dead || it->second.freed || it->second.animation_ps == nullptr) return;
     Replica& r = it->second;
     auto failed = [&](const char* why) {
         if (g_failed_names.insert(name).second) {
@@ -321,7 +334,7 @@ void play(std::uint32_t net_id, const std::string& name, const protocol::Motion&
 
 void play_param(std::uint32_t net_id, const protocol::MotionParam& param) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.dead || it->second.wrapper == nullptr) return;
+    if (it == g_replicas.end() || it->second.dead || it->second.freed || it->second.wrapper == nullptr) return;
     Replica& r = it->second;
     bool ok = false;
     {
@@ -365,7 +378,8 @@ void uncapture(std::uint32_t net_id) {
 
 void move(std::uint32_t net_id, const Pose& pose) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.dead) return;  // inconnu, introuvable, perdu ou mort : ignoré
+    // Inconnu, introuvable, perdu ou mort : ignoré ; libérée pour le dialogue de l'invité (story 4.2) aussi.
+    if (it == g_replicas.end() || it->second.dead || it->second.freed) return;
     // Story 3.8 (correctif du 2026-10-24) : mouvement local d'une attaque native arrêté une fois son
     // coup porté, ou au plus tard 1,5 s après son départ (sinon il garde la main sur la locomotion).
     Replica& r = it->second;
@@ -384,7 +398,7 @@ void move(std::uint32_t net_id, const Pose& pose) {
 
 void set_hp(std::uint32_t net_id, int hp) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.dead) return;
+    if (it == g_replicas.end() || it->second.dead || it->second.freed) return;
     if (!game::set_hit_points(it->second.entity, hp, game::kSkillModifierSet)) {
         log::warn(who(net_id) + " : SetHitPoints a levé une exception (SEH)");
         return;
@@ -400,6 +414,7 @@ void die(std::uint32_t net_id) {
     }
     if (it->second.dead) return;  // déjà morte
     Replica& r = it->second;
+    if (r.freed) set_freed(net_id, false);  // story 4.2 : au registre d'abord (IA et animations bloquées)
     // Morte quoi qu'il arrive (D6) : figée debout plutôt que reprendre vie. Pas de Kill natif (ni
     // XP, ni script, ni quête) : PV 0, AIMode 12 (Entity::IsDead), puis ragdoll.
     r.dead = true;
@@ -457,6 +472,18 @@ void validate() {
         g_wanted[it->first] = Wanted{it->second.guid, now_t + kCaptureRetry};
         it = g_captured.erase(it);
     }
+    // Story 4.2, hôte : un PNJ tenu détruit ne doit pas laisser son PS de routine figé (adresse réutilisée).
+    for (auto it = g_held.begin(); it != g_held.end();) {
+        void* now = nullptr;
+        if (find_entity(it->second.guid, now) && now == it->second.entity.ptr) {
+            ++it;
+            continue;
+        }
+        anim_filter().release_routine(it->second.routine_ps);
+        log::warn(who(it->first) + " : PNJ tenu perdu (GetEntity ne le retrouve plus) : rendu");
+        g_lost.push_back(it->first);
+        it = g_held.erase(it);
+    }
     // PNJ voulus sans capture : un essai par seconde au plus, jusqu'au succès ou à uncapture.
     for (auto it = g_wanted.begin(); it != g_wanted.end();) {
         if (now_t < it->second.next_try) {
@@ -492,6 +519,13 @@ void release_all(const std::string& cause) {
     g_detect_error_logged = false;
     g_hero_attack_state = hit_rules::AttackState{};  // story 3.8b
     g_hero_detect_error_logged = false;
+    g_talk_error_logged = false;  // story 4.2
+    g_lost.clear();  // story 4.2 : rien ne survit à la session
+    if (!g_held.empty()) {  // story 4.2, hôte : sans appel au jeu
+        for (const auto& entry : g_held) anim_filter().release_routine(entry.second.routine_ps);
+        log::info("[sync] PNJ : " + std::to_string(g_held.size()) + " PNJ tenu(s) rendu(s) : " + cause);
+        g_held.clear();
+    }
     if (g_replicas.empty() && g_missing.empty() && g_captured.empty() && g_capture_failed.empty() &&
         g_wanted.empty() && g_capture_lost.empty() &&
         g_resources.empty() && g_failed_names.empty()) {
@@ -523,8 +557,8 @@ void release_all(const std::string& cause) {
 
 void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target) {
     auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.dead) {
-        log::debug(who(net_id) + " : NpcAttack sans réplique vivante chez l'invité : ignoré");
+    if (it == g_replicas.end() || it->second.dead || it->second.freed) {
+        log::debug(who(net_id) + " : NpcAttack sans réplique vivante et figée chez l'invité : ignoré");
         return;
     }
     if (!game::native_attacks_resolved()) return;  // la session ne l'émet pas dans ce cas
@@ -677,7 +711,96 @@ void* captured_entity(std::uint32_t net_id) {
     return it == g_captured.end() ? nullptr : it->second.entity.ptr;
 }
 
-std::size_t count() { return g_replicas.size() + g_captured.size() + g_wanted.size(); }
+std::size_t count() { return g_replicas.size() + g_captured.size() + g_wanted.size() + g_held.size(); }
+
+std::uint32_t replica_net_id(const void* entity) {
+    if (entity == nullptr) return 0;
+    for (const auto& [id, r] : g_replicas) {
+        if (r.entity.ptr == entity) return r.dead ? 0 : id;
+    }
+    return 0;
+}
+
+void set_freed(std::uint32_t net_id, bool freed) {
+    auto it = g_replicas.find(net_id);
+    if (it == g_replicas.end() || (freed && it->second.dead)) {
+        log::debug(who(net_id) + (freed ? " : libération" : " : re-gel") + " sans réplique vivante : ignoré");
+        if (freed) g_lost.push_back(net_id);
+        return;
+    }
+    Replica& r = it->second;
+    if (r.freed == freed) return;
+    // AD-12 : seul sync/npc écrit les répliques au registre.
+    if (!anim_filter().set_freed(r.entity.ptr, freed)) {
+        log::warn(who(net_id) + " : absente du registre : " + (freed ? "libération" : "re-gel") + " sans effet");
+        if (freed) g_lost.push_back(net_id);
+        return;
+    }
+    r.freed = freed;
+    if (freed) {
+        log::info(who(net_id) + " libéré pour le dialogue de l'invité : IA et animations natives");
+    } else {
+        r.native_move_ms = 0;  // story 3.8 : un mouvement d'attaque d'avant le dialogue est sans objet
+        log::info(who(net_id) + " re-figé : fin du dialogue de l'invité, pose de l'hôte reprise");
+    }
+}
+
+void log_talk_states(bool running) {
+    if (!log::debug_enabled() || g_replicas.empty()) return;
+    for (auto& [id, r] : g_replicas) {
+        if (r.dead) continue;
+        bool talked = false;
+        if (!game::dialog_being_talked_to(r.entity, talked)) {
+            if (!g_talk_error_logged) {
+                g_talk_error_logged = true;
+                log::debug("[sync] dialogues : PSDialog::IsBeingTalkedTo indisponible (symbole absent ou SEH) pour "
+                           "une réplique : journal H1 incomplet (une fois par session)");
+            }
+            continue;
+        }
+        if (r.talk_known && r.talked_to == talked) continue;
+        const bool first = !r.talk_known;
+        r.talk_known = true;
+        r.talked_to = talked;
+        if (first && !talked) continue;  // état initial ordinaire : pas de ligne
+        log::debug(who(id) + " : PSDialog::IsBeingTalkedTo = " + (talked ? "1" : "0") + " (IsRunning invité = " +
+                   (running ? "1" : "0") + ", réplique " + (r.freed ? "libérée" : "figée") + ")");
+    }
+}
+
+void hold(std::uint32_t net_id, const protocol::Guid& guid) {
+    if (g_held.count(net_id) != 0) return;
+    void* found = nullptr;
+    if (!find_entity(guid, found) || found == nullptr) {
+        log::warn(who(net_id) + " : GUID " + guid_text(guid) + " introuvable chez l'hôte : PNJ non tenu");
+        g_lost.push_back(net_id);
+        return;
+    }
+    Held h;
+    h.guid = guid;
+    h.entity.ptr = found;
+    if (!game::get_property_set(h.entity, game::kRoutinePropertySet, h.routine_ps) || h.routine_ps == nullptr) {
+        log::warn(who(net_id) + " : pas de gCScriptRoutine_PS : PNJ non tenu");
+        g_lost.push_back(net_id);
+        return;
+    }
+    anim_filter().hold_routine(h.routine_ps);
+    g_held.emplace(net_id, h);
+    log::info(who(net_id) + " tenu (routine figée) : dialogue de l'invité");
+}
+
+void drain_lost(std::vector<cs::Input>& out) {
+    for (const std::uint32_t id : g_lost) out.push_back(cs::LocalDialogNpcLost{id});
+    g_lost.clear();
+}
+
+void unhold(std::uint32_t net_id) {
+    auto it = g_held.find(net_id);
+    if (it == g_held.end()) return;
+    anim_filter().release_routine(it->second.routine_ps);  // AD-12 : le registre d'abord
+    g_held.erase(it);
+    log::info(who(net_id) + " rendu (routine reprise)");
+}
 
 void* replica_entity(std::uint32_t net_id) {
     const auto it = g_replicas.find(net_id);

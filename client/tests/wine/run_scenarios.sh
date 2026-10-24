@@ -84,7 +84,7 @@ expect_log "nominal : DownOrDeadBy* inactifs, cause nommée" "$d" \
 # Story 4.1 : dialogues par défaut (dialogues = 1) : bloc game/dialogue résolu sur les vraies DLL,
 # détour de StartOutput posé en session.
 expect_log "nominal : dialogues, hook StartOutput posé" "$d" \
-    "\[hooks\] dialogues : hook StartOutput posé (répliques de l'hôte vues par l'invité)"
+    "\[hooks\] dialogues : hook StartOutput posé (répliques vues par le pair, dans les deux sens)"
 expect_no_log "nominal : dialogues actifs" "$d" "dialogues inactifs"
 
 # Spike J1 : sonde explicitement désactivée (hooks de session), puis activée (hooks posés sur les vraies
@@ -218,6 +218,7 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Game.dll|?GetSystem@gCHudModule2@@SAPEAVgCHudSystem2@@XZ' \
     'Game.dll|?ShowSubtitle@gCHudSystem2@@QEAAXAEBVbCUnicodeString@@@Z' \
     'Script.dll|?IsRunning@InfoSystem@@SA_NXZ' 'Script.dll|?GetNPC@InfoSystem@@SA?AVEntity@@XZ' \
+    'Script.dll|?IsBeingTalkedTo@PSDialog@@QEBA_NXZ' \
     'Script.dll|?GetCurrentCommandType@InfoSystem@@SA?AW4gEInfoCommand@@XZ' \
     'Script.dll|?GetCurrentCommandSay@InfoSystem@@SAAEAVInfComSay@@XZ' \
     'Script.dll|?GetTextID@InfComSay@@QEAA?AVbCString@@XZ' 'Script.dll|?GetSpeaker@InfComSay@@QEAA?AVEntity@@XZ' \

@@ -415,3 +415,73 @@ TEST("registre : find_by_entity (story 3.5) — entrée de l'entité, rôle et N
     f.untrack(&g_entity_b);
     CHECK(!f.find_by_entity(&g_entity_b, out));
 }
+
+TEST("registre : réplique libérée pour un dialogue de l'invité (story 4.2) — ni animations ni routine bloquées") {
+    AnimFilter f;
+    TrackedEntity npc;
+    npc.entity = &g_entity_a;
+    npc.animation_ps = kReplica;
+    npc.wrapper = &g_wrapper_a;
+    npc.routine_ps = &g_routine_a;
+    npc.net_id = 1033;
+    npc.role = EntityRole::NpcReplica;
+    f.track(npc);
+    CHECK(f.blocks_routine(&g_routine_a));
+    CHECK(f.classify(kReplica, 1) == Verdict::Block);
+    CHECK(f.set_freed(&g_entity_a, true));
+    CHECK(!f.blocks_routine(&g_routine_a));
+    CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+    CHECK(f.classify(&g_wrapper_a, 1) == Verdict::Pass);
+    CHECK(f.classify_ragdoll(kReplica, true, 1) == Verdict::Pass);
+    TrackedEntity found;
+    CHECK(f.find_by_entity(&g_entity_a, found) && found.freed && found.net_id == 1033);  // toujours au registre
+    // Rendue : de nouveau bloquée.
+    CHECK(f.set_freed(&g_entity_a, false));
+    CHECK(f.blocks_routine(&g_routine_a));
+    CHECK(f.classify(kReplica, 1) == Verdict::Block);
+    // Une réinscription repart non libérée ; seule une réplique peut l'être.
+    CHECK(f.set_freed(&g_entity_a, true));
+    f.track(npc);
+    CHECK(f.blocks_routine(&g_routine_a));
+    CHECK(!f.set_freed(&g_entity_b, true));  // inconnue
+    CHECK(!f.set_freed(nullptr, true));
+    TrackedEntity avatar;
+    avatar.entity = &g_entity_b;
+    avatar.animation_ps = kOther;
+    avatar.role = EntityRole::Avatar;
+    f.track(avatar);
+    CHECK(!f.set_freed(&g_entity_b, true));
+    CHECK(f.classify(kOther, 1) == Verdict::Block);
+}
+
+TEST("registre : PNJ tenu chez l'hôte (story 4.2) — routine figée sans entrée au registre, rendu ou vidé") {
+    AnimFilter f;
+    int routine_b = 0;
+    CHECK(!f.blocks_routine(&routine_b));
+    f.hold_routine(&routine_b);
+    f.hold_routine(&routine_b);  // pas de doublon
+    f.hold_routine(nullptr);
+    CHECK_EQ(f.held_count(), std::size_t{1});
+    CHECK_EQ(f.tracked_count(), std::size_t{0});
+    CHECK(f.blocks_routine(&routine_b));
+    CHECK(!f.blocks_routine(&g_routine_a));
+    CHECK_EQ(f.take_routine_blocked(), 1u);
+    // Un PNJ capturé (rôle NpcCapture) tenu : animations capturées, routine figée.
+    TrackedEntity cap;
+    cap.entity = &g_entity_a;
+    cap.animation_ps = kReplica;
+    cap.routine_ps = &g_routine_a;
+    cap.net_id = 1033;
+    cap.role = EntityRole::NpcCapture;
+    f.track(cap);
+    CHECK(!f.blocks_routine(&g_routine_a));
+    f.hold_routine(&g_routine_a);
+    CHECK(f.blocks_routine(&g_routine_a));
+    CHECK(f.classify(kReplica, 1) == Verdict::Capture);
+    f.release_routine(&routine_b);
+    CHECK(!f.blocks_routine(&routine_b));
+    CHECK(f.blocks_routine(&g_routine_a));
+    f.clear();
+    CHECK_EQ(f.held_count(), std::size_t{0});
+    CHECK(!f.blocks_routine(&g_routine_a));
+}

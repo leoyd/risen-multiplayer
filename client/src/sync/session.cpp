@@ -285,10 +285,35 @@ void execute(cs::Output out) {
                 avatar::attack(aa->move, target, target != nullptr ? aa->target : 0);
                 continue;
             }
-            if (const auto* ad = std::get_if<cs::ApplyDialogLine>(&cmd)) {  // story 4.1 : chez l'invité
+            if (const auto* ad = std::get_if<cs::ApplyDialogLine>(&cmd)) {  // story 4.1 (4.2 : chez l'hôte aussi)
                 game::Entity player;
                 if (!game::get_player(player)) player.ptr = nullptr;
-                dialogue::replay(player.ptr, ad->net_id, ad->output_type, ad->sample);
+                // Locuteur : avatar du pair (1 chez l'invité, 2 chez l'hôte), sinon PNJ (réplique chez
+                // l'invité ; chez l'hôte, PNJ tenu retrouvé par son GUID).
+                void* speaker = nullptr;
+                const char* name = "la réplique";
+                if (ad->net_id < protocol::kFirstNpcNetId) {
+                    speaker = avatar::entity();
+                    name = g_role == Role::Host ? "l'avatar de l'invité" : "l'avatar de l'hôte";
+                } else if (g_role == Role::Host) {
+                    if (!npc::find_entity(ad->guid, speaker)) speaker = nullptr;
+                    name = "le PNJ tenu";
+                } else {
+                    speaker = npc::replica_entity(ad->net_id);
+                }
+                dialogue::replay(player.ptr, ad->net_id, ad->output_type, ad->sample, speaker, name);
+                continue;
+            }
+            if (const auto* hn = std::get_if<cs::HoldNpc>(&cmd)) {  // story 4.2 : chez l'hôte
+                npc::hold(hn->net_id, hn->guid);
+                continue;
+            }
+            if (const auto* un = std::get_if<cs::UnholdNpc>(&cmd)) {
+                npc::unhold(un->net_id);
+                continue;
+            }
+            if (const auto* fr = std::get_if<cs::FreeReplica>(&cmd)) {  // story 4.2 : chez l'invité
+                npc::set_freed(fr->net_id, fr->freed);
                 continue;
             }
             if (const auto* rh = std::get_if<cs::RespawnHero>(&cmd)) {  // story 3.7 : chez l'invité
@@ -464,13 +489,17 @@ void frame() {
         npc::detect_hero_attack(reinterpret_cast<void*>(world.player), g_inputs);
     }
     // Story 4.1 : répliques relevées par le détour de StartOutput (hôte, en session) ; bilan des rejeux
-    // de la frame précédente (invité).
+    // de la frame précédente. Story 4.2 : dialogue de l'invité (début, fin, répliques) ; dialogue de
+    // l'hôte lu pour refuser de tenir son partenaire.
+    const bool in_session = g_session->state() == cs::State::InSession;
+    void* const hero = world.loaded() ? reinterpret_cast<void*>(world.player) : nullptr;
     if (g_role == Role::Host) {
-        dialogue::host_frame(world.loaded() ? reinterpret_cast<void*>(world.player) : nullptr,
-                             g_session->state() == cs::State::InSession, g_inputs);
+        dialogue::host_frame(hero, in_session, g_inputs);
+        if (in_session) dialogue::read_host_state(world);
     } else {
-        dialogue::guest_frame(g_inputs);
+        dialogue::guest_frame(hero, in_session, g_inputs);
     }
+    npc::drain_lost(g_inputs);  // story 4.2 : tenues ou libérations impossibles (frame précédente)
     world.routine_blocked = sync::anim_filter().take_routine_blocked();
     execute(g_session->tick(now, world, g_inputs));
     // Story 3.5 : héros, rôle et état vus par le détour des dégâts (hors session dès Ended).

@@ -294,6 +294,10 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         } else if (const auto* dr = std::get_if<LocalDialogReplayed>(&in)) {
             dialog_.played += dr->played;
             dialog_.ignored += dr->ignored;
+        } else if (const auto* ds = std::get_if<LocalDialogState>(&in)) {  // story 4.2
+            on_local_dialog_state(*ds, out);
+        } else if (const auto* nl = std::get_if<LocalDialogNpcLost>(&in)) {
+            on_dialog_npc_lost(nl->net_id, out);
         } else {
             on_local_param(now, std::get<LocalParam>(in), out);
         }
@@ -311,6 +315,7 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         send_snapshot(now, world, out);
         place_avatar(now, out);
         place_npcs(now, out);
+        dialog_timers(now, out);  // story 4.2 : PNJ tenu trop longtemps
         snapshot_stats(now, out);
     }
     return out;
@@ -695,7 +700,11 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         return;
     }
     if (const auto* dl = std::get_if<proto::DialogLine>(&decoded.message)) {  // story 4.1
-        on_dialog_line(*dl, out);
+        on_dialog_line(now, *dl, out);
+        return;
+    }
+    if (const auto* ds = std::get_if<proto::DialogState>(&decoded.message)) {  // story 4.2
+        on_dialog_state(now, *ds, out);
         return;
     }
     if (const auto* rs = std::get_if<proto::Respawn>(&decoded.message)) {  // story 3.7
@@ -755,6 +764,9 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     dialog_ = DialogCounters{};        // story 4.1
     dialog_off_logged_ = false;
     dialog_host_warned_ = false;
+    dialog_guest_warned_ = false;      // story 4.2
+    guest_dialog_npc_ = 0;             // vides en pratique : remis à zéro à Ended
+    held_npc_ = 0;
     reset_respawn();                   // story 3.7
     respawn_ = RespawnCounters{};
     avatar_pose_ok_ = false;
@@ -885,6 +897,11 @@ void Session::select_npcs(const World& world, std::vector<proto::SnapshotEntity>
         }
         npc_absent_ticks_.erase(id);
         it = npc_active_.erase(it);
+        // Story 4.2 : un PNJ tenu qui sort de la sélection (mort ou retiré) est rendu.
+        if (id == held_npc_) {
+            unhold_npc(why != outside.end() && why->second == kDead ? "mort" : "retiré de la sélection", Level::Info,
+                       out);
+        }
         Bytes bytes;
         if (why != outside.end() && why->second == kDead) {  // story 3.4b : une fois par NetId
             npc_dead_.insert(id);
@@ -999,6 +1016,11 @@ void Session::on_npc_despawn(std::uint32_t net_id, Output& out) {
         return;
     }
     apply_pending_death(net_id, it->second, out);  // story 3.4b : jamais libérée vivante après un Death
+    if (net_id == guest_dialog_npc_) {  // story 4.2 : ReleaseNpc la rend au jeu, libérée ou non
+        guest_dialog_npc_ = 0;
+        out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(net_id) +
+                                             " : Despawn pendant le dialogue de l'invité : plus de pose de l'hôte"});
+    }
     replicas_.erase(it);
     out.commands.push_back(ReleaseNpc{net_id});
     out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(net_id) + " : Despawn reçu : réplique libérée"});
@@ -1242,19 +1264,28 @@ void Session::on_avatar_attack(const proto::NpcAttack& m, Output& out) {
 }
 
 void Session::on_local_dialog_line(const LocalDialogLine& in, Output& out) {
+    const bool guest = settings_.role == Role::Guest;
     std::uint32_t speaker = 0;
-    std::string who = in.hero ? std::string("du héros") : "du PNJ";
+    std::string who = in.hero ? std::string(guest ? "du héros invité" : "du héros") : "du PNJ";
     const char* why = nullptr;
     if (state_ != State::InSession) {
         why = "hors session";
-    } else if (settings_.role != Role::Host) {
-        why = "pas hôte";
     } else if (!settings_.dialogues) {
         why = "dialogues = 0";
     } else if (!proto::valid_dialog_sample(in.sample) || in.output_type > proto::kMaxDialogOutputType) {
         why = "échantillon ou type invalide";
     } else if (in.hero) {
-        speaker = proto::kHostNetId;
+        speaker = guest ? proto::kGuestNetId : proto::kHostNetId;  // story 4.2 : 2 pour l'invité
+    } else if (guest) {
+        // Story 4.2 : seul le partenaire du dialogue en cours (réplique libérée, DialogState envoyé).
+        if (in.net_id != 0) who += " " + std::to_string(in.net_id);
+        if (in.net_id == 0) {
+            why = "partenaire qui n'est pas une réplique";
+        } else if (in.net_id != guest_dialog_npc_) {
+            why = "PNJ hors du dialogue en cours";
+        } else {
+            speaker = in.net_id;
+        }
     } else {
         // Un PNJ mort sort de npc_active_ : npc_dead_ d'abord, pour garder les deux raisons distinctes.
         const auto it = npc_ids_.find(in.guid);
@@ -1270,7 +1301,7 @@ void Session::on_local_dialog_line(const LocalDialogLine& in, Output& out) {
     const std::string what = "[sync] réplique de dialogue " + who + " (type " + std::to_string(in.output_type) +
                              ", « " + in.sample + " »)";
     if (why != nullptr) {
-        // Hors session : chaque réplique de l'hôte en solo passerait ici, en debug seulement.
+        // Hors session : chaque réplique en solo passerait ici, en debug seulement.
         if (state_ == State::InSession) ++dialog_.ignored;
         // Une ligne par réplique : Debug (le bilan de 5 s compte les ignorées).
         out.logs.push_back({Level::Debug, what + " : ignorée (" + why + ")"});
@@ -1283,24 +1314,51 @@ void Session::on_local_dialog_line(const LocalDialogLine& in, Output& out) {
     out.logs.push_back({Level::Debug, what + " : DialogLine envoyé"});
 }
 
-void Session::on_dialog_line(const proto::DialogLine& m, Output& out) {
+void Session::dialog_ignored_off(const char* what, Output& out) {
+    if (dialog_off_logged_) return;
+    dialog_off_logged_ = true;  // réglage différent du pair : visible une fois par session
+    out.logs.push_back({Level::Info, std::string("[sync] ") + what + " reçus " +
+                                         (settings_.role == Role::Host ? "de l'invité" : "de l'hôte") +
+                                         " mais dialogues inactifs ici (dialogues = 0 ou bloc non résolu) : "
+                                         "ignorés (une fois par session)"});
+}
+
+void Session::on_dialog_line(std::uint64_t now, const proto::DialogLine& m, Output& out) {
     const std::string what = "[sync] DialogLine (locuteur " + std::to_string(m.speaker_net_id) + ", type " +
                              std::to_string(m.output_type) + ", « " + m.sample + " »)";
-    if (settings_.role != Role::Guest) {
+    const bool host = settings_.role == Role::Host;
+    // Sens du message (story 4.2) : l'hôte ne reçoit pas le locuteur 1, l'invité pas le locuteur 2.
+    if (m.speaker_net_id == own_net_id()) {
         ++dialog_.ignored;
-        out.logs.push_back({dialog_host_warned_ ? Level::Debug : Level::Warn,
-                            what + " ignoré : l'hôte ne rejoue pas de dialogue"});
-        dialog_host_warned_ = true;  // Warn une fois par session, puis Debug
+        bool& warned = host ? dialog_host_warned_ : dialog_guest_warned_;
+        out.logs.push_back({warned ? Level::Debug : Level::Warn,
+                            what + " ignoré : locuteur " + std::to_string(m.speaker_net_id) + " = son propre héros"});
+        warned = true;  // Warn une fois par session, puis Debug
         return;
     }
     const char* why = nullptr;
+    proto::Guid guid{};
     if (!settings_.dialogues) {
         why = "dialogues = 0";
-    } else if (m.speaker_net_id == proto::kHostNetId) {
+    } else if (m.speaker_net_id == peer_net_id()) {
         if (!avatar_present_) {
-            why = "pas d'avatar de l'hôte";
+            why = host ? "pas d'avatar de l'invité" : "pas d'avatar de l'hôte";
         } else if (avatar_dead_ || death_pending_) {
-            why = "avatar de l'hôte mort";
+            why = host ? "avatar de l'invité mort" : "avatar de l'hôte mort";
+        }
+    } else if (host) {
+        // Story 4.2 : le PNJ du dialogue de l'invité, tenu ici.
+        if (m.speaker_net_id != held_npc_) {
+            why = "PNJ non tenu (pas le partenaire du dialogue de l'invité)";
+        } else if (npc_dead_.count(m.speaker_net_id) != 0) {
+            why = "PNJ mort";
+        } else {
+            const auto g = npc_guids_.find(m.speaker_net_id);
+            if (g == npc_guids_.end()) {
+                why = "PNJ non annoncé";
+            } else {
+                guid = g->second;
+            }
         }
     } else {
         const auto it = replicas_.find(m.speaker_net_id);
@@ -1313,16 +1371,178 @@ void Session::on_dialog_line(const proto::DialogLine& m, Output& out) {
     if (why != nullptr) {
         ++dialog_.ignored;
         out.logs.push_back({Level::Debug, what + " ignoré (" + why + ")"});
-        if (!settings_.dialogues && !dialog_off_logged_) {  // réglage différent de l'hôte : visible
-            dialog_off_logged_ = true;
-            out.logs.push_back({Level::Info, "[sync] DialogLine reçus de l'hôte mais dialogues inactifs ici "
-                                             "(dialogues = 0 ou bloc non résolu) : ignorés (une fois par session)"});
-        }
+        if (!settings_.dialogues) dialog_ignored_off("DialogLine", out);
         return;
     }
     ++dialog_.received;
-    out.commands.push_back(ApplyDialogLine{m.speaker_net_id, m.output_type, m.sample});
+    // Story 4.2 : une réplique du dialogue de l'invité relance le délai de tenue (inactivité).
+    if (host && held_npc_ != 0) held_since_ = now;
+    out.commands.push_back(ApplyDialogLine{m.speaker_net_id, m.output_type, m.sample, guid});
     out.logs.push_back({Level::Debug, what + " reçu : ApplyDialogLine"});
+}
+
+void Session::on_local_dialog_state(const LocalDialogState& in, Output& out) {
+    const std::string what = "[sync] dialogue de l'invité avec le PNJ " + std::to_string(in.net_id) + " : " +
+                             (in.active ? "début" : "fin");
+    const char* why = nullptr;
+    if (state_ != State::InSession) {
+        why = "hors session";
+    } else if (settings_.role != Role::Guest) {
+        why = "pas invité";
+    } else if (!settings_.dialogues) {
+        why = "dialogues = 0";
+    } else if (in.net_id < proto::kFirstNpcNetId) {
+        why = "NetId < 1000";
+    } else if (in.active && in.net_id == guest_dialog_npc_) {
+        why = "déjà en cours";
+    } else if (!in.active && in.net_id != guest_dialog_npc_) {
+        why = "pas le dialogue en cours";
+    }
+    if (why == nullptr && in.active) {
+        const auto it = replicas_.find(in.net_id);
+        if (it == replicas_.end()) {
+            why = "réplique absente";
+        } else if (it->second.dead || it->second.death_pending) {
+            why = "réplique morte";
+        }
+    }
+    if (why != nullptr) {
+        // Fin d'un dialogue déjà clos (mort, Despawn, nouveau partenaire) : attendue, non comptée.
+        const bool stale_end = !in.active && in.net_id != guest_dialog_npc_;
+        if (state_ == State::InSession && settings_.role == Role::Guest && !stale_end) ++dialog_.ignored;
+        out.logs.push_back({Level::Debug, what + " : ignoré (" + why + ")"});
+        return;
+    }
+    if (!in.active) {
+        end_guest_dialog("fin du dialogue", out);
+        return;
+    }
+    if (guest_dialog_npc_ != 0) end_guest_dialog("nouveau partenaire", out);
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::DialogState{in.net_id, 1}, bytes)) return;
+    guest_dialog_npc_ = in.net_id;
+    out.commands.push_back(FreeReplica{in.net_id, true});
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    ++dialog_.states_sent;
+    out.logs.push_back({Level::Info, what + " : réplique libérée, DialogState envoyé"});
+}
+
+void Session::end_guest_dialog(const std::string& why, Output& out) {
+    const std::uint32_t id = guest_dialog_npc_;
+    if (id == 0) return;
+    guest_dialog_npc_ = 0;
+    auto it = replicas_.find(id);
+    if (it != replicas_.end() && !it->second.dead) {
+        out.commands.push_back(FreeReplica{id, false});
+        // PV de l'hôte réécrits au prochain instant d'affichage (ignorés pendant le dialogue).
+        Replica& r = it->second;
+        // Dernier geste de l'hôte par type, gardé pendant le dialogue : rejoué aussitôt re-figée.
+        for (auto& m : r.freed_motions) {
+            if (!m) continue;
+            out.commands.push_back(PlayNpcMotion{id, std::move(m->name), m->motion});
+            ++npc_anim_.played;
+            m.reset();
+        }
+        if (r.hp_received) {
+            r.applied_hp = -1;
+            r.hp_changes.clear();
+            r.hp_changes.emplace_back(r.interp.empty() ? 0.0 : r.interp.last_time(), r.last_hp);
+        }
+    }
+    Bytes bytes;
+    if (proto::encode_reliable(proto::DialogState{id, 0}, bytes)) {
+        out.commands.push_back(SendReliable{std::move(bytes)});
+        ++dialog_.states_sent;
+    }
+    out.logs.push_back({Level::Info, "[sync] dialogue de l'invité avec le PNJ " + std::to_string(id) + " : " + why +
+                                         ", réplique re-figée, DialogState envoyé"});
+}
+
+void Session::on_dialog_state(std::uint64_t now, const proto::DialogState& m, Output& out) {
+    const std::string what = "[sync] DialogState (PNJ " + std::to_string(m.npc_net_id) + ", " +
+                             (m.active != 0 ? "début" : "fin") + ")";
+    if (settings_.role != Role::Host) {
+        ++dialog_.ignored;
+        out.logs.push_back({dialog_guest_warned_ ? Level::Debug : Level::Warn,
+                            what + " ignoré : l'invité ne tient aucun PNJ"});
+        dialog_guest_warned_ = true;  // Warn une fois par session, puis Debug
+        return;
+    }
+    ++dialog_.states_received;
+    const char* why = nullptr;
+    if (!settings_.dialogues) {
+        why = "dialogues = 0";
+    } else if (m.active == 0) {
+        if (m.npc_net_id != held_npc_) why = "PNJ non tenu";
+    } else if (m.npc_net_id == held_npc_) {
+        held_since_ = now;  // relance le délai de tenue
+        out.logs.push_back({Level::Debug, what + " : déjà tenu, délai relancé"});
+        return;
+    } else if (npc_dead_.count(m.npc_net_id) != 0) {
+        why = "PNJ mort";
+    } else if (npc_active_.count(m.npc_net_id) == 0) {
+        why = "PNJ non annoncé";
+    } else if (world_.dialog_running && !world_.dialog_partner_ok) {
+        why = "hôte en dialogue, partenaire illisible";
+    } else if (world_.dialog_running) {
+        const auto it = npc_ids_.find(world_.dialog_partner);
+        if (it != npc_ids_.end() && it->second == m.npc_net_id) why = "PNJ en dialogue avec l'hôte";
+    }
+    if (why != nullptr) {
+        ++dialog_.ignored;
+        out.logs.push_back({m.active != 0 && settings_.dialogues ? Level::Info : Level::Debug,
+                            what + " ignoré (" + why + ")"});
+        if (!settings_.dialogues) dialog_ignored_off("DialogState", out);
+        return;
+    }
+    if (m.active == 0) {
+        unhold_npc("fin du dialogue de l'invité", Level::Info, out);
+        return;
+    }
+    if (held_npc_ != 0) unhold_npc("nouveau dialogue de l'invité", Level::Info, out);
+    const auto g = npc_guids_.find(m.npc_net_id);
+    if (g == npc_guids_.end()) return;  // impossible : tout NetId annoncé a son GUID
+    held_npc_ = m.npc_net_id;
+    held_since_ = now;
+    out.commands.push_back(HoldNpc{m.npc_net_id, g->second});
+    out.logs.push_back({Level::Info, what + " : PNJ " + std::to_string(m.npc_net_id) +
+                                         " tenu (routine figée) pendant le dialogue de l'invité"});
+}
+
+void Session::unhold_npc(const std::string& why, Level level, Output& out) {
+    const std::uint32_t id = held_npc_;
+    if (id == 0) return;
+    held_npc_ = 0;
+    out.commands.push_back(UnholdNpc{id});
+    out.logs.push_back({level, "[sync] PNJ " + std::to_string(id) + " rendu (routine reprise) : " + why});
+}
+
+void Session::dialog_timers(std::uint64_t now, Output& out) {
+    if (held_npc_ == 0) return;
+    // L'hôte se met à parler au PNJ tenu : rendu (son dialogue a besoin de sa routine).
+    if (world_.dialog_running && world_.dialog_partner_ok) {
+        const auto it = npc_ids_.find(world_.dialog_partner);
+        if (it != npc_ids_.end() && it->second == held_npc_) {
+            unhold_npc("PNJ en dialogue avec l'hôte", Level::Info, out);
+            return;
+        }
+    }
+    if (now - held_since_ < kDialogHoldTimeoutMs) return;
+    unhold_npc(std::to_string(kDialogHoldTimeoutMs / 1000) + " s sans activité du dialogue de l'invité", Level::Warn,
+               out);
+}
+
+void Session::on_dialog_npc_lost(std::uint32_t net_id, Output& out) {
+    if (state_ != State::InSession || net_id == 0) return;
+    if (settings_.role == Role::Host && net_id == held_npc_) {
+        held_npc_ = 0;  // sync/npc ne le tient pas (ou plus) : rien à rendre
+        out.logs.push_back({Level::Warn, "[sync] PNJ " + std::to_string(net_id) +
+                                             " : tenue impossible ou perdue chez l'hôte : oubliée"});
+    } else if (settings_.role == Role::Guest && net_id == guest_dialog_npc_) {
+        out.logs.push_back({Level::Warn, "[sync] PNJ " + std::to_string(net_id) +
+                                             " : libération impossible chez l'invité : dialogue clos"});
+        end_guest_dialog("libération impossible", out);
+    }
 }
 
 void Session::drop_avatar_attacks() {
@@ -1401,6 +1621,31 @@ void Session::place_npcs(std::uint64_t now, Output& out) {
     const double shown = ready ? clock_.remote_ms(now) - core::kInterpolationDelayMs : 1e300;
     for (auto& [id, r] : replicas_) {
         if (r.dead) continue;  // story 3.4b : plus de pose, de PV ni de geste
+        if (id == guest_dialog_npc_) {
+            // Story 4.2 : libérée pour le dialogue de l'invité : PV, gestes, pose et attaques de l'hôte dus
+            // sont ignorés (comptés) ; sa mort s'applique (re-figée d'abord).
+            while (!r.hp_changes.empty() && (!ready || r.hp_changes.front().first <= shown)) r.hp_changes.pop_front();
+            while (!r.pending.empty() &&
+                   (static_cast<double>(r.pending.front().ms()) <= shown ||
+                    static_cast<double>(r.pending.front().ms()) > shown + kMaxMotionLeadMs)) {
+                PendingMotion& p = r.pending.front();
+                if (p.is_param || p.motion.type >= proto::kMotionTypeCount) {
+                    ++(p.is_param ? npc_anim_.params_ignored : npc_anim_.ignored);
+                } else {
+                    // Dernier geste par type gardé pour le re-gel ; le précédent est remplacé.
+                    auto& kept = r.freed_motions[p.motion.type];
+                    if (kept) ++npc_anim_.superseded;
+                    kept = std::move(p);
+                }
+                r.pending.pop_front();
+            }
+            while (!r.attacks.empty() && (!ready || shown >= r.attacks.front().at)) {
+                ++attacks_.ignored;
+                r.attacks.pop_front();
+            }
+            if (r.death_pending && (!ready || shown >= r.death_at)) apply_pending_death(id, r, out);
+            continue;
+        }
         if (ready) {
             int hp = -1;
             while (!r.hp_changes.empty() && r.hp_changes.front().first <= shown) {
@@ -1435,8 +1680,15 @@ void Session::place_npcs(std::uint64_t now, Output& out) {
 
 void Session::apply_pending_death(std::uint32_t id, Replica& r, Output& out) {
     if (!r.death_pending || r.dead) return;
+    if (id == guest_dialog_npc_) {  // story 4.2 : re-figée d'abord (registre), puis tuée
+        guest_dialog_npc_ = 0;
+        out.commands.push_back(FreeReplica{id, false});
+        out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(id) +
+                                             " : mort pendant le dialogue de l'invité : re-figée avant NpcDeath"});
+    }
     for (const PendingMotion& p : r.pending) ++(p.is_param ? npc_anim_.params_ignored : npc_anim_.ignored);
     r.pending.clear();
+    for (auto& m : r.freed_motions) m.reset();  // story 4.2
     attacks_.ignored += static_cast<unsigned>(r.attacks.size());  // story 3.8 : une morte n'attaque plus
     r.attacks.clear();
     r.hp_changes.clear();
@@ -1456,6 +1708,8 @@ void Session::release_npcs(const std::string& why, Output& out) {
                                              " réplique(s) libérée(s) : " + why});
         replicas_.clear();
     }
+    guest_dialog_npc_ = 0;       // story 4.2, invité : ReleaseNpc la rend au jeu, libérée ou non
+    if (held_npc_ != 0) unhold_npc(why, Level::Info, out);  // story 4.2, hôte
     early_npcs_.clear();         // story 3.4a : entrées en avance sans objet
     set_animated_npcs({}, out);  // hôte (story 3.4) : plus aucun PNJ capturé
     npc_param_batch_.clear();
@@ -2085,7 +2339,7 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
 void Session::snapshot_stats(std::uint64_t now, Output& out) {
     if (now < next_stats_) return;
     next_stats_ = now + kSnapshotStatsMs;
-    char buf[2000];  // story 4.1 : marge pour le pire cas (toutes les valeurs au maximum)
+    char buf[2200];  // story 4.2 : marge pour le pire cas (toutes les valeurs au maximum)
     const auto npc_rate = static_cast<unsigned long long>(npc_anim_.bytes * 1000 / kSnapshotStatsMs);
     std::snprintf(buf, sizeof buf,
                   "[sync] snapshots (5 s) : envoyés %u, reçus %u (illisibles %u, entités ignorées %u) ; "
@@ -2101,7 +2355,8 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   "coups subis : HitOnGuest envoyés %u, reçus %u, ignorés %u ; "
                   "à terre : Death %u, Respawn envoyés %u, reçus %u, accusés %u, ignorés %u, snapshots périmés %u ; "
                   "attaques natives : NpcAttack envoyés %u, appliqués %u, ignorés %u ; "
-                  "dialogues : DialogLine envoyés %u, reçus %u, rejoués %u, ignorés %u",
+                  "dialogues : DialogLine envoyés %u, reçus %u, rejoués %u, ignorés %u ; DialogState envoyés %u, "
+                  "reçus %u",
                   snap_.sent, snap_.received, snap_.unreadable, snap_.ignored, snap_.interpolated,
                   snap_.extrapolated, snap_.held, clock_.offset_ms(), anim_.sent, anim_.played, anim_.superseded,
                   anim_.ignored, anim_.dropped, anim_.params_sent, anim_.params_played, anim_.params_ignored,
@@ -2113,7 +2368,7 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
                   hits_.applied, hits_.ignored, hits_.blocked, guest_hits_.sent, guest_hits_.received,
                   guest_hits_.ignored, respawn_.deaths, respawn_.sent, respawn_.received, respawn_.acks,
                   respawn_.ignored, respawn_.stale, attacks_.sent, attacks_.applied, attacks_.ignored, dialog_.sent,
-                  dialog_.received, dialog_.played, dialog_.ignored);
+                  dialog_.received, dialog_.played, dialog_.ignored, dialog_.states_sent, dialog_.states_received);
     out.logs.push_back({Level::Debug, buf});
     // Story 3.4 (Q12) : budget des animations des PNJ, une ligne par bilan au plus.
     if (npc_rate > kNpcAnimBudgetBytesPerSec) {

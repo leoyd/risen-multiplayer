@@ -107,7 +107,21 @@
 // donne aussitôt ApplyDialogLine si le locuteur est l'avatar de l'hôte (présent et vivant) ou une
 // réplique annoncée et vivante ; sync/dialogue vérifie la distance et le dialogue local, puis rejoue
 // (sStartOutput, StartFacialAni) et rend son bilan (LocalDialogReplayed). Settings::dialogues faux : ni
-// envoi ni rejeu. Un hôte qui reçoit DialogLine l'ignore (Warn).
+// envoi ni rejeu.
+//
+// Dialogues de l'invité (story 4.2, protocole v17) : chez l'invité, sync/dialogue signale le début et
+// la fin de son dialogue avec une réplique (LocalDialogState{NetId, actif}) : au début, la réplique
+// vivante est libérée (FreeReplica{NetId, true} : IA et animations natives) et DialogState{NetId, 1}
+// part ; tant qu'elle l'est, ses poses, PV, gestes et attaques venus de l'hôte sont ignorés (comptés) ;
+// à la fin (ou à un nouveau partenaire), elle est re-figée (FreeReplica{NetId, false}, PV réécrits) et
+// DialogState{NetId, 0} part. Son Death la re-fige avant NpcDeath ; son Despawn et Ended la libèrent
+// comme toute réplique. Ses répliques (LocalDialogLine) partent en DialogLine{2} (son héros) ou
+// DialogLine{NetId} (le partenaire en cours seulement). Chez l'hôte, DialogState{NetId, 1} d'un PNJ
+// annoncé, vivant et qui n'est pas en dialogue avec l'hôte (World::dialog_*) le tient (HoldNpc : routine
+// figée), un seul à la fois ; il est rendu (UnholdNpc) à DialogState{NetId, 0}, à sa sortie de la
+// sélection (Despawn, Death), à Ended ou kDialogHoldTimeoutMs après le début (Warn). DialogLine{2}
+// donne ApplyDialogLine sur l'avatar de l'invité, DialogLine{NetId} sur le PNJ tenu. Un hôte qui reçoit
+// DialogLine{1}, un invité qui reçoit DialogLine{2} ou DialogState : ignoré (Warn une fois par session).
 //
 // Robustesse (story 3.4a) : Start porte le Heartbeat encodé et ses délais, que le transport envoie
 // depuis son thread quand la frame ne le lit plus (pause du jeu). Chez l'invité, l'entrée de
@@ -118,6 +132,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -197,6 +212,11 @@ struct World {
     // Invité (story 3.3) : gCScriptRoutine_PS::OnProcess bloqués depuis le tick précédent
     // (répliques à l'IA figée), cumulés dans le bilan debug.
     unsigned routine_blocked = 0;
+    // Hôte (story 4.2) : dialogue de l'hôte à ce tick (InfoSystem::IsRunning) et GUID de son partenaire
+    // (InfoSystem::GetNPC), s'il a pu être lu : un DialogState de l'invité pour ce PNJ est ignoré.
+    bool dialog_running = false;
+    bool dialog_partner_ok = false;
+    protocol::Guid dialog_partner{};
 
     bool loaded() const { return player != 0 && running; }  // monde chargé
 };
@@ -290,11 +310,25 @@ struct LocalNpcAttack {
 // Story 4.1, hôte : une réplique d'un dialogue en cours, relevée par sync/dialogue : dite par son héros
 // (`hero`), ou par le partenaire de dialogue de GUID `guid`. Échantillon et type tels que passés à
 // gCScriptProcessingUnit::StartOutput. Devient DialogLine en session si le PNJ est annoncé et vivant.
+// Story 4.2, invité : son héros (`hero`), ou le partenaire de dialogue de NetId `net_id` (0 : pas une
+// réplique) ; devient DialogLine{2} ou DialogLine{net_id} si c'est le partenaire du dialogue en cours.
 struct LocalDialogLine {
     bool hero = false;
     protocol::Guid guid{};
     std::uint8_t output_type = 0;
     std::string sample;
+    std::uint32_t net_id = 0;
+};
+// Story 4.2, invité : son dialogue avec la réplique `net_id` commence (`active`) ou finit (sync/dialogue,
+// transitions d'InfoSystem::IsRunning et GetNPC).
+struct LocalDialogState {
+    std::uint32_t net_id = 0;
+    bool active = false;
+};
+// Story 4.2 : sync/npc n'a pas pu tenir (hôte : GUID introuvable, pas de PS de routine, PNJ perdu) ou
+// libérer (invité) le PNJ `net_id` : la session oublie la tenue, ou clôt le dialogue de l'invité (Warn).
+struct LocalDialogNpcLost {
+    std::uint32_t net_id = 0;
 };
 // Story 4.1 : bilan des ApplyDialogLine exécutés depuis la frame précédente (sync/dialogue) : rejoués,
 // ou ignorés (entité absente ou morte, trop loin, invité en dialogue, échec du jeu). Hôte : répliques
@@ -305,7 +339,7 @@ struct LocalDialogReplayed {
 };
 using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor,
                            LocalHit, LocalHitsBlocked, LocalHitOnGuest, LocalDown, LocalNpcAttack, LocalDialogLine,
-                           LocalDialogReplayed>;
+                           LocalDialogReplayed, LocalDialogState, LocalDialogNpcLost>;
 
 // Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
 // (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
@@ -439,11 +473,28 @@ struct ApplyAvatarAttack {
 };
 // Story 4.1, invité : rejouer une réplique de dialogue de l'hôte sur le locuteur `net_id` (1 avatar de
 // l'hôte, ≥ 1000 réplique de ce NetId) : sync/dialogue::replay (distance, dialogue local, sStartOutput,
-// StartFacialAni).
+// StartFacialAni). Story 4.2, hôte : réplique de l'invité, `net_id` 2 (avatar de l'invité) ou ≥ 1000
+// (PNJ tenu, retrouvé par `guid`).
 struct ApplyDialogLine {
     std::uint32_t net_id = 0;
     std::uint8_t output_type = 0;
     std::string sample;
+    protocol::Guid guid{};  // hôte, PNJ seulement
+};
+// Story 4.2, hôte : tenir le PNJ de ce GUID pendant le dialogue de l'invité (routine figée, sync/npc),
+// ou le rendre.
+struct HoldNpc {
+    std::uint32_t net_id = 0;
+    protocol::Guid guid{};
+};
+struct UnholdNpc {
+    std::uint32_t net_id = 0;
+};
+// Story 4.2, invité : libérer la réplique pour son dialogue (`freed` : IA et animations natives, pose de
+// l'hôte ignorée) ou la re-figer (sync/npc).
+struct FreeReplica {
+    std::uint32_t net_id = 0;
+    bool freed = false;
 };
 // Invité : rejouer un Motion ou un réglage de l'hôte sur la réplique, sous ReplayGuard.
 struct PlayNpcMotion {
@@ -459,7 +510,8 @@ using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseRelia
                              DespawnAvatar, SendSnapshot, MoveAvatar, PlayAvatarMotion, AvatarDeath, PlayAvatarParam,
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
                              ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath, ApplyHit,
-                             ApplyHitOnGuest, RespawnHero, ApplyNpcAttack, ApplyAvatarAttack, ApplyDialogLine>;
+                             ApplyHitOnGuest, RespawnHero, ApplyNpcAttack, ApplyAvatarAttack, ApplyDialogLine, HoldNpc,
+                             UnholdNpc, FreeReplica>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -477,6 +529,9 @@ inline constexpr std::uint64_t kSnapshotStatsMs = 5000;  // bilan debug des snap
 // accusé du Respawn : snapshots de l'invité repris.
 inline constexpr std::uint64_t kRespawnTimeoutMs = 10000;
 inline constexpr std::uint64_t kRespawnAckTimeoutMs = 5000;
+
+// Story 4.2, hôte : un PNJ tenu sans DialogState{…, 0} est rendu après ce délai (Warn).
+inline constexpr std::uint64_t kDialogHoldTimeoutMs = 60000;
 
 // Story 3.4 (Q12, option A) : PNJ animés au plus (les plus proches), et budget visé de leurs
 // Motion, MotionParam et AniName (octets des messages par seconde, journalisé s'il est dépassé).
@@ -521,6 +576,9 @@ public:
     bool guest_down() const { return guest_down_; }
     bool respawn_pending() const { return respawn_pending_; }
     bool respawn_waiting() const { return respawn_wait_; }
+    // Story 4.2. Hôte : NetId du PNJ tenu (0 : aucun). Invité : NetId de la réplique libérée (0 : aucune).
+    std::uint32_t held_npc() const { return held_npc_; }
+    std::uint32_t freed_replica() const { return guest_dialog_npc_; }
     std::uint32_t conv() const { return conv_; }
     const Endpoint& peer() const { return peer_; }
 
@@ -581,7 +639,16 @@ private:
     void on_avatar_attack(const protocol::NpcAttack& m, Output& out);  // story 3.8b, hôte : NpcAttack{2}
     // Story 4.1. Hôte : réplique de son dialogue (DialogLine). Invité : DialogLine reçu (ApplyDialogLine).
     void on_local_dialog_line(const LocalDialogLine& in, Output& out);
-    void on_dialog_line(const protocol::DialogLine& m, Output& out);
+    void on_dialog_line(std::uint64_t now, const protocol::DialogLine& m, Output& out);
+    void on_dialog_npc_lost(std::uint32_t net_id, Output& out);  // story 4.2 : échec de sync/npc
+    // Story 4.2. Invité : début ou fin de son dialogue (LocalDialogState), fin forcée. Hôte : DialogState
+    // reçu (HoldNpc, UnholdNpc), PNJ rendu, délai.
+    void on_local_dialog_state(const LocalDialogState& in, Output& out);
+    void end_guest_dialog(const std::string& why, Output& out);
+    void on_dialog_state(std::uint64_t now, const protocol::DialogState& m, Output& out);
+    void unhold_npc(const std::string& why, Level level, Output& out);
+    void dialog_timers(std::uint64_t now, Output& out);
+    void dialog_ignored_off(const char* what, Output& out);  // dialogues = 0 : Info une fois par session
     // Story 3.7. Invité : mise à terre (LocalDown), Respawn reçu (ordre), repli. Hôte : Death{2} reçu,
     // envoi du Respawn dû, accusé reçu, repli ; filtre des entrées de snapshot du NetId 2.
     void on_local_down(std::uint64_t now, const LocalDown& in, Output& out);
@@ -750,6 +817,9 @@ private:
         // Story 3.8 : NpcAttack reçus, appliqués quand le temps affiché atteint `at` (dernier snapshot
         // reçu à la réception), après les gestes dus.
         std::deque<PendingAttack> attacks;
+        // Story 4.2 : libérée pour le dialogue de l'invité : dernier Motion de l'hôte par type, rejoué
+        // au re-gel (sinon elle garde l'animation native du dialogue jusqu'au Motion suivant).
+        std::array<std::optional<PendingMotion>, protocol::kMotionTypeCount> freed_motions;
     };
     std::map<std::uint32_t, Replica> replicas_;
     struct NpcCounters {
@@ -786,11 +856,19 @@ private:
     bool attacks_off_logged_ = false;  // NpcAttack du pair ignoré pour native_attacks = 0 déjà signalé (session)
     // Story 4.1 : dialogues. Hôte : DialogLine envoyés ; invité : reçus (ApplyDialogLine émis) et rejoués
     // (bilan de sync/dialogue) ; les deux : ignorés (refusés ici ou par sync/dialogue).
+    // Story 4.2 : DialogState envoyés (invité) et reçus (hôte).
     struct DialogCounters {
         unsigned sent = 0, received = 0, played = 0, ignored = 0;
+        unsigned states_sent = 0, states_received = 0;
     } dialog_;
     bool dialog_off_logged_ = false;  // DialogLine reçu ignoré pour dialogues = 0 déjà signalé (session)
-    bool dialog_host_warned_ = false;  // hôte : DialogLine reçu déjà signalé en Warn (session)
+    bool dialog_host_warned_ = false;  // hôte : DialogLine{1} reçu déjà signalé en Warn (session)
+    bool dialog_guest_warned_ = false;  // story 4.2, invité : DialogLine{2} ou DialogState reçu signalé (session)
+    // Story 4.2. Invité : réplique libérée pour son dialogue (0 : aucune). Hôte : PNJ tenu (0 : aucun),
+    // depuis held_since_.
+    std::uint32_t guest_dialog_npc_ = 0;
+    std::uint32_t held_npc_ = 0;
+    std::uint64_t held_since_ = 0;
     // Story 3.7 : à terre et réapparition. Invité : à terre (Death{2} envoyé), depuis quand, mort native
     // (IsDead) en cours et déjà signalée. Hôte : Respawn à envoyer, accusé attendu depuis
     // respawn_sent_at_, premier tick valide des entrées du NetId 2.

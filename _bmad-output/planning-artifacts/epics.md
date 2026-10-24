@@ -735,6 +735,8 @@ So that je sache ce qu’il fait.
 **And** chez l’hôte, le PNJ et l’avatar de l’invité jouent les répliques avec la voix (FR-13).
 **And** les effets restent chez l’invité (FR-16) et le PNJ de l’hôte reprend sa routine à la fin.
 
+*Note (implémentation 4.2, protocole v17) :* `DialogLine` dans les deux sens (locuteur 2 = héros de l’invité, ou le PNJ de son dialogue en cours) ; nouveau `DialogState` = type 31, invité → hôte, `{PNJ u32 ≥ 1000, actif u8 0/1}`. Chez l’invité, la réplique partenaire est **libérée** du registre le temps du dialogue (IA et animations natives ; pose, PV, gestes et attaques de l’hôte ignorés), puis re-figée. Chez l’hôte, le PNJ est **tenu** (routine figée par le registre, sans rôle de réplique) jusqu’à `DialogState{…, 0}`, sa mort ou sa sortie de la sélection, la fin de session ou 60 s ; un PNJ qui parle à l’hôte n’est pas tenu. Rejeu chez l’hôte comme en 4.1 (20 m, hôte pas en dialogue). H1 (dialogue natif avec une réplique figée) journalisé en debug (`PSDialog::IsBeingTalkedTo`). À valider en jeu.
+
 ### Story 4.3 : Dialogues simultanés et spectateur libre
 
 As a joueur,

@@ -169,3 +169,28 @@ rejeu fera parler le PNJ locuteur lui-même, retrouvé par NetId/GUID.
   sur l'avatar, caméra de l'invité immobile).
   Procédure : `client/README.md`, « Dialogue de l'hôte vu par l'invité ».
 
+
+## 8. Mise en œuvre (story 4.2, protocole v17)
+
+- `DialogLine` dans les deux sens (locuteur 2 = héros de l'invité) ; `DialogState{PNJ, actif}` (type 31,
+  invité → hôte). Le détour de `StartOutput` (posé dans les deux rôles depuis la 4.1) sert aussi chez
+  l'invité : même filtre que l'hôte (dialogue en cours, héros ou partenaire).
+- Invité : `InfoSystem::IsRunning` et `GetNPC` à chaque frame ; un dialogue avec une réplique la
+  **libère** du registre (routine et animations natives, pose de l'hôte ignorée) et envoie
+  `DialogState{NetId, 1}` ; la fin la re-fige et envoie `{NetId, 0}`.
+- Hôte : `DialogState{NetId, 1}` **tient** le PNJ natif (routine figée par le registre, voix et lèvres
+  par la pompe du canal de sortie de la 4.1) jusqu'à `{NetId, 0}`, sa mort ou sa sortie de la sélection,
+  la fin de session ou 60 s. Répliques de l'invité rejouées sur l'avatar de l'invité ou le PNJ tenu
+  (20 m, hôte pas en dialogue).
+- Hypothèses à trancher en jeu (procédure : `client/README.md`, « Dialogue de l'invité vu par l'hôte ») :
+  - **H1** : le dialogue natif démarre-t-il avec une réplique encore figée (la demande de dialogue
+    passe-t-elle par la routine du PNJ) ? Journal debug des transitions de `PSDialog::IsBeingTalkedTo`
+    des répliques (`IsRunning invité`, réplique figée ou libérée). Sinon : libérer dès la demande.
+    Désassemblage : `PSDialog::IsBeingTalkedTo` (`0x180220290`, Script.dll) lit l'entité à `[this]` puis
+    `GetPropertySet(0x37)` (gCDialog_PS), même convention que `PSSkills` (`this` = `Entity`).
+  - **H2** : la réplique libérée, en dialogue, se tourne vers le héros et gesticule sans que l'hôte la
+    déplace.
+  - **H3** : le PNJ tenu chez l'hôte (routine figée) parle (voix) et bouge les lèvres.
+- Limite connue : les suites d'un dialogue de l'invité qui changent le PNJ (attaque, suivre le héros,
+  commerce…) ne sont pas synchronisées : elles n'existent que chez l'invité, et sa réplique peut
+  revenir d'un coup à la pose et à l'animation de l'hôte au re-gel.

@@ -80,6 +80,12 @@ type sessionConfig struct {
 	// Story 3.7 : Death{2} (« à terre ») DieEvery après l'entrée en session, puis DieEvery après
 	// chaque Respawn reçu (0 = jamais).
 	DieEvery time.Duration
+	// Story 4.2 : ≠ 0 : un dialogue de l'invité toutes les DialogEvery, alternativement commencé
+	// (DialogState{N, 1}, DialogLine{2, 3, …} puis DialogLine{N, 0, …}) et fini (DialogState{N, 0}) ;
+	// N = DialogNpc, ou 0 : premier PNJ présent et vivant (NetId croissant). Le NetId n'est pas
+	// vérifié : un NetId inconnu teste le refus de l'hôte.
+	DialogEvery time.Duration
+	DialogNpc   uint32
 
 	HelloInterval     time.Duration
 	ConnectTimeout    time.Duration
@@ -147,7 +153,10 @@ type sessionResult struct {
 	NpcAttacksTx int // NpcAttack envoyés (v15, story 3.8b : --attack-move)
 	// Dialogues de l'hôte (v16, story 4.1) : journalisés, jamais rejoués.
 	DialogLinesRx int // DialogLine reçus
-	EndReason     string
+	// Dialogues de l'invité (v17, story 4.2) : --dialog-every.
+	DialogStatesTx int // DialogState envoyés
+	DialogLinesTx  int // DialogLine envoyés
+	EndReason      string
 }
 
 // npcStats : bilan d'un PNJ annoncé par l'hôte (v9) : annonces, poses reçues, PV.
@@ -229,6 +238,8 @@ type guest struct {
 	extraHello     bool                    // --dup-hello : Hello supplémentaire encore à envoyer
 	nextHit        time.Time               // v12 : prochain HitRequest (--hit-interval)
 	nextDie        time.Time               // v14 : prochain Death{2} (--die-every ; zéro = aucun)
+	nextDialog     time.Time               // v17 : prochain début ou fin de dialogue (--dialog-every)
+	dialogNpc      uint32                  // v17 : PNJ du dialogue en cours (0 = aucun)
 	down           bool                    // v14 : Death{2} envoyé, Respawn attendu
 	hostPose       protocol.SnapshotEntity // v14 : dernière pose du héros de l'hôte (écho après Respawn)
 	hostPoseOK     bool
@@ -298,6 +309,10 @@ func (g *guest) run(ctx context.Context) sessionResult {
 			if g.cfg.HitInterval > 0 && !now.Before(g.nextHit) {
 				g.sendHit()
 				g.nextHit = now.Add(g.cfg.HitInterval)
+			}
+			if g.cfg.DialogEvery > 0 && !now.Before(g.nextDialog) {
+				g.stepDialog()
+				g.nextDialog = now.Add(g.cfg.DialogEvery)
 			}
 			if g.cfg.DieEvery > 0 && !g.down && !now.Before(g.nextDie) {
 				g.down = true
@@ -565,6 +580,12 @@ func (g *guest) sendReliable(m protocol.Message) {
 	case protocol.NpcAttack:
 		g.res.NpcAttacksTx++
 		g.log.printf("-> NpcAttack netid=%d move=%d cible=%d", m.NetId, m.Move, m.Target)
+	case protocol.DialogState:
+		g.res.DialogStatesTx++
+		g.log.printf("-> DialogState pnj=%d actif=%d", m.NpcNetId, m.Active)
+	case protocol.DialogLine:
+		g.res.DialogLinesTx++
+		g.log.printf("-> DialogLine locuteur=%d type=%d échantillon=%s", m.Speaker, m.OutputType, m.Sample)
 	case protocol.Weapon:
 		g.res.WeaponsTx++
 		g.log.printf("-> Weapon netid=%d nom=%q", m.NetId, m.Name)
@@ -734,7 +755,9 @@ func (g *guest) enterSession(w protocol.Welcome) {
 	g.hostPoseOK = false
 	g.nextDie = now.Add(g.cfg.DieEvery)    // v14 : première mise à terre une période après l'entrée en session
 	g.nextHit = now.Add(g.cfg.HitInterval) // premier coup une période après l'entrée en session
-	g.sendReliable(g.spawn)                // avatar de l'invité chez l'hôte (v3) ; le scénario part de cette pose
+	g.nextDialog = now.Add(g.cfg.DialogEvery)
+	g.dialogNpc = 0
+	g.sendReliable(g.spawn) // avatar de l'invité chez l'hôte (v3) ; le scénario part de cette pose
 	// Arme en main (v7), juste après le Spawn : l'avatar apparaît armé.
 	g.sendReliable(protocol.Weapon{NetId: protocol.GuestNetId, Name: g.cfg.Weapon})
 	// Armure (v8), après le Weapon, seulement si --armor est donné.
@@ -1051,6 +1074,38 @@ func (g *guest) sendHit() {
 	g.sendReliable(protocol.HitRequest{NetId: target})
 }
 
+// Échantillons des répliques envoyées par --dialog-every (v17) : héros de l'invité, puis PNJ.
+const (
+	guestDialogHeroSample = "INFO_Sara_1_PC_Hero_DE_%_PC_Hero.wav"
+	guestDialogNpcSample  = "INFO_Sara_2_Sara_DE_%_Sara.wav"
+)
+
+// stepDialog (v17, story 4.2) : sans dialogue en cours, en commence un avec --dialog-npc ou le premier
+// PNJ présent et vivant (rien s'il n'y en a pas) : DialogState{N, 1}, réplique du héros, réplique du
+// PNJ ; sinon le finit (DialogState{N, 0}).
+func (g *guest) stepDialog() {
+	if g.dialogNpc != 0 {
+		g.sendReliable(protocol.DialogState{NpcNetId: g.dialogNpc, Active: 0})
+		g.dialogNpc = 0
+		return
+	}
+	npc := g.cfg.DialogNpc
+	if npc == 0 {
+		for id, s := range g.res.Npcs {
+			if s.Present && !s.Dead && (npc == 0 || id < npc) {
+				npc = id
+			}
+		}
+		if npc == 0 {
+			return
+		}
+	}
+	g.dialogNpc = npc
+	g.sendReliable(protocol.DialogState{NpcNetId: npc, Active: 1})
+	g.sendReliable(protocol.DialogLine{Speaker: protocol.GuestNetId, OutputType: 3, Sample: guestDialogHeroSample})
+	g.sendReliable(protocol.DialogLine{Speaker: npc, OutputType: 0, Sample: guestDialogNpcSample})
+}
+
 // npcSummary : une ligne de bilan par PNJ vu, par NetId croissant.
 func (g *guest) npcSummary() {
 	if len(g.res.Npcs) == 0 {
@@ -1082,8 +1137,9 @@ func (g *guest) npcSummary() {
 
 func (g *guest) end(code int, reason string) sessionResult {
 	g.npcSummary()
-	if g.res.DialogLinesRx > 0 {
-		g.log.printf("Bilan dialogues : DialogLine reçus=%d", g.res.DialogLinesRx)
+	if g.res.DialogLinesRx > 0 || g.cfg.DialogEvery > 0 {
+		g.log.printf("Bilan dialogues : DialogLine reçus=%d envoyés=%d DialogState envoyés=%d", g.res.DialogLinesRx,
+			g.res.DialogLinesTx, g.res.DialogStatesTx)
 	}
 	if g.cfg.HitInterval > 0 || g.res.HitsOnGuestRx > 0 || g.res.NpcAttacksRx > 0 {
 		g.log.printf("Bilan coups : HitRequest envoyés=%d HitOnGuest reçus=%d NpcAttack reçus=%d envoyés=%d", g.res.HitsTx,

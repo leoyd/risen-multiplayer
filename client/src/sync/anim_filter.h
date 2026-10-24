@@ -13,6 +13,10 @@
 // - PNJ animé de l'hôte (rôle NpcCapture, story 3.4) : ses appels sont capturés comme ceux du
 //   héros local, avec son NetId, jamais bloqués. Ses réglages identiques au dernier capturé
 //   (par type et nature) n'entrent pas dans l'anneau.
+// - Story 4.2 (dialogues de l'invité) : une réplique peut être « libérée » le temps du dialogue de
+//   l'invité (set_freed) : elle reste au registre (recherches, NetId) mais ni ses animations ni sa
+//   routine ne sont plus bloquées. Chez l'hôte, un PNJ peut être « tenu » (hold_routine) : seul son
+//   PS de routine est figé, sans entrée au registre (il peut en avoir une, NpcCapture, à part).
 // - Anneau des captures, vidé par la frame.
 //
 // Le filtre ne touche jamais au jeu : il ne manipule que des pointeurs opaques. Portable
@@ -74,6 +78,9 @@ struct TrackedEntity {
     void* wrapper = nullptr;       // eCWrapper_emfx3ActorInstance (story 2.4b)
     EntityRole role = EntityRole::Avatar;
     std::uint32_t net_id = 0;      // NetId (rôle NpcCapture : porté par ses captures)
+    // Story 4.2 : réplique libérée pour le dialogue de l'invité (set_freed) : ni animations ni
+    // routine bloquées. Faux à l'inscription (track).
+    bool freed = false;
 };
 
 class AnimFilter {
@@ -94,6 +101,14 @@ public:
     bool find_by_wrapper(const void* ptr, TrackedEntity& out) const;
     // Story 3.5 (détour des dégâts) : entrée dont l'entité vaut `entity`.
     bool find_by_entity(const void* entity, TrackedEntity& out) const;
+    // Story 4.2, invité : libère (true) ou rend au blocage (false) l'entrée de `entity` (rôle
+    // NpcReplica seulement). False si l'entité n'est pas une réplique au registre.
+    bool set_freed(const void* entity, bool freed);
+    // Story 4.2, hôte : PS de routine d'un PNJ tenu (figé par blocks_routine, sans entrée au
+    // registre), et sa remise. clear() rend aussi tous les PNJ tenus. `routine_ps` nul : ignoré.
+    void hold_routine(const void* routine_ps);
+    void release_routine(const void* routine_ps);
+    std::size_t held_count() const;
     // Retire au plus `cap` captures (les plus anciennes d'abord). `dropped` reçoit le nombre
     // de captures perdues (anneau plein) depuis le dernier appel.
     std::size_t drain(Capture* out, std::size_t cap, unsigned& dropped);
@@ -119,8 +134,9 @@ public:
     // PS du héros local ? (sans effet sur les compteurs)
     bool is_local(const void* animation_ps) const;
     // Hook gCScriptRoutine_PS::OnProcess en session (story 3.3) : `routine_ps` est-il le PS de
-    // routine d'une réplique de PNJ (rôle NpcReplica) ? Vrai : son IA est figée, l'original
-    // n'est pas appelé. Simple comparaison sous le verrou ; compte les appels bloqués.
+    // routine d'une réplique de PNJ (rôle NpcReplica, non libérée : story 4.2) ou d'un PNJ tenu
+    // (story 4.2) ? Vrai : son IA est figée, l'original n'est pas appelé. Simple comparaison sous
+    // le verrou ; compte les appels bloqués.
     bool blocks_routine(const void* routine_ps);
     // Appels de routine bloqués depuis le dernier appel.
     unsigned take_routine_blocked();
@@ -147,6 +163,7 @@ private:
 
     void* local_ = nullptr;
     std::vector<TrackedEntity> entities_;
+    std::vector<const void*> held_routines_;  // story 4.2 : PNJ tenus (hôte)
     Capture ring_[kCaptureRing];
     std::size_t head_ = 0;   // prochaine écriture
     std::size_t count_ = 0;

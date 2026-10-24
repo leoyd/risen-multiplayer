@@ -4384,7 +4384,7 @@ TEST("dialogues 4.1 hôte : réplique du PNJ annoncé → DialogLine{1001, 0, é
                      "[sync] réplique de dialogue du PNJ 1001 (type 0, « INFO_Sara_2_Sara_DE_%_Sara.wav ») : DialogLine envoyé"));
     CHECK(sent_of<proto::DialogLine>(s.tick(1070, host_world({}, false), {})).empty());
     CHECK_EQ(dialog_tail(host_stats_line(s, 1100)),
-             std::string("dialogues : DialogLine envoyés 1, reçus 0, rejoués 0, ignorés 0"));
+             std::string("dialogues : DialogLine envoyés 1, reçus 0, rejoués 0, ignorés 0 ; DialogState envoyés 0, reçus 0"));
 }
 
 TEST("dialogues 4.1 hôte : réplique du héros → DialogLine{1, 3, …}") {
@@ -4402,7 +4402,7 @@ TEST("dialogues 4.1 hôte : PNJ non annoncé, mort, échantillon invalide, hors 
     CHECK(sent_of<proto::DialogLine>(out).empty());
     CHECK(has_log(out, "ignorée (échantillon ou type invalide)"));
     CHECK_EQ(dialog_tail(host_stats_line(s, 1100)),
-             std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 3"));
+             std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 3 ; DialogState envoyés 0, reçus 0"));
     Session d = host_in_session();
     d.tick(1050, host_world({npc_at(1, 100.0f)}), {});
     d.tick(1100, host_world({npc_at(1, 100.0f, 0, false)}), {});  // Death{1000}
@@ -4427,13 +4427,14 @@ TEST("dialogues 4.1 hôte : dialogues = 0 → rien envoyé ; DialogLine reçu �
     Output out = s.tick(60, loaded_world(), {hero_line()});
     CHECK(sent_of<proto::DialogLine>(out).empty());
     CHECK(has_log(out, "ignorée (dialogues = 0)"));
+    // Story 4.2 : l'hôte rejoue les répliques de l'invité, jamais le locuteur 1 (son propre héros).
     Session h = host_with_npcs();
-    out = h.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogLine{1000, 0, kSample})));
+    out = h.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogLine{proto::kHostNetId, 3, kSample})));
     CHECK(commands_of<ApplyDialogLine>(out).empty());
-    CHECK(has_log_at(out, Level::Warn, "ignoré : l'hôte ne rejoue pas de dialogue"));
-    out = h.tick(1070, host_world({}, false), reliable(encode_r(proto::DialogLine{1000, 0, kSample})));
-    CHECK(has_log_at(out, Level::Debug, "ignoré : l'hôte ne rejoue pas de dialogue"));  // Warn une fois
-    CHECK(!has_log_at(out, Level::Warn, "ignoré : l'hôte ne rejoue pas de dialogue"));
+    CHECK(has_log_at(out, Level::Warn, "ignoré : locuteur 1 = son propre héros"));
+    out = h.tick(1070, host_world({}, false), reliable(encode_r(proto::DialogLine{proto::kHostNetId, 3, kSample})));
+    CHECK(has_log_at(out, Level::Debug, "ignoré : locuteur 1 = son propre héros"));  // Warn une fois
+    CHECK(!has_log_at(out, Level::Warn, "son propre héros"));
     CHECK(h.state() == State::InSession);
 }
 
@@ -4445,7 +4446,7 @@ TEST("dialogues 4.1 invité : DialogLine d'une réplique vivante → ApplyDialog
     // Bilan de sync/dialogue : un rejoué, un ignoré (trop loin, par exemple).
     g.tick(410, loaded_world(), {LocalDialogReplayed{1, 1}});
     CHECK_EQ(dialog_tail(guest_stats_line(g, 600)),
-             std::string("dialogues : DialogLine envoyés 0, reçus 1, rejoués 1, ignorés 1"));
+             std::string("dialogues : DialogLine envoyés 0, reçus 1, rejoués 1, ignorés 1 ; DialogState envoyés 0, reçus 0"));
 }
 
 TEST("dialogues 4.1 invité : locuteur 1 → avatar de l'hôte présent seulement") {
@@ -4481,7 +4482,7 @@ TEST("dialogues 4.1 invité : NetId non annoncé, réplique morte → ignoré, c
     CHECK(commands_of<ApplyDialogLine>(out).empty());
     CHECK(has_log(out, "ignoré (réplique morte)"));
     CHECK_EQ(dialog_tail(guest_stats_line(g, 600)),
-             std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 2"));
+             std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 2 ; DialogState envoyés 0, reçus 0"));
     Settings off = guest_settings();
     off.dialogues = false;
     Session f(off);
@@ -4496,9 +4497,372 @@ TEST("dialogues 4.1 invité : NetId non annoncé, réplique morte → ignoré, c
     CHECK(!has_log(out, "dialogues inactifs ici"));
 }
 
-TEST("dialogues 4.1 invité : LocalDialogLine chez l'invité → rien envoyé") {
+// --- Story 4.2 : dialogue de l'invité vu par l'hôte ----------------------------------------------
+
+namespace {
+
+LocalDialogLine guest_npc_line(std::uint32_t net_id, std::uint8_t type = 0) {
+    LocalDialogLine l;
+    l.net_id = net_id;
+    l.output_type = type;
+    l.sample = kSample;
+    return l;
+}
+
+template <typename T>
+std::size_t count_of(const Output& out) {
+    return commands_of<T>(out).size();
+}
+
+}  // namespace
+
+TEST("dialogues 4.2 invité : début avec une réplique → FreeReplica{1001, libérée} puis DialogState{1001, 1}, Info") {
     Session g = guest_with_npcs();
-    const Output out = g.tick(400, loaded_world(), {hero_line()});
+    const Output out = g.tick(400, loaded_world(), {LocalDialogState{1001, true}});
+    const auto free = commands_of<FreeReplica>(out);
+    CHECK(free.size() == 1 && free[0]->net_id == 1001u && free[0]->freed);
+    const auto sent = sent_of<proto::DialogState>(out);
+    CHECK(sent.size() == 1 && sent[0].npc_net_id == 1001u && sent[0].active == 1);
+    CHECK(index_of<FreeReplica>(out) < index_of<SendReliable>(out));
+    CHECK(has_log_at(out, Level::Info, "[sync] dialogue de l'invité avec le PNJ 1001 : début : réplique libérée"));
+    CHECK_EQ(g.freed_replica(), 1001u);
+    // Doublon : ignoré.
+    CHECK(sent_of<proto::DialogState>(g.tick(410, loaded_world(), {LocalDialogState{1001, true}})).empty());
+}
+
+TEST("dialogues 4.2 invité : répliques du héros (2) et du partenaire (1001) envoyées ; autre PNJ ou hors dialogue : non") {
+    Session g = guest_with_npcs();
+    // Héros : toujours envoyé (locuteur 2), même sans dialogue avec une réplique.
+    auto sent = sent_of<proto::DialogLine>(g.tick(400, loaded_world(), {hero_line()}));
+    CHECK(sent.size() == 1 && sent[0].speaker_net_id == proto::kGuestNetId && sent[0].output_type == 3);
+    // Partenaire avant le DialogState : ignoré.
+    Output out = g.tick(410, loaded_world(), {guest_npc_line(1001)});
     CHECK(sent_of<proto::DialogLine>(out).empty());
-    CHECK(has_log(out, "ignorée (pas hôte)"));
+    CHECK(has_log_at(out, Level::Debug, "ignorée (PNJ hors du dialogue en cours)"));
+    out = g.tick(420, loaded_world(), {LocalDialogState{1001, true}, guest_npc_line(1001), guest_npc_line(1000),
+                                       guest_npc_line(0)});
+    sent = sent_of<proto::DialogLine>(out);
+    CHECK(sent.size() == 1 && sent[0].speaker_net_id == 1001u && sent[0].output_type == 0 && sent[0].sample == kSample);
+    CHECK(has_log(out, "ignorée (partenaire qui n'est pas une réplique)"));
+    CHECK_EQ(dialog_tail(guest_stats_line(g, 600)),
+             std::string("dialogues : DialogLine envoyés 2, reçus 0, rejoués 0, ignorés 3 ; DialogState envoyés 1, reçus 0"));
+}
+
+TEST("dialogues 4.2 invité : fin → FreeReplica{1001, figée}, DialogState{1001, 0}, PV de l'hôte réécrits") {
+    Session g = guest_with_npcs();  // affiché = now − 350 ; snapshots 0 à 3 (PV 100)
+    g.tick(400, loaded_world(), {LocalDialogState{1001, true}});
+    // Pendant le dialogue : ni pose, ni PV, ni geste, ni attaque de l'hôte pour 1001 (1000 continue).
+    g.tick(410, loaded_world(), snapshot_in(npc_snapshot(4, {npc_entity(1000, 5.0f, 90), npc_entity(1001, 5.0f, 60)})));
+    g.tick(420, loaded_world(),
+           reliable2(host_npc_motion(1001, 4, 200), proto::NpcAttack{1001, 11, proto::kGuestNetId}));
+    bool other_moved = false, other_hp = false;
+    for (std::uint64_t t = 430; t <= 700; t += 30) {
+        const Output out = g.tick(t, loaded_world(), {});
+        for (const auto* m : commands_of<MoveNpc>(out)) {
+            CHECK(m->net_id != 1001u);
+            other_moved = other_moved || m->net_id == 1000u;
+        }
+        for (const auto* h : commands_of<SetNpcHp>(out)) {
+            CHECK(h->net_id != 1001u);
+            other_hp = other_hp || (h->net_id == 1000u && h->hp == 90);
+        }
+        for (const auto* p : commands_of<PlayNpcMotion>(out)) CHECK(p->net_id != 1001u);
+        CHECK(commands_of<ApplyNpcAttack>(out).empty());
+    }
+    CHECK(other_moved && other_hp);  // l'autre réplique suit toujours l'hôte
+    Output out = g.tick(710, loaded_world(), {LocalDialogState{1001, false}});
+    const auto free = commands_of<FreeReplica>(out);
+    CHECK(free.size() == 1 && free[0]->net_id == 1001u && !free[0]->freed);
+    const auto sent = sent_of<proto::DialogState>(out);
+    CHECK(sent.size() == 1 && sent[0].npc_net_id == 1001u && sent[0].active == 0);
+    CHECK_EQ(g.freed_replica(), 0u);
+    // Re-figée : la pose et les PV de l'hôte reprennent.
+    const auto hp = commands_of<SetNpcHp>(out);
+    CHECK(hp.size() == 1 && hp[0]->net_id == 1001u && hp[0]->hp == 60);
+    bool moved = false;
+    for (const auto* m : commands_of<MoveNpc>(out)) moved = moved || m->net_id == 1001u;
+    CHECK(moved);
+    // Dernier geste de l'hôte gardé pendant le dialogue, rejoué au re-gel (après FreeReplica).
+    const auto replayed = commands_of<PlayNpcMotion>(out);
+    CHECK(replayed.size() == 1 && replayed[0]->net_id == 1001u && replayed[0]->name == "Wolf_Attack");
+    CHECK(index_of<FreeReplica>(out) < index_of<PlayNpcMotion>(out));
+    // Fin d'un dialogue qui n'est pas en cours : ignorée.
+    CHECK(sent_of<proto::DialogState>(g.tick(720, loaded_world(), {LocalDialogState{1001, false}})).empty());
+}
+
+TEST("dialogues 4.2 invité : nouveau partenaire → l'ancien re-figé (DialogState{…, 0}) avant le nouveau") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), {LocalDialogState{1001, true}});
+    const Output out = g.tick(410, loaded_world(), {LocalDialogState{1000, true}});
+    const auto sent = sent_of<proto::DialogState>(out);
+    CHECK(sent.size() == 2 && sent[0].npc_net_id == 1001u && sent[0].active == 0 && sent[1].npc_net_id == 1000u &&
+          sent[1].active == 1);
+    const auto free = commands_of<FreeReplica>(out);
+    CHECK(free.size() == 2 && free[0]->net_id == 1001u && !free[0]->freed && free[1]->net_id == 1000u && free[1]->freed);
+    CHECK_EQ(g.freed_replica(), 1000u);
+}
+
+TEST("dialogues 4.2 invité : réplique absente, morte, dialogues = 0, hors session → ignoré, rien libéré") {
+    Session g = guest_with_npcs();
+    Output out = g.tick(400, loaded_world(), {LocalDialogState{1500, true}});
+    CHECK(count_of<FreeReplica>(out) == 0 && sent_of<proto::DialogState>(out).empty());
+    CHECK(has_log(out, "ignoré (réplique absente)"));
+    g.tick(410, loaded_world(), reliable(encode_r(proto::Death{1001})));
+    // Death reçu, pas encore appliqué (death_pending : affiché 70 < 150) : refusé aussi.
+    out = g.tick(420, loaded_world(), {LocalDialogState{1001, true}});
+    CHECK(count_of<FreeReplica>(out) == 0 && count_of<NpcDeath>(out) == 0);
+    CHECK(has_log(out, "ignoré (réplique morte)"));
+    CHECK_EQ(count_of<NpcDeath>(g.tick(520, loaded_world(), {})), 1u);  // appliqué
+    out = g.tick(530, loaded_world(), {LocalDialogState{1001, true}});
+    CHECK(count_of<FreeReplica>(out) == 0);
+    CHECK(has_log(out, "ignoré (réplique morte)"));
+    Settings off = guest_settings();
+    off.dialogues = false;
+    Session f(off);
+    f.tick(0, loaded_world(), {});
+    f.tick(100, loaded_world(), control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    f.tick(150, loaded_world(), reliable(encode_r(npc_spawn(1000))));
+    out = f.tick(160, loaded_world(), {LocalDialogState{1000, true}, hero_line()});
+    CHECK(count_of<FreeReplica>(out) == 0 && commands_of<SendReliable>(out).empty());
+    Session i(guest_settings());
+    i.tick(0, loaded_world(), {});
+    out = i.tick(10, loaded_world(), {LocalDialogState{1000, true}});
+    CHECK(count_of<FreeReplica>(out) == 0);
+    CHECK(has_log_at(out, Level::Debug, "ignoré (hors session)"));
+}
+
+TEST("dialogues 4.2 invité : Death de la réplique libérée → re-figée avant NpcDeath ; Despawn → ReleaseNpc seul") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), {LocalDialogState{1001, true}});
+    g.tick(410, loaded_world(), reliable(encode_r(proto::Death{1001})));
+    Output out;
+    for (std::uint64_t t = 420; t <= 700 && count_of<NpcDeath>(out) == 0; t += 30) out = g.tick(t, loaded_world(), {});
+    CHECK_EQ(count_of<NpcDeath>(out), 1u);
+    const auto free = commands_of<FreeReplica>(out);
+    CHECK(free.size() == 1 && free[0]->net_id == 1001u && !free[0]->freed);
+    CHECK(index_of<FreeReplica>(out) < index_of<NpcDeath>(out));
+    CHECK_EQ(g.freed_replica(), 0u);
+    Session d = guest_with_npcs();
+    d.tick(400, loaded_world(), {LocalDialogState{1000, true}});
+    out = d.tick(410, loaded_world(), reliable(encode_r(proto::Despawn{1000})));
+    CHECK(count_of<ReleaseNpc>(out) == 1 && count_of<FreeReplica>(out) == 0);
+    CHECK_EQ(d.freed_replica(), 0u);
+}
+
+TEST("dialogues 4.2 invité : fin de session pendant le dialogue → ReleaseNpc (rendue au jeu), plus rien de libéré") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), {LocalDialogState{1001, true}});
+    const Output out = g.tick(410, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK(g.state() == State::Ended);
+    bool released = false;
+    for (const auto* r : commands_of<ReleaseNpc>(out)) released = released || r->net_id == 1001u;
+    CHECK(released);
+    CHECK_EQ(g.freed_replica(), 0u);
+}
+
+TEST("dialogues 4.2 invité : DialogState ou DialogLine{2} reçus → ignorés, Warn une fois") {
+    Session g = guest_with_npcs();
+    Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::DialogState{1001, 1})));
+    CHECK(count_of<FreeReplica>(out) == 0);
+    CHECK(has_log_at(out, Level::Warn, "ignoré : l'invité ne tient aucun PNJ"));
+    out = g.tick(410, loaded_world(), reliable(encode_r(proto::DialogLine{proto::kGuestNetId, 3, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log_at(out, Level::Debug, "ignoré : locuteur 2 = son propre héros"));  // même Warn que DialogState : une fois
+    out = g.tick(420, loaded_world(), reliable2(proto::DialogState{1001, 0}, proto::DialogLine{proto::kGuestNetId, 3, kSample}));
+    CHECK(!has_log_at(out, Level::Warn, "ignoré"));
+    CHECK(g.state() == State::InSession);
+}
+
+TEST("dialogues 4.2 hôte : DialogState{1001, 1} → HoldNpc{1001, GUID 2}, Info ; {1001, 0} → UnholdNpc") {
+    Session s = host_with_npcs();  // 1000 = GUID 1, 1001 = GUID 2
+    Output out = s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    const auto hold = commands_of<HoldNpc>(out);
+    CHECK(hold.size() == 1 && hold[0]->net_id == 1001u && hold[0]->guid == guid_of(2));
+    CHECK(has_log_at(out, Level::Info, "PNJ 1001 tenu (routine figée) pendant le dialogue de l'invité"));
+    CHECK_EQ(s.held_npc(), 1001u);
+    CHECK(count_of<HoldNpc>(s.tick(1070, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})))) == 0);
+    // Fin d'un autre PNJ : ignorée.
+    out = s.tick(1080, host_world({}, false), reliable(encode_r(proto::DialogState{1000, 0})));
+    CHECK(count_of<UnholdNpc>(out) == 0);
+    out = s.tick(1090, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 0})));
+    const auto unhold = commands_of<UnholdNpc>(out);
+    CHECK(unhold.size() == 1 && unhold[0]->net_id == 1001u);
+    CHECK(has_log_at(out, Level::Info, "[sync] PNJ 1001 rendu (routine reprise) : fin du dialogue de l'invité"));
+    CHECK_EQ(s.held_npc(), 0u);
+    CHECK_EQ(dialog_tail(host_stats_line(s, 1100)),
+             std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 1 ; DialogState envoyés 0, reçus 4"));
+}
+
+TEST("dialogues 4.2 hôte : un seul PNJ tenu : un nouveau DialogState{…, 1} rend d'abord le précédent") {
+    Session s = host_with_npcs();
+    s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    const Output out = s.tick(1070, host_world({}, false), reliable(encode_r(proto::DialogState{1000, 1})));
+    CHECK(count_of<UnholdNpc>(out) == 1 && count_of<HoldNpc>(out) == 1);
+    CHECK(index_of<UnholdNpc>(out) < index_of<HoldNpc>(out));
+    CHECK_EQ(s.held_npc(), 1000u);
+}
+
+TEST("dialogues 4.2 hôte : PNJ inconnu, mort, en dialogue avec l'hôte → ignoré, compté") {
+    Session s = host_with_npcs();
+    Output out = s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1500, 1})));
+    CHECK(count_of<HoldNpc>(out) == 0);
+    CHECK(has_log(out, "ignoré (PNJ non annoncé)"));
+    World talking = host_world({}, false);
+    talking.dialog_running = true;
+    talking.dialog_partner_ok = true;
+    talking.dialog_partner = guid_of(2);
+    out = s.tick(1070, talking, reliable(encode_r(proto::DialogState{1001, 1})));
+    CHECK(count_of<HoldNpc>(out) == 0);
+    CHECK(has_log(out, "ignoré (PNJ en dialogue avec l'hôte)"));
+    out = s.tick(1080, talking, reliable(encode_r(proto::DialogState{1000, 1})));  // autre PNJ : tenu
+    CHECK(count_of<HoldNpc>(out) == 1);
+    Session d = host_in_session();
+    d.tick(1050, host_world({npc_at(1, 100.0f)}), {});
+    d.tick(1100, host_world({npc_at(1, 100.0f, 0, false)}), {});  // Death{1000}
+    out = d.tick(1110, host_world({}, false), reliable(encode_r(proto::DialogState{1000, 1})));
+    CHECK(count_of<HoldNpc>(out) == 0);
+    CHECK(has_log(out, "ignoré (PNJ mort)"));
+}
+
+TEST("dialogues 4.2 hôte : PNJ tenu mort ou retiré de la sélection → UnholdNpc") {
+    Session s = host_in_session();
+    s.tick(1050, host_world({npc_at(1, 100.0f), npc_at(2, 200.0f)}), {});  // 1000, 1001
+    s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1000, 1})));
+    Output out = s.tick(1100, host_world({npc_at(1, 100.0f, 0, false), npc_at(2, 200.0f)}), {});  // Death{1000}
+    auto unhold = commands_of<UnholdNpc>(out);
+    CHECK(unhold.size() == 1 && unhold[0]->net_id == 1000u);
+    CHECK(has_log(out, "[sync] PNJ 1000 rendu (routine reprise) : mort"));
+    s.tick(1110, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    NpcState far = npc_at(2, 200.0f);
+    far.pose.z += 10000.0f;  // hors du rayon
+    out = s.tick(1150, host_world({far}), {});
+    unhold = commands_of<UnholdNpc>(out);
+    CHECK(unhold.size() == 1 && unhold[0]->net_id == 1001u);
+    CHECK_EQ(s.held_npc(), 0u);
+}
+
+TEST("dialogues 4.2 hôte : 60 s sans fin → UnholdNpc, Warn ; fin de session → UnholdNpc") {
+    Session s = host_with_npcs();
+    s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    Output out;
+    std::uint64_t t = 1060;
+    for (; t < 1060 + kDialogHoldTimeoutMs - 1; t += 3000) {
+        out = s.tick(t, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
+        CHECK(count_of<UnholdNpc>(out) == 0);
+    }
+    out = s.tick(1060 + kDialogHoldTimeoutMs, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
+    CHECK(count_of<UnholdNpc>(out) == 1);
+    CHECK(has_log_at(out, Level::Warn, "[sync] PNJ 1001 rendu (routine reprise) : 60 s sans activité du dialogue de l'invité"));
+    CHECK_EQ(s.held_npc(), 0u);
+    Session e = host_with_npcs();
+    e.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    out = e.tick(1070, host_world({}, false), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK(e.state() == State::Ended);
+    const auto unhold = commands_of<UnholdNpc>(out);
+    CHECK(unhold.size() == 1 && unhold[0]->net_id == 1001u);
+}
+
+TEST("dialogues 4.2 hôte : DialogLine{2} → ApplyDialogLine sur l'avatar ; DialogLine{PNJ tenu} → avec son GUID") {
+    Session s = host_with_npcs();
+    // Sans avatar de l'invité : ignoré.
+    Output out = s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogLine{proto::kGuestNetId, 3, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log(out, "ignoré (pas d'avatar de l'invité)"));
+    s.tick(1070, host_world({}, false), reliable(encode_r(spawn_of(proto::kGuestNetId))));
+    out = s.tick(1080, host_world({}, false), reliable(encode_r(proto::DialogLine{proto::kGuestNetId, 3, kSample})));
+    auto apply = commands_of<ApplyDialogLine>(out);
+    CHECK(apply.size() == 1 && apply[0]->net_id == proto::kGuestNetId && apply[0]->output_type == 3);
+    // PNJ non tenu : ignoré ; tenu : rejoué, retrouvé par son GUID.
+    out = s.tick(1090, host_world({}, false), reliable(encode_r(proto::DialogLine{1001, 0, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(has_log(out, "ignoré (PNJ non tenu"));
+    out = s.tick(1100, host_world({}, false),
+                 reliable2(proto::DialogState{1001, 1}, proto::DialogLine{1001, 0, kSample}));
+    apply = commands_of<ApplyDialogLine>(out);
+    CHECK(apply.size() == 1 && apply[0]->net_id == 1001u && apply[0]->guid == guid_of(2) && apply[0]->sample == kSample);
+}
+
+TEST("dialogues 4.2 hôte : dialogues = 0 → DialogState et DialogLine de l'invité ignorés, Info une fois") {
+    Settings off = host_settings();
+    off.dialogues = false;
+    Session s(off);
+    s.tick(0, loaded_world(), {});
+    s.tick(10, loaded_world(), control_from(kGuestA, encode(make_hello())));
+    s.tick(50, host_world({npc_at(1, 100.0f)}), {});
+    Output out = s.tick(60, host_world({}, false), reliable(encode_r(proto::DialogState{1000, 1})));
+    CHECK(count_of<HoldNpc>(out) == 0);
+    CHECK(has_log_at(out, Level::Info, "[sync] DialogState reçus de l'invité mais dialogues inactifs ici"));
+    out = s.tick(70, host_world({}, false), reliable(encode_r(proto::DialogLine{proto::kGuestNetId, 3, kSample})));
+    CHECK(commands_of<ApplyDialogLine>(out).empty());
+    CHECK(!has_log(out, "dialogues inactifs ici"));  // une fois par session
+}
+
+TEST("dialogues 4.2 hôte : répliques toutes les 40 s → tenue gardée au-delà de 60 s, puis 60 s d'inactivité") {
+    Session s = host_with_npcs();
+    s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    std::uint64_t last_line = 1060;
+    for (std::uint64_t t = 4060; t <= 1060 + 3 * 40000; t += 4000) {
+        std::vector<Input> in = reliable(encode_r(proto::Heartbeat{}));
+        if (t - last_line >= 40000) {
+            in = reliable(encode_r(proto::DialogLine{1001, 0, kSample}));
+            last_line = t;
+        }
+        const Output out = s.tick(t, host_world({}, false), in);
+        CHECK(count_of<UnholdNpc>(out) == 0);
+    }
+    CHECK_EQ(s.held_npc(), 1001u);  // 120 s après le début
+    // DialogState{1001, 1} répété : délai relancé aussi.
+    std::uint64_t t = last_line + 50000;
+    for (std::uint64_t u = last_line + 4000; u < t; u += 4000) s.tick(u, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
+    CHECK(count_of<UnholdNpc>(s.tick(t, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})))) == 0);
+    for (std::uint64_t u = t + 4000; u < t + kDialogHoldTimeoutMs; u += 4000) {
+        CHECK(count_of<UnholdNpc>(s.tick(u, host_world({}, false), reliable(encode_r(proto::Heartbeat{})))) == 0);
+    }
+    CHECK_EQ(count_of<UnholdNpc>(s.tick(t + kDialogHoldTimeoutMs, host_world({}, false), reliable(encode_r(proto::Heartbeat{})))), 1u);
+}
+
+TEST("dialogues 4.2 hôte : hôte en dialogue au partenaire illisible → tenue refusée ; hôte qui parle au PNJ tenu → rendu") {
+    Session s = host_with_npcs();
+    World unreadable = host_world({}, false);
+    unreadable.dialog_running = true;
+    unreadable.dialog_partner_ok = false;
+    Output out = s.tick(1060, unreadable, reliable(encode_r(proto::DialogState{1001, 1})));
+    CHECK(count_of<HoldNpc>(out) == 0);
+    CHECK(has_log(out, "ignoré (hôte en dialogue, partenaire illisible)"));
+    s.tick(1070, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    CHECK_EQ(s.held_npc(), 1001u);
+    World talking = host_world({}, false);
+    talking.dialog_running = true;
+    talking.dialog_partner_ok = true;
+    talking.dialog_partner = guid_of(1);  // autre PNJ : tenue gardée
+    CHECK(count_of<UnholdNpc>(s.tick(1080, talking, {})) == 0);
+    talking.dialog_partner = guid_of(2);
+    out = s.tick(1090, talking, {});
+    const auto unhold = commands_of<UnholdNpc>(out);
+    CHECK(unhold.size() == 1 && unhold[0]->net_id == 1001u);
+    CHECK(has_log(out, "[sync] PNJ 1001 rendu (routine reprise) : PNJ en dialogue avec l'hôte"));
+    CHECK_EQ(s.held_npc(), 0u);
+}
+
+TEST("dialogues 4.2 : LocalDialogNpcLost → hôte : tenue oubliée (Warn) ; invité : dialogue clos (Warn, DialogState{…, 0})") {
+    Session s = host_with_npcs();
+    s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    Output out = s.tick(1070, host_world({}, false), {LocalDialogNpcLost{1000}});  // pas le PNJ tenu
+    CHECK_EQ(s.held_npc(), 1001u);
+    out = s.tick(1080, host_world({}, false), {LocalDialogNpcLost{1001}});
+    CHECK_EQ(s.held_npc(), 0u);
+    CHECK(count_of<UnholdNpc>(out) == 0);
+    CHECK(has_log_at(out, Level::Warn, "PNJ 1001 : tenue impossible ou perdue chez l'hôte"));
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), {LocalDialogState{1001, true}});
+    out = g.tick(410, loaded_world(), {LocalDialogNpcLost{1001}});
+    CHECK_EQ(g.freed_replica(), 0u);
+    CHECK(has_log_at(out, Level::Warn, "PNJ 1001 : libération impossible chez l'invité"));
+    const auto sent = sent_of<proto::DialogState>(out);
+    CHECK(sent.size() == 1 && sent[0].npc_net_id == 1001u && sent[0].active == 0);
+    // Fin tardive de ce dialogue déjà clos : Debug, non comptée.
+    out = g.tick(420, loaded_world(), {LocalDialogState{1001, false}});
+    CHECK(has_log_at(out, Level::Debug, "ignoré (pas le dialogue en cours)"));
+    CHECK_EQ(dialog_tail(guest_stats_line(g, 600)),
+             std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 0 ; DialogState envoyés 2, reçus 0"));
 }

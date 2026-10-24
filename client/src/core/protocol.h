@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 16 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 17 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 16;
+inline constexpr std::uint16_t kProtocolVersion = 17;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -56,7 +56,8 @@ enum class MsgType : std::uint8_t {
     Weapon = 27,       // v7 (story 3.2)
     Armor = 28,        // v8 (story 3.2c)
     NpcAttack = 29,    // v15 (story 3.8)
-    DialogLine = 30,   // v16 (story 4.1)
+    DialogLine = 30,   // v16 (story 4.1) ; v17 : aussi invité → hôte (story 4.2)
+    DialogState = 31,  // v17 (story 4.2)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -219,23 +220,33 @@ struct NpcAttack {
     std::uint32_t target_net_id = 0;  // 1 héros de l'hôte, 2 avatar invité, ≥ 1000 PNJ, 0 = aucune / inconnue
 };
 
-// Réplique d'un dialogue de l'hôte (v16, story 4.1) : hôte → invité, fiable, 12 à 135 octets.
-// L'invité la rejoue sur l'entité du locuteur (sStartOutput puis StartFacialAni), sans dialogue.
-// Le décodeur refuse (BadValue) un locuteur autre que 1 ou ≥ 1000, un type > 3 et un échantillon
-// invalide (valid_dialog_sample) ; l'encodeur refuse les mêmes valeurs.
+// Réplique d'un dialogue (v16, story 4.1 ; v17, story 4.2 : les deux sens), fiable, 12 à 135 octets.
+// Hôte → invité : locuteur 1 (son héros) ou ≥ 1000 (PNJ annoncé) ; invité → hôte : locuteur 2 (son
+// héros) ou le PNJ de son dialogue en cours (DialogState). Le pair la rejoue sur l'entité du locuteur
+// (sStartOutput puis StartFacialAni), sans dialogue. Le décodeur refuse (BadValue) un locuteur autre
+// que 1, 2 ou ≥ 1000, un type > 3 et un échantillon invalide (valid_dialog_sample) ; l'encodeur
+// refuse les mêmes valeurs. Le sens (1 de l'hôte, 2 de l'invité) est vérifié par la session.
 inline constexpr std::uint8_t kMaxDialogOutputType = 3;  // gEOutputType vus : 0 à 3
 inline constexpr std::size_t kMinDialogSample = 5;  // nom de base non vide + « .wav »
 inline constexpr std::size_t kMaxDialogSample = 128;
 struct DialogLine {
-    std::uint32_t speaker_net_id = 0;  // 1 héros de l'hôte, ≥ 1000 PNJ annoncé
+    std::uint32_t speaker_net_id = 0;  // 1 héros de l'hôte, 2 héros de l'invité (v17), ≥ 1000 PNJ annoncé
     std::uint8_t output_type = 0;      // gEOutputType brut, 0 à 3
     std::string sample;                // nom du fichier voix, ex. « INFO_….wav »
 };
 // Échantillon acceptable : 5 à 128 octets, caractères [A-Za-z0-9_%.] seulement, sans « .. » (aucun
 // chemin), suffixe « .wav » précédé d'un nom de base non vide. Utilisé à l'encodage, au décodage et par l'émetteur avant l'envoi.
 bool valid_dialog_sample(const std::string& sample);
-// Locuteur acceptable : 1 (héros de l'hôte) ou ≥ 1000 (PNJ).
+// Locuteur acceptable : 1 (héros de l'hôte), 2 (héros de l'invité, v17) ou ≥ 1000 (PNJ).
 bool valid_dialog_speaker(std::uint32_t net_id);
+
+// Début ou fin d'un dialogue de l'invité avec une réplique de PNJ (v17, story 4.2) : invité → hôte,
+// fiable, 6 octets. L'hôte tient ce PNJ (routine figée) pendant le dialogue, puis le rend. Le
+// décodeur refuse (BadValue) un NetId < 1000 et un `active` autre que 0 ou 1 ; l'encodeur aussi.
+struct DialogState {
+    std::uint32_t npc_net_id = 0;  // ≥ 1000 : PNJ annoncé, partenaire du dialogue de l'invité
+    std::uint8_t active = 0;       // 1 : dialogue commencé, 0 : fini
+};
 
 // Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,
 // valeur, durée) ou SetPlaySpeed(type, valeur). Daté comme Motion, rejoué au même instant.
@@ -277,7 +288,7 @@ struct Armor {
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
 using ReliableMessage =
     std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon, Armor,
-                 HitRequest, HitOnGuest, Respawn, NpcAttack, DialogLine>;
+                 HitRequest, HitOnGuest, Respawn, NpcAttack, DialogLine, DialogState>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,
@@ -287,7 +298,7 @@ enum class DecodeError : std::uint8_t {
     UnsupportedVersion,  // Hello d'une autre version du protocole (lire peek_hello_version)
     BadLength,           // longueur de texte hors bornes
     TrailingBytes,       // octets après la fin du message
-    BadValue,            // champ hors de son domaine (Motion, MotionParam, DialogLine, nombre d'entités d'un snapshot)
+    BadValue,            // champ hors de son domaine (Motion, MotionParam, DialogLine, DialogState, nombre d'entités d'un snapshot)
 };
 
 template <typename Message>

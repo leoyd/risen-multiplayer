@@ -183,6 +183,14 @@ void write(Writer& w, const DialogLine& m) {
     w.str8(m.sample);
 }
 
+void write(Writer& w, const DialogState& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::DialogState));
+    w.u32(m.npc_net_id);
+    w.u8(m.active);
+}
+
+bool valid(const DialogState& m) { return m.npc_net_id >= kFirstNpcNetId && m.active <= 1; }
+
 bool valid(const DialogLine& m) {
     return valid_dialog_speaker(m.speaker_net_id) && m.output_type <= kMaxDialogOutputType &&
            valid_dialog_sample(m.sample);
@@ -405,6 +413,14 @@ DecodeError read(Reader& r, DialogLine& m) {
     return valid(m) ? DecodeError::None : DecodeError::BadValue;
 }
 
+DecodeError read(Reader& r, DialogState& m) {
+    m.npc_net_id = r.u32();
+    m.active = r.u8();
+    const DecodeError e = r.finish();
+    if (e != DecodeError::None) return e;
+    return valid(m) ? DecodeError::None : DecodeError::BadValue;
+}
+
 DecodeError read(Reader& r, Respawn& m) {
     m.net_id = r.u32();
     m.x = r.f32();
@@ -457,7 +473,9 @@ bool valid_dialog_sample(const std::string& sample) {
     return sample.compare(sample.size() - kSuffixLen, kSuffixLen, kSuffix) == 0;
 }
 
-bool valid_dialog_speaker(std::uint32_t net_id) { return net_id == kHostNetId || net_id >= kFirstNpcNetId; }
+bool valid_dialog_speaker(std::uint32_t net_id) {
+    return net_id == kHostNetId || net_id == kGuestNetId || net_id >= kFirstNpcNetId;
+}
 
 bool encode_control(const ControlMessage& message, std::vector<std::uint8_t>& out) {
     if (const Hello* hello = std::get_if<Hello>(&message); hello != nullptr && !valid(*hello)) return false;
@@ -479,6 +497,7 @@ bool encode_reliable(const ReliableMessage& message, std::vector<std::uint8_t>& 
         return false;
     }
     if (const DialogLine* dl = std::get_if<DialogLine>(&message); dl != nullptr && !valid(*dl)) return false;
+    if (const DialogState* ds = std::get_if<DialogState>(&message); ds != nullptr && !valid(*ds)) return false;
     if (const Weapon* wp = std::get_if<Weapon>(&message); wp != nullptr && !in_bounds(wp->name, 0, kMaxWeaponName)) {
         return false;
     }
@@ -525,6 +544,7 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
         case MsgType::Respawn: return decode_as<Respawn, ReliableMessage>(r);
         case MsgType::NpcAttack: return decode_as<NpcAttack, ReliableMessage>(r);
         case MsgType::DialogLine: return decode_as<DialogLine, ReliableMessage>(r);
+        case MsgType::DialogState: return decode_as<DialogState, ReliableMessage>(r);
         case MsgType::MotionParam: return decode_as<MotionParam, ReliableMessage>(r);
         case MsgType::Weapon: return decode_as<Weapon, ReliableMessage>(r);
         case MsgType::Armor: return decode_as<Armor, ReliableMessage>(r);

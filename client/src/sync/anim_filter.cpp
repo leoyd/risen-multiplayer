@@ -49,6 +49,37 @@ void AnimFilter::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     entities_.clear();
     npc_last_.clear();
+    held_routines_.clear();
+}
+
+bool AnimFilter::set_freed(const void* entity, bool freed) {
+    if (entity == nullptr) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (TrackedEntity& e : entities_) {
+        if (e.entity == entity && e.role == EntityRole::NpcReplica) {
+            e.freed = freed;
+            return true;
+        }
+    }
+    return false;
+}
+
+void AnimFilter::hold_routine(const void* routine_ps) {
+    if (routine_ps == nullptr) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (std::find(held_routines_.begin(), held_routines_.end(), routine_ps) == held_routines_.end()) {
+        held_routines_.push_back(routine_ps);
+    }
+}
+
+void AnimFilter::release_routine(const void* routine_ps) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    held_routines_.erase(std::remove(held_routines_.begin(), held_routines_.end(), routine_ps), held_routines_.end());
+}
+
+std::size_t AnimFilter::held_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return held_routines_.size();
 }
 
 std::size_t AnimFilter::tracked_count() const {
@@ -94,7 +125,7 @@ bool AnimFilter::find_by_entity(const void* entity, TrackedEntity& out) const {
 
 bool AnimFilter::blocks_locked(const void* ptr) const {
     for (const TrackedEntity& e : entities_) {
-        if (e.role == EntityRole::LocalHero || e.role == EntityRole::NpcCapture) continue;
+        if (e.role == EntityRole::LocalHero || e.role == EntityRole::NpcCapture || e.freed) continue;
         if (e.animation_ps == ptr || e.wrapper == ptr) return true;
     }
     return false;
@@ -183,10 +214,15 @@ bool AnimFilter::blocks_routine(const void* routine_ps) {
     if (routine_ps == nullptr) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     for (const TrackedEntity& e : entities_) {
-        if (e.role == EntityRole::NpcReplica && e.routine_ps == routine_ps) {
+        if (e.role == EntityRole::NpcReplica && !e.freed && e.routine_ps == routine_ps) {
             ++routine_blocked_;
             return true;
         }
+    }
+    // Story 4.2, hôte : PNJ tenu pendant le dialogue de l'invité.
+    if (std::find(held_routines_.begin(), held_routines_.end(), routine_ps) != held_routines_.end()) {
+        ++routine_blocked_;
+        return true;
     }
     return false;
 }

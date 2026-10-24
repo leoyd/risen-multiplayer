@@ -29,6 +29,14 @@
 //   - invité : attack fixe la cible de la réplique (SetCurrentTarget) puis lance le mouvement
 //     (StartMove), hors garde de rejeu : l'animation locale reste bloquée par le registre.
 //
+// - Dialogues de l'invité (story 4.2) :
+//   - invité : set_freed libère la réplique partenaire de son dialogue (registre : ni routine ni
+//     animations bloquées, AnimFilter::set_freed) puis la re-fige ; libérée, move, set_hp, play,
+//     play_param et attack sont sans effet ; die la re-fige d'abord. Journal debug des transitions de
+//     PSDialog::IsBeingTalkedTo des répliques (H1 : la demande de dialogue passe-t-elle avec l'IA figée ?) ;
+//   - hôte : hold fige la routine du PNJ de ce GUID (AnimFilter::hold_routine, sans rôle de réplique),
+//     unhold la rend ; validate rend un PNJ tenu perdu, release_all les rend tous.
+//
 // Tout est appelé depuis la frame (hook OnProcess, AD-2). Les erreurs sont journalisées ;
 // aucune ne remonte.
 #pragma once
@@ -97,6 +105,21 @@ void release_all(const std::string& cause);
 bool find_entity(const protocol::Guid& guid, void*& out);
 // Invité : entité de la réplique `net_id` (nul si inconnue ou morte). Frame seulement, jamais gardée.
 void* replica_entity(std::uint32_t net_id);
-std::size_t count();  // répliques (invité), PNJ capturés ou à capturer (hôte)
+// Story 4.2, invité : NetId de la réplique vivante d'entité `entity` (0 si ce n'en est pas une).
+std::uint32_t replica_net_id(const void* entity);
+// Story 4.2, invité : libère (`freed`) ou re-fige la réplique `net_id` (FreeReplica). Inconnue ou
+// morte : sans effet (journalisé en debug).
+void set_freed(std::uint32_t net_id, bool freed);
+// Story 4.2, invité : transitions de PSDialog::IsBeingTalkedTo de chaque réplique, en debug seulement
+// (`running` : InfoSystem::IsRunning de l'invité à cette frame, pour le journal).
+void log_talk_states(bool running);
+// Story 4.2, hôte : tenir le PNJ de ce GUID (routine figée) pendant le dialogue de l'invité, le rendre.
+void hold(std::uint32_t net_id, const protocol::Guid& guid);
+void unhold(std::uint32_t net_id);
+// Story 4.2 : PNJ que hold (GUID introuvable, pas de PS de routine), validate (PNJ tenu perdu) ou
+// set_freed(…, true) (réplique absente ou hors registre) n'ont pas pu tenir ou libérer depuis le dernier
+// appel → LocalDialogNpcLost, pour que la session oublie la tenue ou clôe le dialogue de l'invité.
+void drain_lost(std::vector<core::session::Input>& out);
+std::size_t count();  // répliques (invité), PNJ capturés, à capturer ou tenus (hôte)
 
 }  // namespace mp::sync::npc

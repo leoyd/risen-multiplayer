@@ -5,7 +5,7 @@ Invité Risen Multiplayer scriptable, écrit en Go, **jamais livré**. Il sert �
 machine. Il suit [`protocol/PROTOCOL.md`](../../protocol/PROTOCOL.md), §8 « Règles de session »
 compris.
 
-- `protocol/` : codec v16 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
+- `protocol/` : codec v17 écrit à partir de `PROTOCOL.md` (mêmes erreurs que le C++ :
   `ErrTruncated`, `ErrUnknownChannel`, `ErrUnknownType`, `ErrUnsupportedVersion`,
   `ErrBadLength`, `ErrTrailingBytes`, `ErrBadValue`, plus `PeekHelloVersion`), vérifié contre
   `protocol/vectors/`.
@@ -79,7 +79,13 @@ reçu un (ou avec `--hit-interval`).
 
 Dialogues (v16, story 4.1) : chaque `DialogLine` reçu de l'hôte est journalisé
 `<- DialogLine locuteur=N type=T échantillon=S` (locuteur 1 = héros de l'hôte, ≥ 1000 = PNJ) et compté
-au bilan final `Bilan dialogues : DialogLine reçus=…`, jamais rejoué.
+au bilan final `Bilan dialogues : DialogLine reçus=… envoyés=… DialogState envoyés=…`, jamais rejoué.
+
+Dialogues de l'invité (v17, story 4.2) : `--dialog-every <durée>` commence un dialogue à cette cadence
+avec `--dialog-npc <NetId>` ou, par défaut, le premier PNJ annoncé et vivant (`-> DialogState pnj=N
+actif=1`, puis `-> DialogLine locuteur=2 type=3 …` et `-> DialogLine locuteur=N type=0 …`), et le finit
+une période plus tard (`-> DialogState pnj=N actif=0`). Chez l'hôte : PNJ tenu puis rendu, répliques
+rejouées sur l'avatar et le PNJ. Un NetId non annoncé (`--dialog-npc 4242`) teste le refus de l'hôte.
 
 Attaques des PNJ (v15, story 3.8) : chaque `NpcAttack` reçu de l'hôte est journalisé
 `<- NpcAttack netid=N move=M cible=C` (cible 1 = héros de l'hôte, 2 = avatar de l'invité, ≥ 1000 = PNJ,

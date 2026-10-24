@@ -38,8 +38,9 @@ struct Config {
     // application (invité), coups natifs sur le héros invité tous bloqués : interrupteur de
     // diagnostic, comportement de la story 3.6 (recul générique seul).
     bool native_attacks = true;
-    // Story 4.1 : répliques de dialogue de l'hôte vues par l'invité (DialogLine, protocole v16). 0 = ni
-    // émission (hôte) ni rejeu (invité) : interrupteur de diagnostic.
+    // Story 4.1 : répliques de dialogue de l'hôte vues par l'invité (DialogLine, protocole v16) ; story
+    // 4.2 (v17) : aussi celles de l'invité, avec tenue du PNJ chez l'hôte et libération de sa réplique
+    // chez l'invité. 0 = ni émission, ni rejeu, ni tenue, ni libération : interrupteur de diagnostic.
     bool dialogues = true;
     // Overlay à l'écran (rôle, pseudo, état de session), détour de IDirect3DDevice9::Present.
     // 0 = pas de détour.

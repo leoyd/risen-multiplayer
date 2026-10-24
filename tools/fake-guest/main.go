@@ -23,7 +23,7 @@ func main() {
 
 const usageText = `Usage : fake-guest --host <ipv4> [options]
 
-Faux invité Risen Multiplayer (protocole v16, protocol/PROTOCOL.md §8).
+Faux invité Risen Multiplayer (protocole v17, protocol/PROTOCOL.md §8).
 Envoie Hello toutes les 500 ms (abandon après 10 s), puis tient la session :
 Heartbeat à 1 Hz, timeout après 5 s sans datagramme de l'hôte (--strict-timeout : sans message).
 
@@ -48,6 +48,10 @@ cette durée après chaque Respawn reçu. Chaque Respawn de l'hôte est journali
 pose=(x, y, z, lacet) », devient la pose simulée et reçoit son accusé (« -> Respawn accusé tick=T »).
 Dialogues (v16) : chaque DialogLine de l'hôte est journalisé « <- DialogLine locuteur=N type=T
 échantillon=S » et compté au bilan (Bilan dialogues : DialogLine reçus=), jamais rejoué.
+Dialogues de l'invité (v17, story 4.2) : --dialog-every <durée> commence un dialogue à cette cadence
+(« -> DialogState pnj=N actif=1 », puis DialogLine{2, 3, …} et DialogLine{N, 0, …}) et le finit une
+période plus tard (« -> DialogState pnj=N actif=0 ») ; N = --dialog-npc <NetId>, ou 0 : premier PNJ
+présent et vivant (NetId non vérifié, pour tester le refus de l'hôte).
 Attaques des PNJ (v15) : chaque NpcAttack de l'hôte est journalisé « <- NpcAttack netid=N move=M
 cible=C » et compté au bilan (NpcAttack reçus=), jamais appliqué.
 Attaques du héros invité (v15, story 3.8b) : --attack-move <M> envoie NpcAttack{2, M, cible} juste
@@ -112,6 +116,8 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	hitTarget := fs.Uint("hit-target", 0, "NetId visé par les HitRequest (0 = premier PNJ présent et vivant)")
 	attackMove := fs.Uint("attack-move", 0, "mouvement (gECombatMove) d'un NpcAttack{2} envoyé avant chaque HitRequest (0 = aucun)")
 	attackNetID := fs.Uint("attack-netid", 2, "NetId des NpcAttack de --attack-move (autre que 2 : refus de l'hôte attendu)")
+	dialogEvery := fs.Duration("dialog-every", 0, "début puis fin d'un dialogue de l'invité (DialogState, DialogLine) à cette cadence, ex. 5s (0 = jamais)")
+	dialogNpc := fs.Uint("dialog-npc", 0, "NetId du PNJ des dialogues de --dialog-every (0 = premier PNJ présent et vivant)")
 	dieEvery := fs.Duration("die-every", 0, "Death{2} (à terre) cette durée après l'entrée en session, puis après chaque Respawn reçu, ex. 10s (0 = jamais)")
 	strictTimeout := fs.Bool("strict-timeout", false, "timeout compté sur les seuls messages de l'hôte (contrôle, messages fiables rendus par KCP, snapshots), pas sur les acquittements KCP")
 	fs.Usage = func() {
@@ -161,6 +167,12 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	}
 	if *dieEvery < 0 {
 		return usageError("--die-every négative")
+	}
+	if *dialogEvery < 0 {
+		return usageError("--dialog-every négative")
+	}
+	if *dialogNpc > math.MaxUint32 || (*dialogNpc != 0 && *dialogNpc < uint(protocol.FirstNpcNetId)) {
+		return usageError("--dialog-npc hors bornes (0 ou au moins %d)", protocol.FirstNpcNetId)
 	}
 	if *hitTarget > math.MaxUint32 {
 		return usageError("--hit-target hors bornes (%d)", *hitTarget)
@@ -243,6 +255,8 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 		AttackMove:  uint32(*attackMove),
 		AttackNetId: uint32(*attackNetID),
 		DieEvery:    *dieEvery,
+		DialogEvery: *dialogEvery,
+		DialogNpc:   uint32(*dialogNpc),
 
 		StrictTimeout: *strictTimeout,
 	}
