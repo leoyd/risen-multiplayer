@@ -71,7 +71,13 @@ void detour_routine_on_process(void* routine_ps) {
 // Session (story 3.3) : IA figée des répliques de PNJ. Le détour ne fait que lire le registre
 // (comparaison sous le verrou de l'AnimFilter, AD-2) ; sync/npc seul y inscrit les répliques.
 void detour_routine_on_process_session(void* routine_ps) {
-    if (!sync::anim_filter().blocks_routine(routine_ps)) g_original_routine_on_process(routine_ps);
+    if (!sync::anim_filter().blocks_routine(routine_ps)) {
+        g_original_routine_on_process(routine_ps);
+        return;
+    }
+    // Story 4.1 : IA figée, mais la voix d'une réplique de dialogue rejouée doit passer : seul le canal
+    // de sortie de l'unité est mis à jour (pas de ProcessScript, donc pas d'IA).
+    if (sync::dialogue::active()) game::pump_routine_output(routine_ps);
 }
 
 // Story 3.5 (Q8) : point d'accroche des dégâts, gCDamage_PS::DoDamage(eCEntity*). sync/hits décide :

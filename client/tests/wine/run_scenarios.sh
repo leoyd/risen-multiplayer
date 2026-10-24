@@ -214,6 +214,7 @@ for entry in 'Script.dll|?ms_arrNPCs@Entity@@2V?$bTObjArray@VEntity@@@@A' 'Scrip
     'Game.dll|?GetSelfEntity@gCScriptProcessingUnit@@QEAAPEAVeCGeometryEntity@@XZ' \
     'Game.dll|?sStartOutput@gCScriptProcessingUnit@@KA_NPEAVeCGeometryEntity@@AEBVbCString@@W4gEOutputType@@@Z' \
     'Game.dll|?sIsOutputPlaying@gCScriptProcessingUnit@@KA_NPEAVeCGeometryEntity@@@Z' \
+    'Game.dll|?IsOutputPlaying@gCScriptProcessingUnit@@QEBA_NXZ' 'Game.dll|?UpdateChannel@gCScriptProcessingUnit@@IEAAXXZ' \
     'Game.dll|?GetSystem@gCHudModule2@@SAPEAVgCHudSystem2@@XZ' \
     'Game.dll|?ShowSubtitle@gCHudSystem2@@QEAAXAEBVbCUnicodeString@@@Z' \
     'Script.dll|?IsRunning@InfoSystem@@SA_NXZ' 'Script.dll|?GetNPC@InfoSystem@@SA?AVEntity@@XZ' \

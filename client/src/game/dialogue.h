@@ -70,6 +70,11 @@ bool info_say_speaker(Entity& out);
 
 // --- Parole --------------------------------------------------------------------------------
 // gCScriptProcessingUnit::sIsOutputPlaying(entité) : ressource de sortie en attente ou en cours.
+// Story 4.1 : canal de voix d'une entité dont l'IA est figée (routine sautée par le registre) :
+// si son unité (gCScriptRoutine_PS + 0x118) a une sortie en cours, UpdateChannel (crée le canal et
+// joue la voix, comme ProcessScript). Depuis le détour de gCScriptRoutine_PS::OnProcess (même
+// thread). False sur SEH ou bloc non résolu.
+bool pump_routine_output(void* routine_ps);
 bool output_playing(const Entity& e, bool& out);
 // gCScriptProcessingUnit::sStartOutput(entité, échantillon, type) : passe par le détour (sonde ou
 // session : sync/dialogue ignore ces copies chez l'invité).

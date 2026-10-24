@@ -46,6 +46,12 @@ constexpr const char* kGetSelfEntity = "?GetSelfEntity@gCScriptProcessingUnit@@Q
 constexpr const char* kSStartOutput =
     "?sStartOutput@gCScriptProcessingUnit@@KA_NPEAVeCGeometryEntity@@AEBVbCString@@W4gEOutputType@@@Z";
 constexpr const char* kSIsOutputPlaying = "?sIsOutputPlaying@gCScriptProcessingUnit@@KA_NPEAVeCGeometryEntity@@@Z";
+// Story 4.1 (test en jeu du 2026-10-24) : la voix d'une réplique n'est jouée que par
+// UpdateChannel (canal audio + eCSoundResource2::Play3D), appelée depuis ProcessScript, donc depuis
+// gCScriptRoutine_PS::OnProcess, que le registre saute pour les répliques de PNJ (IA figée).
+constexpr const char* kSpuIsOutputPlaying = "?IsOutputPlaying@gCScriptProcessingUnit@@QEBA_NXZ";
+constexpr const char* kSpuUpdateChannel = "?UpdateChannel@gCScriptProcessingUnit@@IEAAXXZ";
+constexpr std::size_t kRoutineSpuOffset = 0x118;  // gCScriptProcessingUnit dans gCScriptRoutine_PS
 constexpr const char* kHudGetSystem = "?GetSystem@gCHudModule2@@SAPEAVgCHudSystem2@@XZ";
 constexpr const char* kHudShowSubtitle = "?ShowSubtitle@gCHudSystem2@@QEAAXAEBVbCUnicodeString@@@Z";
 constexpr const char* kInfoIsRunning = "?IsRunning@InfoSystem@@SA_NXZ";
@@ -74,6 +80,8 @@ struct DialogueAbi {
     SpuGetSelfFn spu_get_self = nullptr;
     SStartOutputFn s_start_output = nullptr;
     SIsOutputPlayingFn s_is_output_playing = nullptr;
+    bool (*spu_is_output_playing)(const void* spu) = nullptr;
+    void (*spu_update_channel)(void* spu) = nullptr;
     HudGetSystemFn hud_get_system = nullptr;
     HudShowSubtitleFn hud_show_subtitle = nullptr;
     InfoIsRunningFn info_is_running = nullptr;
@@ -202,6 +210,8 @@ bool resolve_dialogue(const char*& missing) {
                     lookup(game, kGetSelfEntity, a.spu_get_self, missing) &&
                     lookup(game, kSStartOutput, a.s_start_output, missing) &&
                     lookup(game, kSIsOutputPlaying, a.s_is_output_playing, missing) &&
+                    lookup(game, kSpuIsOutputPlaying, a.spu_is_output_playing, missing) &&
+                    lookup(game, kSpuUpdateChannel, a.spu_update_channel, missing) &&
                     lookup(game, kHudGetSystem, a.hud_get_system, missing) &&
                     lookup(game, kHudShowSubtitle, a.hud_show_subtitle, missing) &&
                     lookup(script, kInfoIsRunning, a.info_is_running, missing) &&
@@ -325,6 +335,17 @@ bool info_say_speaker(Entity& out) {
 }
 
 // --- Parole --------------------------------------------------------------------------------
+
+bool pump_routine_output(void* routine_ps) {
+    if (!g_resolved || routine_ps == nullptr) return false;
+    __try {
+        void* spu = static_cast<char*>(routine_ps) + kRoutineSpuOffset;
+        if (g_abi.spu_is_output_playing(spu)) g_abi.spu_update_channel(spu);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 
 bool output_playing(const Entity& e, bool& out) {
     out = false;
