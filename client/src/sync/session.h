@@ -32,4 +32,7 @@ void on_frame() noexcept;
 using OverlaySink = void (*)(const std::string& utf8, std::uint32_t argb);
 void set_overlay_sink(OverlaySink sink);
 
+// Diagnostic (trace_assess = 1) : détours de sync/assess_trace posés ; la frame en vide l'anneau.
+void set_assess_trace(bool active);
+
 }  // namespace mp::sync::session

@@ -181,6 +181,14 @@ ConfigResult parse_config(std::string_view text) {
             } else {
                 return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
             }
+        } else if (key == "trace_assess") {
+            if (value.empty() || value == "0") {
+                r.config.trace_assess = false;  // `trace_assess =` : valeur par défaut
+            } else if (value == "1") {
+                r.config.trace_assess = true;
+            } else {
+                return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
+            }
         } else if (key == "overlay") {
             if (value.empty() || value == "1") {
                 r.config.overlay = true;  // `overlay =` : valeur par défaut

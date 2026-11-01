@@ -298,6 +298,8 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
             on_local_dialog_state(*ds, out);
         } else if (const auto* nl = std::get_if<LocalDialogNpcLost>(&in)) {
             on_dialog_npc_lost(nl->net_id, out);
+        } else if (const auto* nw = std::get_if<LocalNpcWeapon>(&in)) {  // story 3.8c
+            on_local_npc_weapon(*nw, out);
         } else {
             on_local_param(now, std::get<LocalParam>(in), out);
         }
@@ -771,6 +773,7 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     held_npc_ = 0;
     host_engaged_sent_ = 0;            // story 4.3
     host_dialog_npc_ = 0;
+    npc_weapon_sent_.clear();          // story 3.8c
     held_pending_.clear();
     held_interp_.reset();
     reset_respawn();                   // story 3.7
@@ -941,6 +944,7 @@ void Session::select_npcs(const World& world, std::vector<proto::SnapshotEntity>
             Bytes bytes;
             if (proto::encode_reliable(sp, bytes)) out.commands.push_back(SendReliable{std::move(bytes)});
             ++npc_.spawned;
+            npc_weapon_sent_.erase(id);  // story 3.8c : objet en main renvoyé après chaque annonce
             char dist[32];
             std::snprintf(dist, sizeof dist, "%.1f m", static_cast<double>(kept[i].d) / 100.0);
             out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(id) + " annoncé (Spawn) : GUID " +
@@ -1815,6 +1819,7 @@ void Session::release_npcs(const std::string& why, Output& out) {
     guest_dialog_npc_ = 0;       // story 4.2, invité : ReleaseNpc la rend au jeu, libérée ou non
     if (held_npc_ != 0) unhold_npc(why, Level::Info, out);  // story 4.2, hôte
     host_engaged_sent_ = 0;      // story 4.3 : plus de PNJ annoncé, rien à signaler
+    npc_weapon_sent_.clear();    // story 3.8c
     host_dialog_npc_ = 0;
     early_npcs_.clear();         // story 3.4a : entrées en avance sans objet
     set_animated_npcs({}, out);  // hôte (story 3.4) : plus aucun PNJ capturé
@@ -1857,10 +1862,20 @@ void Session::send_snapshot(std::uint64_t now, const World& world, Output& out) 
         f.hp = it != replicas_.end() ? clamp_hp(it->second.last_hp) : 0;  // non lu par l'hôte
         snapshot.entities.push_back(f);
     }
-    Bytes bytes;
-    if (!proto::encode_snapshot(snapshot, bytes)) return;
-    out.commands.push_back(SendSnapshot{std::move(bytes)});
-    ++snap_.sent;
+    // Story 3.4e : découpé en datagrammes de kMaxSnapshotEntities entités au plus, même tick ; le
+    // premier porte le héros. Le récepteur traite chaque entité pour elle-même.
+    const std::size_t total = snapshot.entities.size();
+    for (std::size_t first = 0; first < total; first += proto::kMaxSnapshotEntities) {
+        proto::Snapshot part;
+        part.tick = snapshot.tick;
+        const std::size_t last = std::min(total, first + proto::kMaxSnapshotEntities);
+        part.entities.assign(snapshot.entities.begin() + static_cast<std::ptrdiff_t>(first),
+                             snapshot.entities.begin() + static_cast<std::ptrdiff_t>(last));
+        Bytes bytes;
+        if (!proto::encode_snapshot(part, bytes)) return;
+        out.commands.push_back(SendSnapshot{std::move(bytes)});
+        ++snap_.sent;
+    }
 }
 
 void Session::clear_peer_avatar_state() {
@@ -2149,8 +2164,46 @@ void Session::send_carried(Carried kind, Output& out) {
                                          net_id_text(own_net_id()) + ", " + carried_text(armor, c.local)});
 }
 
+void Session::on_local_npc_weapon(const LocalNpcWeapon& in, Output& out) {
+    if (state_ != State::InSession || settings_.role != Role::Host || !settings_.native_attacks) return;
+    if (npc_active_.count(in.net_id) == 0 || npc_dead_.count(in.net_id) != 0) return;  // pas annoncé ou mort
+    auto it = npc_weapon_sent_.find(in.net_id);
+    if (it != npc_weapon_sent_.end() && it->second == in.name) return;
+    if (it == npc_weapon_sent_.end() && in.name.empty()) {
+        npc_weapon_sent_[in.net_id] = in.name;  // main vide à l'annonce : la réplique l'a aussi
+        return;
+    }
+    Bytes bytes;
+    if (!proto::encode_reliable(proto::Weapon{in.net_id, in.name}, bytes)) return;
+    npc_weapon_sent_[in.net_id] = in.name;
+    out.commands.push_back(SendReliable{std::move(bytes)});
+    out.logs.push_back({Level::Debug, "[sync] Weapon envoyé : PNJ " + std::to_string(in.net_id) + ", " +
+                                          (in.name.empty() ? std::string("main vide") : "« " + in.name + " »")});
+}
+
+void Session::on_npc_weapon(std::uint32_t net_id, const std::string& name, Output& out) {
+    const std::string what = "[sync] Weapon reçu : PNJ " + std::to_string(net_id) + ", " +
+                             (name.empty() ? std::string("main vide") : "« " + name + " »");
+    const auto it = replicas_.find(net_id);
+    const char* why = !settings_.native_attacks          ? "native_attacks = 0"
+                      : it == replicas_.end()            ? "réplique absente"
+                      : it->second.dead || it->second.death_pending ? "réplique morte"
+                                                                   : nullptr;
+    if (why != nullptr) {
+        out.logs.push_back({Level::Debug, what + " : ignoré (" + why + ")"});
+        return;
+    }
+    out.commands.push_back(NpcWeapon{net_id, name});
+    out.logs.push_back({Level::Debug, what});
+}
+
 void Session::on_peer_carried(Carried kind, std::uint32_t net_id, const std::string& name, Output& out) {
     const bool armor = kind == Carried::Armor;
+    // Story 3.8c : chez l'invité, Weapon{NetId ≥ 1000} = objet en main d'un PNJ de l'hôte.
+    if (!armor && settings_.role == Role::Guest && net_id >= proto::kFirstNpcNetId) {
+        on_npc_weapon(net_id, name, out);
+        return;
+    }
     if (net_id != peer_net_id() || !avatar_present_ || avatar_dead_ || death_pending_) {
         out.logs.push_back({Level::Debug, std::string("[sync] ") + carried_message(armor) + " reçu (NetId " +
                                               net_id_text(net_id) + ", " + carried_text(armor, name) + ") : ignoré (" +

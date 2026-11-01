@@ -244,7 +244,8 @@ bool load_config(const std::wstring& dir) {
 // (Script.dll est chargée par la résolution des entités). Un échec laisse le jeu en solo.
 void start_session() {
     // Story 3.5 : damage_hook ; story 3.8 : native_attacks ; story 4.1 : dialogues.
-    if (!mp::win::hooks::install_session(g_config.damage_hook, g_config.native_attacks, g_config.dialogues)) {
+    if (!mp::win::hooks::install_session(g_config.damage_hook, g_config.native_attacks, g_config.dialogues,
+                                         g_config.trace_assess)) {
         mp::log::error("[sync] session impossible : le jeu reste en solo");
         return;
     }

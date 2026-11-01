@@ -68,14 +68,12 @@ bool AnimFilter::set_freed(const void* entity, bool freed) {
 void AnimFilter::hold_routine(const void* routine_ps) {
     if (routine_ps == nullptr) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (std::find(held_routines_.begin(), held_routines_.end(), routine_ps) == held_routines_.end()) {
-        held_routines_.push_back(routine_ps);
-    }
+    held_routines_.insert(routine_ps);
 }
 
 void AnimFilter::release_routine(const void* routine_ps) {
     std::lock_guard<std::mutex> lock(mutex_);
-    held_routines_.erase(std::remove(held_routines_.begin(), held_routines_.end(), routine_ps), held_routines_.end());
+    held_routines_.erase(routine_ps);
 }
 
 std::size_t AnimFilter::held_count() const {
@@ -224,8 +222,8 @@ bool AnimFilter::blocks_routine(const void* routine_ps) {
             return true;
         }
     }
-    // Story 4.2, hôte : PNJ tenu pendant le dialogue de l'invité.
-    if (std::find(held_routines_.begin(), held_routines_.end(), routine_ps) != held_routines_.end()) {
+    // Story 4.2, hôte : PNJ tenu pendant le dialogue de l'invité ; story 3.4e, invité : PNJ natif non annoncé.
+    if (held_routines_.count(routine_ps) != 0) {
         ++routine_blocked_;
         return true;
     }

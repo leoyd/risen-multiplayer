@@ -36,6 +36,8 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 | 4.2 | Dialogue de l'invité vu par l'hôte (`DialogState`, protocole **v17** ; réplique libérée chez l'invité, PNJ tenu chez l'hôte) | fait, **validé en jeu** le 2026-11-01 après correctifs (`64b19f5` : détour d'`AssessTalk`, gestes et pose du partenaire) |
 | 4.3 | PNJ occupé (`DialogState` hôte → invité, protocole **v18**) : demande de dialogue refusée au second joueur, message « *Nom* ne peut pas vous parler, il est occupé. » | fait, **blocage validé en jeu** le 2026-11-01 ; vu au test : garde natif non répliqué réagissant chez l'invité, PNJ sans riposte aux coups de l'avatar |
 | 4.4 | Robustesse (dont la course : demandes croisées au même PNJ) | à faire |
+| 3.4e | Monde de l'invité piloté par l'hôte seul : PNJ natifs non annoncés figés chez l'invité ; rayon 100 m, 200 PNJ (snapshot en plusieurs datagrammes de même tick), 24 animés | testé le 2026-11-01 : plus de garde fantôme chez l'invité, mais **aucune réaction chez l'hôte** aux coups de l'avatar (victime ni gardes) ; `EntityROI` dans `ConfigLocal.xml` **sans effet** (la liste des PNJ vient de `gCInteractionAdmin`, ~40 m), retiré de l'installeur. Trace `trace_assess = 1` (test du 2026-11-01 soir) : la ville réagit bien aux coups de l'avatar (AssessDamage → 1 sur une femme, puis AssessFighter de ~20 PNJ) ; un garde frappé une fois : AssessDamage → 0 (référence de l'hôte à faire). Non commité |
+| 3.8c | Objet en main des PNJ animés transmis à l'invité (`Weapon{NetId ≥ 1000}`, format inchangé) : la réplique attaque avec l'arme de l'hôte au lieu de l'arme naturelle de monstre | fait, tests verts, **installé, pas encore testé en jeu**, non commité |
 
 - **Branches** (rien de poussé) : `main` contient l'epic 3 et la planification de l'epic 4. Travail en cours en chaîne : `story/4-0-spike-j3` → `story/4-1-dialogue-hote-vu-invite` → `story/4-2-dialogue-invite-vu-hote` → `story/4-3-dialogues-simultanes` (branche courante).
 - **Reports nés des tests** (`deferred-work.md`) : PNJ en T-pose en ville chez l'invité (8 PNJ animés seulement, story 3.4c proposée) ; objets tenus par les PNJ non répliqués (balai, story 3.4d proposée).
@@ -55,8 +57,8 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre
 
-1. **Tester la story 4.3** (DLL installée) : un joueur parle à un PNJ, l'autre essaie de lui parler (message « occupé », pas de dialogue), dans les deux sens ; puis deux PNJ différents en même temps. Points à vérifier : rendu du message (`PrintGameLog` type 1) et nom affiché (`GetFocusName`). Procédure : `client/README.md`, section « PNJ occupé ».
-2. Selon le résultat : corriger, commiter la 4.3, puis story 4.4 (robustesse, course des demandes croisées) ; ensuite 3.4c / 3.4d (PNJ de ville).
+1. **Tester 3.8c et 3.4e** (installés, trace allégée active) : l'invité frappe une villageoise ; les gardes qui l'attaquent doivent tenir leur arme chez l'invité comme chez l'hôte (journal invité : `objet en main : « It_… »`). Référence : l'hôte frappe un garde une fois (comparer `AssessDamage` avec le cas de l'avatar).
+2. Selon le résultat : corriger, commiter la 3.4e, puis story 4.4 (robustesse, course des demandes croisées) ; ensuite 3.4c / 3.4d (PNJ de ville).
 3. Fusionner la chaîne 4.0 → 4.3 dans `main`.
 
 ## Points ouverts à vérifier en jeu

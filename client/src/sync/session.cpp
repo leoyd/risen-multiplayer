@@ -7,6 +7,7 @@
 #include "game/entity.h"
 #include "net/transport.h"
 #include "sync/anim_filter.h"
+#include "sync/assess_trace.h"
 #include "sync/avatar.h"
 #include "sync/dialogue.h"
 #include "sync/guest_health.h"
@@ -32,6 +33,9 @@
 namespace mp::sync::session {
 
 namespace {
+
+bool g_assess_trace = false;  // diagnostic, posé par win/hooks avant la première frame
+
 
 namespace cs = mp::core::session;
 
@@ -271,6 +275,10 @@ void execute(cs::Output out) {
                 guest_health::apply_hit(ag->source, ag->damage);
                 continue;
             }
+            if (const auto* nw = std::get_if<cs::NpcWeapon>(&cmd)) {  // story 3.8c : chez l'invité
+                npc::set_weapon(nw->net_id, nw->name);
+                continue;
+            }
             if (const auto* an = std::get_if<cs::ApplyNpcAttack>(&cmd)) {  // story 3.8 : chez l'invité
                 npc::attack(an->net_id, an->move, an->target);
                 continue;
@@ -482,6 +490,7 @@ void frame() {
     if (npc::count() != 0) npc::validate();
     // Story 3.8, hôte : débuts d'attaque des PNJ capturés, entités tout juste revérifiées.
     if (g_role == Role::Host && g_native_attacks && world.loaded() && g_session->state() == cs::State::InSession) {
+        npc::read_weapons(g_inputs);  // story 3.8c : objet en main des PNJ capturés, avant leurs attaques
         npc::detect_attacks(reinterpret_cast<void*>(world.player), g_inputs);
     }
     // Story 3.8b, invité : début d'attaque de son héros (NpcAttack{2} vers l'hôte).
@@ -499,6 +508,7 @@ void frame() {
     } else {
         dialogue::guest_frame(hero, in_session, g_inputs);
         if (in_session) npc::freed_pose(world);  // story 4.2 : pose du partenaire, vers l'hôte
+        if (in_session) npc::freeze_natives(hero);  // story 3.4e : PNJ non annoncés figés
     }
     npc::drain_lost(g_inputs);  // story 4.2 : tenues ou libérations impossibles (frame précédente)
     world.routine_blocked = sync::anim_filter().take_routine_blocked();
@@ -511,6 +521,8 @@ void frame() {
         dialogue::set_busy(hero, nullptr);
     }
     // Story 3.5 : héros, rôle et état vus par le détour des dégâts (hors session dès Ended).
+    if (g_assess_trace) assess_trace::frame(world.loaded() ? reinterpret_cast<void*>(world.player) : nullptr,
+                                            avatar::entity());  // diagnostic
     hits::publish(world.loaded() ? reinterpret_cast<void*>(world.player) : nullptr, g_role,
                   g_session->state() == cs::State::InSession, thread);
     // Filet de sécurité : hors session, aucune réplique ne reste au registre (ReleaseNpc déjà
@@ -564,6 +576,8 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
 }
 
 void set_overlay_sink(OverlaySink sink) { g_overlay_sink.store(sink, std::memory_order_release); }
+
+void set_assess_trace(bool active) { g_assess_trace = active; }
 
 void on_frame() noexcept {
     if (g_session == nullptr || g_broken) return;

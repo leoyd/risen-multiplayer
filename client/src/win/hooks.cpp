@@ -5,6 +5,7 @@
 #include "game/dialogue.h"
 #include "game/entity.h"
 #include "sync/anim_filter.h"
+#include "sync/assess_trace.h"
 #include "sync/avatar.h"
 #include "sync/dialogue.h"
 #include "sync/guest_health.h"
@@ -17,7 +18,10 @@
 
 #include <MinHook.h>
 
+#include <array>
+#include <cstring>
 #include <string>
+#include <utility>
 
 namespace mp::win::hooks {
 
@@ -256,6 +260,58 @@ void detour_wrapper_stop_motion(void* wrapper, int type, float time, bool flag) 
     }
 }
 
+// Trace de diagnostic (trace_assess = 1) : un détour par script Assess* / Do*Damage de Script_Game.dll.
+using ScriptFn4 = long long (*)(void* spu, void* self, void* other, long long arg);
+std::array<ScriptFn4, sync::assess_trace::kMaxScripts> g_trace_originals{};
+
+template <std::size_t I>
+long long detour_trace(void* spu, void* self, void* other, long long arg) {
+    const std::uint32_t token = sync::assess_trace::before(I, spu, self, other, arg);
+    const long long r = g_trace_originals[I](spu, self, other, arg);
+    sync::assess_trace::after(token, r);
+    return r;
+}
+
+template <std::size_t... I>
+std::array<void*, sizeof...(I)> make_trace_detours(std::index_sequence<I...>) {
+    return {reinterpret_cast<void*>(&detour_trace<I>)...};
+}
+
+bool create(void* target, void* detour, void** original, const char* name);
+
+// Scripts de Script_Game.dll à tracer : exports `?Assess…@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z` et
+// `?Do…Damage@@YA_J…`, hors AssessTalk (détour de session). Rend le nombre de détours créés.
+std::size_t install_assess_trace() {
+    HMODULE m = GetModuleHandleW(L"Script_Game.dll");
+    if (m == nullptr) return 0;
+    const auto* base = reinterpret_cast<const unsigned char*>(m);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (dir.VirtualAddress == 0) return 0;
+    const auto* exp = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+    const auto* names = reinterpret_cast<const DWORD*>(base + exp->AddressOfNames);
+    static const auto kDetours = make_trace_detours(std::make_index_sequence<sync::assess_trace::kMaxScripts>{});
+    static constexpr char kSuffix[] = "@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z";
+    std::size_t count = 0;
+    for (DWORD i = 0; i < exp->NumberOfNames && count < kDetours.size(); ++i) {
+        const char* name = reinterpret_cast<const char*>(base + names[i]);
+        const std::size_t len = std::strlen(name);
+        const std::size_t slen = sizeof kSuffix - 1;
+        if (len <= slen || std::strcmp(name + len - slen, kSuffix) != 0) continue;
+        const std::string head(name, len - slen);
+        const bool assess = head.rfind("?Assess", 0) == 0 && head != "?AssessTalk";
+        const bool damage = head.rfind("?Do", 0) == 0 && head.size() > 9 && head.compare(head.size() - 6, 6, "Damage") == 0;
+        if (!assess && !damage) continue;
+        void* target = reinterpret_cast<void*>(GetProcAddress(m, name));
+        if (target == nullptr) continue;
+        if (!create(target, kDetours[count], reinterpret_cast<void**>(&g_trace_originals[count]), name)) continue;
+        sync::assess_trace::set_script_name(count, name);
+        ++count;
+    }
+    return count;
+}
+
 bool create(void* target, void* detour, void** original, const char* name) {
     const MH_STATUS s = MH_CreateHook(target, detour, original);
     if (s != MH_OK) {
@@ -303,7 +359,7 @@ bool install_probe() {
     return true;
 }
 
-bool install_session(bool damage_hook, bool native_attacks, bool dialogues) {
+bool install_session(bool damage_hook, bool native_attacks, bool dialogues, bool trace_assess) {
     const char* missing = nullptr;
     if (!game::resolve_entities(missing)) {
         log::error(std::string("[hooks] session inactive : symbole introuvable : ") + missing);
@@ -407,6 +463,10 @@ bool install_session(bool damage_hook, bool native_attacks, bool dialogues) {
                   "dialogues)");
     }
     sync::dialogue::set_active(dialogue);
+    // Diagnostic (2026-11-01) : scripts de perception tracés (trace_assess = 1).
+    const std::size_t traced = trace_assess ? install_assess_trace() : 0;
+    if (trace_assess) log::info("[hooks] trace des scripts Assess* / Do*Damage : " + std::to_string(traced) + " détours");
+    sync::session::set_assess_trace(traced != 0);
     s = MH_EnableHook(MH_ALL_HOOKS);
     if (s != MH_OK) {
         sync::dialogue::set_active(false);

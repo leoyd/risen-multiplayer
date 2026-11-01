@@ -265,3 +265,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-1-dialogue-hote-vu-invite.md`
   summary: Objets tenus par les PNJ pendant leurs activités (balai de la femme qui balaie, outils) non répliqués chez l'invité. Story proposée 3.4d (objet en main des PNJ animés, sur le modèle de l'arme de l'avatar).
   evidence: test du 2026-10-24 : une femme balaie en ville chez l'hôte, sans balai chez l'invité.
+- source_spec: story 4.3 (test du 2026-11-01)
+  summary: Un PNJ humain (Edgar) ne riposte pas aux coups de l'avatar de l'invité chez l'hôte (PV qui baissent, aucune attaque envoyée), puis tombe à 10 PV et régénère (KO non répliqué). Pendant un dialogue de l'hôte, les coups de l'invité sur son partenaire sont sans effet (DoDamage → 0). Reporté à la demande de l'utilisateur.
+  evidence: journaux du 2026-11-01 17:48 : HitRequest PNJ 1032 → DoDamage 1, PV 480 → 10, aucun NpcAttack de 1032 ; PV de la réplique 10 → 133 chez l'invité.
+- source_spec: story 3.4e (2026-11-01)
+  summary: Avec 200 répliques et 24 animées, davantage de répliques non animées (animations natives bloquées) peuvent glisser en T-pose chez l'invité : la story 3.4c (option A, ne plus bloquer les animations natives d'une réplique non animée) devient plus utile. Loin de l'hôte (hors de son EntityROI), l'invité voit des PNJ figés.
+  evidence: conséquence de conception, à vérifier au test de la 3.4e.

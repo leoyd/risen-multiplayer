@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mp::sync {
@@ -164,7 +165,7 @@ private:
 
     void* local_ = nullptr;
     std::vector<TrackedEntity> entities_;
-    std::vector<const void*> held_routines_;  // story 4.2 : PNJ tenus (hôte)
+    std::unordered_set<const void*> held_routines_;  // story 4.2 : PNJ tenus (hôte) ; 3.4e : PNJ natifs figés (invité)
     Capture ring_[kCaptureRing];
     std::size_t head_ = 0;   // prochaine écriture
     std::size_t count_ = 0;

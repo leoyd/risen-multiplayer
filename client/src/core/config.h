@@ -42,6 +42,9 @@ struct Config {
     // 4.2 (v17) : aussi celles de l'invité, avec tenue du PNJ chez l'hôte et libération de sa réplique
     // chez l'invité. 0 = ni émission, ni rejeu, ni tenue, ni libération : interrupteur de diagnostic.
     bool dialogues = true;
+    // Diagnostic (2026-11-01) : journal des scripts de perception (Assess*, Do*Damage) qui touchent le
+    // héros local ou l'avatar. 0 par défaut.
+    bool trace_assess = false;
     // Overlay à l'écran (rôle, pseudo, état de session), détour de IDirect3DDevice9::Present.
     // 0 = pas de détour.
     bool overlay = true;
@@ -64,7 +67,8 @@ struct ConfigResult {
 // Champs : role (host|guest, obligatoire), host_ip (validé en invité seulement),
 // port (vide = défaut), nickname, guest_equipment (liste de templates, core/equipment.h), probe (0|1, vide = défaut 0),
 // log_level (debug|info, insensible à la casse, vide = défaut info), damage_hook (0|1, vide = défaut 1),
-// native_attacks (0|1, vide = défaut 1), dialogues (0|1, vide = défaut 1), overlay (0|1, vide = défaut 1).
+// native_attacks (0|1, vide = défaut 1), dialogues (0|1, vide = défaut 1), overlay (0|1, vide = défaut 1),
+// trace_assess (0|1, vide = défaut 0).
 ConfigResult parse_config(std::string_view text);
 
 }  // namespace mp

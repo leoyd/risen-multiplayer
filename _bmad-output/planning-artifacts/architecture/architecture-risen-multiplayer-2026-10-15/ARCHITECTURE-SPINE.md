@@ -140,7 +140,8 @@ graph TD
 - **Binds:** FR-9, FR-10, FR-11
 - **Prevents:** un état de PNJ qui diverge entre les deux jeux ; un coup compté deux fois (natif + événement).
 - **Rule :**
-  - L’hôte réplique les PNJ hostiles situés à **50 m** au plus d’un des deux joueurs `[ASSUMPTION]`.
+  - L’hôte réplique les PNJ vivants situés à **100 m** au plus d’un des deux joueurs, 200 au plus, en plusieurs datagrammes de snapshot de même tick (story 3.4e ; 50 m et 53 avant). Sa liste ne contient que les entités traitées par son moteur (`EntityROI` relevé à 100 m dans `ConfigLocal.xml`).
+  - **Chez l’invité, tout PNJ natif non annoncé a sa routine figée** (story 3.4e) : aucune IA locale ne réagit seule (garde vu au test du 2026-11-01). Loin de l’hôte, l’invité voit donc des PNJ immobiles.
   - **Répliques chez l’invité = ses PNJ natifs**, appariés à l’hôte (même sauvegarde) :
     - **Clé.** Le GUID de 16 octets : octets 0 à 15 du `bCPropertyID` de `eCDynamicEntity::GetID` ; les octets 16 à 19 sont un cache, toujours nuls dans les tests. L’invité reconstruit l’identifiant (GUID + 4 octets nuls) et le retrouve par `gCRuntimeInfo::GetEntity`. Stable d’un rechargement à l’autre (vérifié) ; identique d’un PC à l’autre `[ASSUMPTION : à vérifier dans la story 3.3]`. Un `NetId` reste lié à son GUID pendant toute la session.
     - **IA.** Neutralisée PNJ par PNJ par le hook de `gCScriptRoutine_PS::OnProcess`, qui n’appelle pas l’original pour une réplique (registre d’AD-12). `EnableClassProcessing` est **interdit** (booléen global : il fige tous les PNJ).

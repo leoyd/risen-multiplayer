@@ -108,6 +108,17 @@ void release_all(const std::string& cause);
 bool find_entity(const protocol::Guid& guid, void*& out);
 // Invité : entité de la réplique `net_id` (nul si inconnue ou morte). Frame seulement, jamais gardée.
 void* replica_entity(std::uint32_t net_id);
+// Story 3.4e, invité, frame en session : toutes les kFreezeEveryFrames frames, relit Entity::ms_arrNPCs et
+// fige la routine (AnimFilter::hold_routine) de chaque PNJ natif qui n'est pas une réplique ; ceux sortis
+// de la liste, ou devenus répliques (spawn), sont rendus ; release_all les rend tous. Le monde de
+// l'invité ne vit ainsi que par l'hôte (un garde non annoncé ne réagit plus chez l'invité seul).
+void freeze_natives(void* hero);
+// Story 3.8c, hôte : toutes les 5 frames, objet en main droite de chaque PNJ capturé (nom de son template,
+// vide : main vide) → LocalNpcWeapon ; la session n'envoie que les changements.
+void read_weapons(std::vector<core::session::Input>& out);
+// Story 3.8c, invité : met en main droite de la réplique l'objet `name` (cherché dans son inventaire,
+// créé s'il manque), ou range l'objet tenu si `name` est vide. Retenu pour ses attaques natives.
+void set_weapon(std::uint32_t net_id, const std::string& name);
 // Story 4.3, hôte : entité du PNJ tenu `net_id` (nul : pas tenu).
 void* held_entity(std::uint32_t net_id);
 // Story 4.2, invité : NetId de la réplique vivante d'entité `entity` (0 si ce n'en est pas une).

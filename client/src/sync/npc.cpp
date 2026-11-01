@@ -50,10 +50,48 @@ struct Replica {
     bool dead = false;
     std::uint64_t native_move_ms = 0;  // story 3.8 : départ du mouvement local d'une attaque native
     bool freed = false;         // story 4.2 : libérée pour le dialogue de l'invité
+    std::string weapon;         // story 3.8c : objet en main chez l'hôte (dernier Weapon reçu)
     bool talk_known = false;    // story 4.2 (H1) : dernier PSDialog::IsBeingTalkedTo lu
     bool talked_to = false;
 };
 std::map<std::uint32_t, Replica> g_replicas;
+// Story 3.8c : nom du template de l'objet en main droite (vide : main vide ou illisible).
+std::string held_item_name(const game::Entity& e) {
+    int held = -1;
+    game::Entity item;
+    std::string name;
+    if (game::get_right_hold_stack(e, held) && held >= 0 && game::get_right_hold_item(e, item) && item.ptr != nullptr) {
+        game::get_entity_name(item, name);
+    }
+    return name;
+}
+// Story 3.4e, invité : PNJ natifs non annoncés, routine figée (AnimFilter::hold_routine) : entité →
+// PS de routine et dernier passage où elle était dans la liste du moteur.
+struct Frozen {
+    void* routine_ps = nullptr;
+    unsigned seen = 0;
+};
+std::unordered_map<void*, Frozen> g_frozen;
+unsigned g_freeze_pass = 0;
+unsigned g_freeze_frame = 0;
+constexpr unsigned kFreezeEveryFrames = 10;  // environ deux passages par seconde
+bool g_freeze_list_error_logged = false;
+std::size_t g_frozen_logged = 0;
+
+void unfreeze(void* entity) {
+    const auto it = g_frozen.find(entity);
+    if (it == g_frozen.end()) return;
+    anim_filter().release_routine(it->second.routine_ps);
+    g_frozen.erase(it);
+}
+
+void unfreeze_all(const std::string& cause) {
+    if (g_frozen.empty()) return;
+    for (const auto& entry : g_frozen) anim_filter().release_routine(entry.second.routine_ps);
+    log::info("[sync] PNJ : " + std::to_string(g_frozen.size()) + " PNJ natif(s) non annoncé(s) rendu(s) : " + cause);
+    g_frozen.clear();
+    g_frozen_logged = 0;
+}
 // Story 4.2, hôte : PNJ tenus pendant le dialogue de l'invité (routine figée), revérifiés par validate.
 struct Held {
     protocol::Guid guid{};
@@ -254,6 +292,7 @@ void spawn(std::uint32_t net_id, const protocol::Guid& guid, const Pose& pose) {
     Replica r;
     r.guid = guid;
     r.entity.ptr = found;
+    unfreeze(found);  // story 3.4e : la réplique a ses propres règles (libérée pour un dialogue, etc.)
     for (const auto& [id, other] : g_replicas) {
         if (other.entity.ptr == found) {
             log::warn(who(net_id) + " : même entité que le PNJ " + std::to_string(id) + " : ignoré");
@@ -563,6 +602,9 @@ void release_all(const std::string& cause) {
     g_hero_detect_error_logged = false;
     g_talk_error_logged = false;  // story 4.2
     g_lost.clear();  // story 4.2 : rien ne survit à la session
+    unfreeze_all(cause);  // story 3.4e, invité : sans appel au jeu
+    g_freeze_frame = 0;
+    g_freeze_list_error_logged = false;
     if (!g_held.empty()) {  // story 4.2, hôte : sans appel au jeu
         for (const auto& entry : g_held) anim_filter().release_routine(entry.second.routine_ps);
         log::info("[sync] PNJ : " + std::to_string(g_held.size()) + " PNJ tenu(s) rendu(s) : " + cause);
@@ -649,6 +691,14 @@ void attack(std::uint32_t net_id, std::uint32_t move, std::uint32_t target) {
         int held = -1;
         game::get_right_hold_stack(r.entity, held);
         retry = ", main " + std::to_string(held);
+        if (held < 0 && !r.weapon.empty()) {  // story 3.8c : l'objet tenu chez l'hôte, remis en main
+            const std::string weapon = r.weapon;
+            set_weapon(net_id, weapon);
+            game::get_right_hold_stack(r.entity, held);
+            if (held >= 0) game::combat_start_move(r.entity, static_cast<int>(move), started);
+            retry += ", objet de l'hôte « " + weapon + " » pile " + std::to_string(held) + ", StartMove -> " +
+                     (started ? "1" : "0");
+        }
         if (held < 0) {
             game::Template fist;
             int stack = -1;
@@ -714,6 +764,7 @@ void detect_attacks(void* hero, std::vector<cs::Input>& out) {
             log::debug(who(net_id) + " : attaque (mouvement " + std::to_string(last) + "), main " + std::to_string(held) +
                        (name.empty() ? std::string() : " « " + name + " »"));
         }
+        out.push_back(cs::LocalNpcWeapon{net_id, held_item_name(c.entity)});  // story 3.8c : avant l'attaque
         out.push_back(cs::LocalNpcAttack{net_id, static_cast<std::uint32_t>(last), target});
     }
 }
@@ -863,6 +914,120 @@ void freed_pose(cs::World& world) {
             world.freed_pose_ok = true;
         }
         return;
+    }
+}
+
+namespace {
+unsigned g_weapon_frame = 0;
+constexpr unsigned kWeaponEveryFrames = 5;
+
+}  // namespace
+
+void read_weapons(std::vector<cs::Input>& out) {
+    if (g_captured.empty() || ++g_weapon_frame < kWeaponEveryFrames) return;
+    g_weapon_frame = 0;
+    for (const auto& [net_id, c] : g_captured) out.push_back(cs::LocalNpcWeapon{net_id, held_item_name(c.entity)});
+}
+
+void set_weapon(std::uint32_t net_id, const std::string& name) {
+    auto it = g_replicas.find(net_id);
+    if (it == g_replicas.end() || it->second.dead) return;
+    Replica& r = it->second;
+    r.weapon = name;
+    const std::string what = who(net_id) + " : objet en main";
+    int held = -1;
+    if (!game::get_right_hold_stack(r.entity, held)) {
+        log::debug(what + " : GetRightHoldStack a levé une exception (SEH)");
+        return;
+    }
+    if (name.empty()) {
+        if (held < 0) return;
+        bool ok = false;
+        game::equip_stack(r.entity, held, ok);  // remis à son emplacement d'équipement
+        int after = -1;
+        game::get_right_hold_stack(r.entity, after);
+        bool cleared = after < 0;
+        if (after >= 0) game::hold_right_stack(r.entity, -1, cleared);
+        log::debug(what + " : rangé (pile " + std::to_string(held) + ", main vide : " + (cleared ? "oui" : "non") + ")");
+        return;
+    }
+    game::Template tmpl;
+    bool valid = false;
+    if (!game::template_from_name(name.c_str(), tmpl, valid) || !valid) {
+        if (tmpl.proxy != nullptr) game::destroy_template(tmpl);
+        log::debug(what + " : template « " + name + " » inconnu");
+        return;
+    }
+    int stack = -1;
+    const bool found = game::find_stack_index(r.entity, tmpl, stack);
+    bool created = false;
+    if (found && stack < 0) created = game::create_items(r.entity, tmpl, 1, 0, stack) && stack >= 0;
+    game::destroy_template(tmpl);
+    if (stack < 0) {
+        log::debug(what + " : « " + name + " » introuvable et non créé");
+        return;
+    }
+    if (stack == held) return;
+    bool ok = false;
+    game::hold_right_stack(r.entity, stack, ok);
+    log::debug(what + " : « " + name + " » (pile " + std::to_string(stack) + (created ? " créée" : " trouvée") +
+               ", HoldRightStack -> " + (ok ? "1" : "0") + ")");
+}
+
+void freeze_natives(void* hero) {
+    if (hero == nullptr || ++g_freeze_frame < kFreezeEveryFrames) return;
+    g_freeze_frame = 0;
+    std::vector<game::Entity> list;
+    std::size_t total = 0;
+    if (!game::read_npc_list(list, kMaxNpcList, total)) {
+        if (!g_freeze_list_error_logged) {
+            g_freeze_list_error_logged = true;
+            log::warn("[sync] PNJ : lecture de Entity::ms_arrNPCs impossible chez l'invité : PNJ natifs non figés");
+        }
+        return;
+    }
+    ++g_freeze_pass;
+    void* const avatar_entity = avatar::entity();
+    std::unordered_set<const void*> replicas;
+    for (const auto& entry : g_replicas) replicas.insert(entry.second.entity.ptr);
+    for (const game::Entity& e : list) {
+        if (e.ptr == nullptr || e.ptr == hero || e.ptr == avatar_entity || replicas.count(e.ptr) != 0) continue;
+        bool is_player = false;
+        if (!game::is_player(e, is_player) || is_player) continue;
+        void* routine = nullptr;
+        if (!game::get_property_set(e, game::kRoutinePropertySet, routine) || routine == nullptr) continue;
+        auto it = g_frozen.find(e.ptr);
+        if (it != g_frozen.end()) {
+            // Adresse réutilisée par une autre entité : l'ancien PS de routine est rendu.
+            if (it->second.routine_ps != routine) {
+                anim_filter().release_routine(it->second.routine_ps);
+                anim_filter().hold_routine(routine);
+                it->second.routine_ps = routine;
+            }
+            it->second.seen = g_freeze_pass;
+            continue;
+        }
+        anim_filter().hold_routine(routine);
+        g_frozen.emplace(e.ptr, Frozen{routine, g_freeze_pass});
+    }
+    // Sortis de la liste du moteur (plus traités, ou détruits) : rendus, sans appel au jeu.
+    for (auto it = g_frozen.begin(); it != g_frozen.end();) {
+        if (it->second.seen == g_freeze_pass) {
+            ++it;
+            continue;
+        }
+        anim_filter().release_routine(it->second.routine_ps);
+        it = g_frozen.erase(it);
+    }
+    if (g_frozen.size() != g_frozen_logged) {
+        log::debug("[sync] PNJ : " + std::to_string(g_frozen.size()) +
+                   " PNJ natif(s) non annoncé(s) figé(s) (routine), sur " + std::to_string(list.size()) +
+                   " dans la liste du moteur");
+        if (g_frozen_logged == 0 && !g_frozen.empty()) {
+            log::info("[sync] PNJ : PNJ natifs non annoncés par l'hôte figés chez l'invité (" +
+                      std::to_string(g_frozen.size()) + " au premier passage)");
+        }
+        g_frozen_logged = g_frozen.size();
     }
 }
 

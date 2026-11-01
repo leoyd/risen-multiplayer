@@ -16,9 +16,9 @@
 // Armure (story 3.2c) : --armor NOM la met sur le héros de l'hôte dès le départ (LocalArmor) ;
 // SIGHUP la retire ou la remet (en même temps que l'arme).
 // PNJ (story 3.3) : --npcs N simule N PNJ autour du héros de l'hôte (GUID propre à chacun), le
-// PNJ i à 5 m + 50 cm × i, PV qui baissent avec le temps. Après l'entrée en session : de 1,5 à
-// 2,5 s, les PNJ impairs partent à 60 m et plus (sortie du rayon, place pour ceux qui
-// attendaient au-delà du 53ᵉ), puis reviennent (même NetId) ; le PNJ 0 meurt à 2 s. Ils sont
+// PNJ i à 5 m + 40 cm × i (story 3.4e : 230 PNJ tiennent dans le rayon de 100 m), PV qui baissent
+// avec le temps. Après l'entrée en session : de 1,5 à 2,5 s, les PNJ impairs partent à 120 m et plus
+// (sortie du rayon, place pour ceux qui attendaient au-delà du 200ᵉ), puis reviennent (même NetId) ; le PNJ 0 meurt à 2 s. Ils sont
 // lus, comme dans la DLL, seulement quand Session::wants_npcs le demande.
 // Animations des PNJ (story 3.4) : chaque PNJ capturé (CaptureNpc, jusqu'à UncaptureNpc) lance un
 // PlayMotion toutes les 200 ms (« Npc_Walk » ou « Npc_Attack ») et trois réglages de poids par
@@ -177,8 +177,8 @@ int main(int argc, char** argv) {
             for (std::size_t b = 0; b < n.guid.size(); ++b) n.guid[b] = static_cast<std::uint8_t>(0xa0 + b);
             n.guid[0] = static_cast<std::uint8_t>(i);
             const double angle = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(npc_count);
-            double radius = 500.0 + 50.0 * static_cast<double>(i);  // 5 m à 5 + 0,5 × N m
-            if (i % 2 == 1 && t >= 1.5 && t < 2.5) radius += 6000.0;  // sortie du rayon, puis retour
+            double radius = 500.0 + 40.0 * static_cast<double>(i);  // 5 m à 5 + 0,4 × N m
+            if (i % 2 == 1 && t >= 1.5 && t < 2.5) radius += 12000.0;  // sortie du rayon, puis retour
             radius += 20.0 * std::sin(4.0 * t + angle);                // petit mouvement
             n.pose.x = world.x + static_cast<float>(radius * std::sin(angle));
             n.pose.y = world.y;

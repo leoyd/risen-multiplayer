@@ -114,10 +114,10 @@ dans l'ordre (`AvatarWeapon`), après `SpawnAvatar` ; (story 3.2b) `--equipment`
 (story 3.2c) l'armure dans les deux sens : `Armor` de l'hôte reçu après son `Spawn` et son
 `Weapon`, puis retiré, et celle du faux invité (`--armor It_Armor_Inquisitor`, puis retirée et
 changée par le scénario) appliquée dans l'ordre (`AvatarArmor`), après `SpawnAvatar` ; aucun
-`AvatarArmor` sans `--armor` ; (story 3.3) 80 PNJ simulés (`--npcs 80`) : 53 annoncés au premier
+`AvatarArmor` sans `--armor` ; (story 3.3, 3.4e) 230 PNJ simulés (`--npcs 230`) : 200 annoncés au premier
 snapshot (`Spawn{1}`, NetId dès 1000), les autres attendent, sorties du rayon, mort et éviction
 (`Despawn`), réannonce sous le même NetId, PV suivis par le faux invité, au plus 54 entités par
-snapshot et aucun message de PNJ ignoré ; (story 3.4a) l'hôte en pause 7 s face au faux invité
+datagramme de snapshot et aucun message de PNJ ignoré ; (story 3.4a) l'hôte en pause 7 s face au faux invité
 `--strict-timeout` (timeout compté sur les seuls messages, pas sur les acquittements KCP) : aucun
 timeout des deux côtés, au moins 4 heartbeats de secours journalisés à la reprise ; (story 3.5)
 `--npcs 3` face au faux invité `--hit-interval 500ms` : `ApplyHit` pour 1000 chez l'hôte
@@ -437,8 +437,8 @@ les lectures (`[sync] armure du héros : …`) et le diagnostic d'inventaire. La
 ### Répliques des PNJ en jeu (story 3.3)
 
 L'hôte fait autorité sur les PNJ (protocole v9). À chaque snapshot, il lit `Entity::ms_arrNPCs`
-(après `UpdateEntityLists`), garde les PNJ vivants à 50 m au plus de son héros ou de l'avatar de
-l'invité, du plus proche au plus loin (53 au plus), leur attribue un NetId ≥ 1000 lié à leur GUID
+(après `UpdateEntityLists`), garde les PNJ vivants à 100 m au plus de son héros ou de l'avatar de
+l'invité, du plus proche au plus loin (200 au plus, story 3.4e ; snapshot en plusieurs datagrammes), leur attribue un NetId ≥ 1000 lié à leur GUID
 pour la session, annonce chaque entrée par `Spawn{1, pose, GUID}` et chaque sortie par `Despawn`,
 puis met leur pose et leurs PV dans le snapshot. L'invité retrouve chaque PNJ natif par
 `gCRuntimeInfo::GetEntity(GUID)`, l'inscrit au registre comme réplique (son
@@ -976,6 +976,25 @@ Prérequis : `log_level = debug` des deux côtés, DLL et configs installées (`
    session` ; chez l'invité, la réplique est rendue au jeu (`réplique(s) libérée(s)`).
 6. **L'hôte parle au PNJ que l'invité veut aborder** : chez l'hôte, `ignoré (PNJ en dialogue avec
    l'hôte)`, rien n'est tenu.
+
+### Monde de l'invité piloté par l'hôte seul (story 3.4e, à valider en jeu)
+
+Test du 2026-11-01 : un garde non annoncé par l'hôte a réagi chez l'invité seul quand l'invité a frappé
+un PNJ. Désormais :
+
+- **Invité** : toutes les 10 frames, `Entity::ms_arrNPCs` est relue ; chaque PNJ natif qui n'est pas une
+  réplique a sa routine figée (comme une réplique, sans animation bloquée). Rendu à sa sortie de la
+  liste, quand il devient réplique (`Spawn`) et en fin de session. Info `[sync] PNJ : PNJ natifs non
+  annoncés par l'hôte figés chez l'invité (N au premier passage)`, Debug à chaque changement du nombre ;
+  Info `… PNJ natif(s) non annoncé(s) rendu(s) : …` à la fin.
+- **Hôte** : rayon 100 m (au lieu de 50), 200 PNJ au plus (au lieu de 53), 24 animés (au lieu de 8). Le
+  snapshot part en plusieurs datagrammes de même tick : le bilan `snapshots (5 s)` compte des
+  datagrammes (jusqu'à 400 par 5 s).
+- **Portée du moteur** : `tools/installer-local.sh` écrit `<Scene EntityROI="10000.000000">` dans
+  `data/ini/ConfigLocal.xml` des deux copies (40 m par défaut ; `ROI=…` pour une autre valeur). Sans
+  cela, l'hôte ne voit pas les PNJ au-delà de 40 m. À vérifier : PNJ annoncés à plus de 40 m (`annoncé
+  (Spawn) : GUID …, 6x.x m`), coût en images par seconde.
+- **Limite** : loin de l'hôte (hors de sa portée), l'invité voit des PNJ figés.
 
 ### PNJ occupé : un seul joueur parle à un PNJ (story 4.3, protocole v18, à valider en jeu)
 

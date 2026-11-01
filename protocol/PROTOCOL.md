@@ -345,6 +345,13 @@ combat à transmettre : la posture est dans le nom des animations rejouées (`An
 
 Taille : 6 à 261 octets.
 
+**PNJ (story 3.8c, format inchangé)** : l'hôte envoie aussi `Weapon{NetId ≥ 1000, nom}` pour un PNJ
+animé (capturé) dont l'objet en main droite change (relevé toutes les 5 frames et à chaque début
+d'attaque, avant le `NpcAttack`) ; pas d'envoi pour une main vide à la première lecture, renvoi après
+chaque `Spawn{1}`. L'invité met cet objet en main de la réplique (cherché dans son inventaire, créé s'il
+manque ; vide = rangé) et le reprend avant une attaque native si la main est vide ; l'arme naturelle
+(`GetRightFistItem`) ne sert plus que sans objet connu. Réplique absente ou morte : ignoré.
+
 ### `Armor` (28) — fiable — v8
 
 Armure que porte une entité dont l'émetteur a l'autorité (emplacement d'équipement 8,
@@ -1172,12 +1179,21 @@ d'appels.
 - **Répliques des PNJ** (v9, story 3.3) : l'hôte fait autorité sur les PNJ ; chez l'invité, ses
   propres PNJ (même sauvegarde) deviennent des répliques sans IA locale.
   - **Sélection** (hôte, à chaque snapshot) : les PNJ de `Entity::ms_arrNPCs`, sauf son héros et
-    l'avatar de l'invité, vivants (`Entity::IsDead` = 0), de pose finie, à **50 m** (5000 unités)
-    au plus de son héros ou de la pose affichée de l'avatar de l'invité (s'il existe), triés du
-    plus proche au plus loin (distance au plus proche des deux joueurs). Le snapshot porte au plus
-    54 entités, héros de l'hôte compris : les **53** PNJ les plus proches sont retenus, les autres
-    attendent. Une lecture de la liste en échec laisse les PNJ annoncés tels quels et le snapshot
-    ne porte que le héros.
+    l'avatar de l'invité, vivants (`Entity::IsDead` = 0), de pose finie, à **100 m** (10000 unités ;
+    50 m avant la story 3.4e) au plus de son héros ou de la pose affichée de l'avatar de l'invité
+    (s'il existe), triés du plus proche au plus loin (distance au plus proche des deux joueurs). Les
+    **200** PNJ les plus proches sont retenus (53 avant la story 3.4e), les autres attendent. Une
+    lecture de la liste en échec laisse les PNJ annoncés tels quels et le snapshot ne porte que le
+    héros.
+  - **Snapshot en plusieurs datagrammes** (story 3.4e, format inchangé) : un datagramme porte au plus
+    54 entités ; au-delà, le snapshot d'un tick est envoyé en plusieurs datagrammes de canal 1 de
+    **même `tick`**, le héros en tête du premier (4 au plus). Le récepteur traite chaque entité pour
+    elle-même ; un datagramme perdu ne prive que ses entités de ce tick.
+  - **PNJ natifs non annoncés** (story 3.4e) : chez l'invité, tout PNJ de `Entity::ms_arrNPCs` qui
+    n'est pas une réplique a aussi sa routine figée (relu toutes les 10 frames) : seul l'hôte fait
+    vivre le monde. Il est rendu à sa sortie de la liste, quand il devient réplique, et à la fin de
+    session. La liste de l'hôte ne contient que les entités que son moteur traite (`EntityROI`,
+    40 m par défaut, relevé à 100 m dans `ConfigLocal.xml`).
   - **NetId** : attribué par l'hôte à la première sélection d'un GUID, à partir de **1000**, puis
     lié à ce GUID pour toute la session et jamais réutilisé pendant celle-ci (un PNJ qui revient
     dans le rayon reprend le même). Le compteur et la table repartent à chaque session.

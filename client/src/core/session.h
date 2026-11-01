@@ -241,14 +241,19 @@ struct World {
     bool loaded() const { return player != 0 && running; }  // monde chargé
 };
 
-inline constexpr float kNpcRadius = 5000.0f;  // 50 m (unités du monde = cm) autour d'un joueur
+// Story 3.4e (test du 2026-11-01) : 50 → 100 m, avec EntityROI = 10000 dans ConfigLocal.xml.
+inline constexpr float kNpcRadius = 10000.0f;  // 100 m (unités du monde = cm) autour d'un joueur
 // Test en jeu du 2026-10-22 : Entity::ms_arrNPCs ne garde que les PNJ traités par le moteur
-// (environ 40 m), qui y entrent et en sortent sans cesse à cette limite. Un PNJ annoncé absent
+// (EntityROI de ConfigDefault.xml : 40 m ; story 3.4e : 100 m si ConfigLocal.xml le relève), qui y
+// entrent et en sortent sans cesse à cette limite. Un PNJ annoncé absent
 // de la liste n'est retiré qu'après ce nombre de ticks de snapshot (2 s) ; il n'est plus dans les
 // snapshots pendant ce temps, et revenu, il garde son NetId sans nouveau Spawn.
 inline constexpr std::uint32_t kNpcAbsentGraceTicks = 40;
-// Le snapshot porte au plus 54 entités, héros de l'hôte compris (AD-7).
-inline constexpr std::size_t kMaxSnapshotNpcs = protocol::kMaxSnapshotEntities - 1;
+// Un datagramme de snapshot porte au plus 54 entités (AD-7). Story 3.4e : le snapshot d'un tick est
+// découpé en datagrammes de même tick (le premier porte le héros) ; 200 PNJ au plus, soit 4 datagrammes.
+inline constexpr std::size_t kMaxSnapshotNpcs = 200;
+inline constexpr std::size_t kMaxSnapshotParts =
+    (kMaxSnapshotNpcs + 2 + protocol::kMaxSnapshotEntities - 1) / protocol::kMaxSnapshotEntities;
 inline constexpr std::size_t kMaxNpcHpChanges = 16;  // PV d'une réplique en attente d'affichage
 // Story 3.4a, invité : une entrée de snapshot d'un PNJ dont le Spawn (canal fiable) n'est pas encore
 // arrivé est gardée (la plus récente par NetId) kEarlyNpcHoldMs au plus, pour kMaxEarlyNpcs NetId
@@ -327,6 +332,12 @@ struct LocalNpcAttack {
     std::uint32_t move = 0;
     std::uint32_t target = 0;
 };
+// Story 3.8c, hôte : objet en main droite d'un PNJ capturé (nom de son template, vide : main vide),
+// relevé par sync/npc à chaque début d'attaque et quelques fois par seconde.
+struct LocalNpcWeapon {
+    std::uint32_t net_id = 0;
+    std::string name;
+};
 // Story 4.1, hôte : une réplique d'un dialogue en cours, relevée par sync/dialogue : dite par son héros
 // (`hero`), ou par le partenaire de dialogue de GUID `guid`. Échantillon et type tels que passés à
 // gCScriptProcessingUnit::StartOutput. Devient DialogLine en session si le PNJ est annoncé et vivant.
@@ -359,7 +370,7 @@ struct LocalDialogReplayed {
 };
 using Input = std::variant<ControlIn, ReliableIn, SnapshotIn, LocalMotion, LocalParam, LocalWeapon, LocalArmor,
                            LocalHit, LocalHitsBlocked, LocalHitOnGuest, LocalDown, LocalNpcAttack, LocalDialogLine,
-                           LocalDialogReplayed, LocalDialogState, LocalDialogNpcLost>;
+                           LocalDialogReplayed, LocalDialogState, LocalDialogNpcLost, LocalNpcWeapon>;
 
 // Pose de l'invité devant l'hôte : kGuestSpawnDistance le long de l'axe avant de l'hôte
 // (sin lacet, 0, cos lacet), tourné vers lui (lacet + π, ramené dans ]−π, π]).
@@ -485,6 +496,11 @@ struct ApplyNpcAttack {
     std::uint32_t move = 0;
     std::uint32_t target = 0;
 };
+// Story 3.8c, invité : mettre en main droite de la réplique l'objet `name` (vide : ranger).
+struct NpcWeapon {
+    std::uint32_t net_id = 0;
+    std::string name;
+};
 // Story 3.8b, hôte : l'avatar de l'invité vise `target` (≥ 1000 : PNJ de ce NetId ; 1 ou 0 : cibles
 // effacées) puis lance le mouvement `move` (sync/avatar::attack).
 struct ApplyAvatarAttack {
@@ -532,7 +548,7 @@ using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseRelia
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
                              ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath, ApplyHit,
                              ApplyHitOnGuest, RespawnHero, ApplyNpcAttack, ApplyAvatarAttack, ApplyDialogLine, HoldNpc,
-                             UnholdNpc, FreeReplica>;
+                             UnholdNpc, FreeReplica, NpcWeapon>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -556,7 +572,7 @@ inline constexpr std::uint64_t kDialogHoldTimeoutMs = 60000;
 
 // Story 3.4 (Q12, option A) : PNJ animés au plus (les plus proches), et budget visé de leurs
 // Motion, MotionParam et AniName (octets des messages par seconde, journalisé s'il est dépassé).
-inline constexpr std::size_t kMaxAnimatedNpcs = 8;
+inline constexpr std::size_t kMaxAnimatedNpcs = 24;  // story 3.4e : 8 → 24
 inline constexpr std::uint32_t kNpcAnimBudgetBytesPerSec = 32 * 1024;
 
 enum class Level { Debug, Info, Warn, Error };
@@ -677,6 +693,9 @@ private:
     // DialogState{…, 1|0} à l'invité quand il change.
     std::uint32_t host_engaged_id() const;
     void announce_host_dialog(Output& out);
+    // Story 3.8c : objet en main d'un PNJ. Hôte : Weapon{NetId} envoyé quand il change ; invité : appliqué.
+    void on_local_npc_weapon(const LocalNpcWeapon& in, Output& out);
+    void on_npc_weapon(std::uint32_t net_id, const std::string& name, Output& out);
     // Story 4.3, invité : DialogState de l'hôte (PNJ occupé par l'hôte).
     void on_host_dialog_state(const protocol::DialogState& m, Output& out);
     // Story 4.2, hôte : Motion ou MotionParam du PNJ tenu mis en attente, puis rejoué avec sa pose au même
@@ -905,6 +924,8 @@ private:
     // Story 4.3. Hôte : PNJ occupé par son héros, annoncé à l'invité (DialogState{…, 1}) ; invité : PNJ
     // annoncé par l'hôte, refusé à son héros.
     std::uint32_t host_engaged_sent_ = 0;
+    // Story 3.8c, hôte : dernier objet en main envoyé par PNJ (effacé à chaque Spawn{1} du PNJ).
+    std::map<std::uint32_t, std::string> npc_weapon_sent_;
     std::uint32_t host_dialog_npc_ = 0;
     std::uint32_t held_npc_ = 0;
     std::uint64_t held_since_ = 0;

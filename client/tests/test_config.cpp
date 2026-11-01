@@ -288,6 +288,17 @@ TEST("config : dialogues absent -> 1 par défaut ; 0, 1, vide") {
     CHECK(empty.warnings.empty());
 }
 
+TEST("config : trace_assess absent -> 0 ; 0, 1, vide ; invalide -> erreur") {
+    CHECK(!parse_config("role=host\n").config.trace_assess);
+    const auto one = parse_config("role=host\ntrace_assess = 1\n");
+    CHECK(one.ok && one.config.trace_assess);
+    const auto empty = parse_config("role=host\ntrace_assess =\n");
+    CHECK(empty.ok && !empty.config.trace_assess && empty.warnings.empty());
+    const auto bad = parse_config("role=host\ntrace_assess = oui\n");
+    CHECK(!bad.ok);
+    CHECK_EQ(bad.error_field, std::string("trace_assess"));
+}
+
 TEST("config : dialogues invalide -> erreur nommant le champ") {
     for (const char* v : {"2", "oui", "true", "-1"}) {
         const auto r = parse_config(std::string("role=host\ndialogues=") + v + "\n");
