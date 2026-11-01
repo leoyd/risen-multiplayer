@@ -52,6 +52,8 @@ Dialogues de l'invité (v17, story 4.2) : --dialog-every <durée> commence un di
 (« -> DialogState pnj=N actif=1 », puis DialogLine{2, 3, …} et DialogLine{N, 0, …}) et le finit une
 période plus tard (« -> DialogState pnj=N actif=0 ») ; N = --dialog-npc <NetId>, ou 0 : premier PNJ
 présent et vivant (NetId non vérifié, pour tester le refus de l'hôte).
+PNJ occupés par l'hôte (v18, story 4.3) : chaque DialogState de l'hôte est journalisé « <- DialogState
+pnj=N actif=0|1 » et compté au bilan (Bilan dialogues : DialogState … reçus=), jamais appliqué.
 Attaques des PNJ (v15) : chaque NpcAttack de l'hôte est journalisé « <- NpcAttack netid=N move=M
 cible=C » et compté au bilan (NpcAttack reçus=), jamais appliqué.
 Attaques du héros invité (v15, story 3.8b) : --attack-move <M> envoie NpcAttack{2, M, cible} juste

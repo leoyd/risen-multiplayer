@@ -1,4 +1,4 @@
-// Codec du contrat binaire hôte ⇄ invité, version 17 (protocol/PROTOCOL.md fait foi).
+// Codec du contrat binaire hôte ⇄ invité, version 18 (protocol/PROTOCOL.md fait foi).
 // Logique pure, sans socket ni appel au jeu : testable sous Linux.
 //
 // Cadrage :
@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 17;
+inline constexpr std::uint16_t kProtocolVersion = 18;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -57,7 +57,7 @@ enum class MsgType : std::uint8_t {
     Armor = 28,        // v8 (story 3.2c)
     NpcAttack = 29,    // v15 (story 3.8)
     DialogLine = 30,   // v16 (story 4.1) ; v17 : aussi invité → hôte (story 4.2)
-    DialogState = 31,  // v17 (story 4.2)
+    DialogState = 31,  // v17 (story 4.2) ; v18 : aussi hôte → invité (story 4.3)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -240,12 +240,15 @@ bool valid_dialog_sample(const std::string& sample);
 // Locuteur acceptable : 1 (héros de l'hôte), 2 (héros de l'invité, v17) ou ≥ 1000 (PNJ).
 bool valid_dialog_speaker(std::uint32_t net_id);
 
-// Début ou fin d'un dialogue de l'invité avec une réplique de PNJ (v17, story 4.2) : invité → hôte,
-// fiable, 6 octets. L'hôte tient ce PNJ (routine figée) pendant le dialogue, puis le rend. Le
-// décodeur refuse (BadValue) un NetId < 1000 et un `active` autre que 0 ou 1 ; l'encodeur aussi.
+// Début ou fin de l'engagement d'un joueur avec un PNJ (fiable, 6 octets, format inchangé en v18).
+// v17 (story 4.2) : invité → hôte, dialogue de l'invité avec une réplique ; l'hôte tient ce PNJ
+// (routine figée) pendant le dialogue, puis le rend. v18 (story 4.3) : aussi hôte → invité, PNJ annoncé
+// avec lequel le héros de l'hôte est engagé (dialogue, demande acceptée, clôture) ; l'invité marque la
+// réplique « occupée » et refuse la demande de dialogue de son héros. Le décodeur refuse (BadValue) un
+// NetId < 1000 et un `active` autre que 0 ou 1 ; l'encodeur aussi. Le sens n'est pas vérifié ici.
 struct DialogState {
-    std::uint32_t npc_net_id = 0;  // ≥ 1000 : PNJ annoncé, partenaire du dialogue de l'invité
-    std::uint8_t active = 0;       // 1 : dialogue commencé, 0 : fini
+    std::uint32_t npc_net_id = 0;  // ≥ 1000 : PNJ annoncé, partenaire du dialogue de l'émetteur
+    std::uint8_t active = 0;       // 1 : engagement commencé, 0 : fini
 };
 
 // Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,

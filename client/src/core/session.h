@@ -121,7 +121,12 @@
 // figée), un seul à la fois ; il est rendu (UnholdNpc) à DialogState{NetId, 0}, à sa sortie de la
 // sélection (Despawn, Death), à Ended ou kDialogHoldTimeoutMs après le début (Warn). DialogLine{2}
 // donne ApplyDialogLine sur l'avatar de l'invité, DialogLine{NetId} sur le PNJ tenu. Un hôte qui reçoit
-// DialogLine{1}, un invité qui reçoit DialogLine{2} ou DialogState : ignoré (Warn une fois par session).
+// DialogLine{1}, un invité qui reçoit DialogLine{2} : ignoré (Warn une fois par session).
+// PNJ occupé (story 4.3, protocole v18) : l'hôte annonce à l'invité, par DialogState{NetId, 1|0}, le
+// PNJ annoncé que son héros occupe (World::engaged : dialogue, demande acceptée ou clôture) ; un
+// DialogState{NetId, 1} de l'invité pour ce PNJ est ignoré, et le PNJ tenu qu'il se met à occuper (course)
+// est rendu. L'invité retient le PNJ annoncé (busy_npc) ; s'il lui parle déjà (course) : Warn. busy_npc
+// (hôte : le PNJ tenu) sert à sync/dialogue pour refuser la demande de dialogue du héros local.
 // Gestes du partenaire (correctif du test du 2026-10-25) : chez l'invité, la réplique libérée est
 // animée par son propre moteur ; ses PlayMotion et réglages (LocalMotion et LocalParam portant son
 // NetId, captés par le filtre) partent en Motion et MotionParam{NetId}, et sa pose (World::freed_*)
@@ -228,6 +233,10 @@ struct World {
     std::uint32_t freed_npc = 0;
     bool freed_pose_ok = false;
     Pose freed_pose;
+    // Hôte (story 4.3) : PNJ que son héros occupe (dialogue en cours, demande de dialogue acceptée en
+    // attente du dialogue, ou clôture), GUID lu par sync/dialogue à chaque frame. Annoncé à l'invité.
+    bool engaged_ok = false;
+    protocol::Guid engaged{};
 
     bool loaded() const { return player != 0 && running; }  // monde chargé
 };
@@ -591,6 +600,10 @@ public:
     // Story 4.2. Hôte : NetId du PNJ tenu (0 : aucun). Invité : NetId de la réplique libérée (0 : aucune).
     std::uint32_t held_npc() const { return held_npc_; }
     std::uint32_t freed_replica() const { return guest_dialog_npc_; }
+    // Story 4.3 : PNJ occupé par l'autre joueur, à qui le héros local ne peut pas parler (0 : aucun).
+    // Hôte : le PNJ tenu pour le dialogue de l'invité ; invité : celui que l'hôte a annoncé
+    // (DialogState reçu). Hors session ou dialogues = 0 : 0.
+    std::uint32_t busy_npc() const;
     std::uint32_t conv() const { return conv_; }
     const Endpoint& peer() const { return peer_; }
 
@@ -660,6 +673,12 @@ private:
     void on_dialog_state(std::uint64_t now, const protocol::DialogState& m, Output& out);
     void unhold_npc(const std::string& why, Level level, Output& out);
     void dialog_timers(std::uint64_t now, Output& out);
+    // Story 4.3, hôte : NetId annoncé du PNJ que son héros occupe (World::engaged), 0 sinon ; envoi de
+    // DialogState{…, 1|0} à l'invité quand il change.
+    std::uint32_t host_engaged_id() const;
+    void announce_host_dialog(Output& out);
+    // Story 4.3, invité : DialogState de l'hôte (PNJ occupé par l'hôte).
+    void on_host_dialog_state(const protocol::DialogState& m, Output& out);
     // Story 4.2, hôte : Motion ou MotionParam du PNJ tenu mis en attente, puis rejoué avec sa pose au même
     // instant d'affichage que l'avatar.
     void push_held(PendingMotion e);
@@ -883,6 +902,10 @@ private:
     // Story 4.2. Invité : réplique libérée pour son dialogue (0 : aucune). Hôte : PNJ tenu (0 : aucun),
     // depuis held_since_.
     std::uint32_t guest_dialog_npc_ = 0;
+    // Story 4.3. Hôte : PNJ occupé par son héros, annoncé à l'invité (DialogState{…, 1}) ; invité : PNJ
+    // annoncé par l'hôte, refusé à son héros.
+    std::uint32_t host_engaged_sent_ = 0;
+    std::uint32_t host_dialog_npc_ = 0;
     std::uint32_t held_npc_ = 0;
     std::uint64_t held_since_ = 0;
     // Story 4.2, hôte : pose et gestes du PNJ tenu venus de l'invité (réplique libérée), vidés quand il

@@ -191,9 +191,10 @@ bool detour_start_output_session(void* spu, const void* sample, int type) {
 }
 
 // Story 4.2 : demande de dialogue faite à un PNJ. Copie pour la frame (accesseurs seuls, AD-2), puis
-// l'original, qui lance ZS_Talk sur le PNJ.
+// l'original, qui lance ZS_Talk sur le PNJ. Story 4.3 : PNJ occupé par l'autre joueur → 0 (refus natif,
+// comme en combat) sans l'original.
 long long detour_assess_talk_session(void* spu, void* self, void* other, long long arg) {
-    sync::dialogue::on_assess_talk(spu, self, other);  // noexcept
+    if (sync::dialogue::on_assess_talk(spu, self, other)) return 0;  // noexcept
     return g_original_assess_talk(spu, self, other, arg);
 }
 

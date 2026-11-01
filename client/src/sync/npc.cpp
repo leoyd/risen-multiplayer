@@ -866,6 +866,11 @@ void freed_pose(cs::World& world) {
     }
 }
 
+void* held_entity(std::uint32_t net_id) {
+    const auto it = g_held.find(net_id);
+    return it == g_held.end() ? nullptr : it->second.entity.ptr;
+}
+
 void* replica_entity(std::uint32_t net_id) {
     const auto it = g_replicas.find(net_id);
     return it == g_replicas.end() || it->second.dead ? nullptr : it->second.entity.ptr;

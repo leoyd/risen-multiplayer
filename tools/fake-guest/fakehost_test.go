@@ -52,6 +52,9 @@ type hostConfig struct {
 	// Story 4.1 : > 0 : un DialogLine tous les N ticks de snapshot, à partir du tick N, en alternant le
 	// PNJ 1004 (type 0, dialogSample) et le héros de l'hôte (locuteur 1, type 3, dialogHeroSample).
 	DialogEvery int64
+	// Story 4.3 : > 0 : un DialogState tous les N ticks de snapshot, à partir du tick N, en alternant
+	// début (PNJ 1004, actif 1) et fin (actif 0) de l'engagement du héros de l'hôte (v18).
+	HostDialogStateEvery int64
 }
 
 // Story 4.1 : échantillon des DialogLine de l'hôte simulé (celui de dialog_line.bin).
@@ -104,6 +107,7 @@ type hostRecord struct {
 	respawnsSent int                    // Respawn (ordres) envoyés à l'invité (v14)
 	npcAttacks   int                    // NpcAttack envoyés à l'invité (v15)
 	dialogLines  int                    // DialogLine envoyés à l'invité (v16)
+	hostStates   int                    // DialogState envoyés à l'invité (v18, story 4.3)
 	guestAttacks []protocol.NpcAttack   // NpcAttack reçus de l'invité (v15, story 3.8b)
 	dialogStates []protocol.DialogState // DialogState reçus de l'invité (v17, story 4.2)
 	guestLines   []protocol.DialogLine  // DialogLine reçus de l'invité (v17, story 4.2)
@@ -536,6 +540,15 @@ func (h *simHost) tick() {
 			}
 			h.mu.Lock()
 			h.rec.dialogLines++
+			h.mu.Unlock()
+		}
+		if h.cfg.HostDialogStateEvery > 0 && tick > 0 && tick%h.cfg.HostDialogStateEvery == 0 {
+			h.mu.Lock()
+			active := uint8(1 - h.rec.hostStates%2)
+			h.mu.Unlock()
+			h.sendReliable(protocol.DialogState{NpcNetId: 1004, Active: active})
+			h.mu.Lock()
+			h.rec.hostStates++
 			h.mu.Unlock()
 		}
 		if h.cfg.NpcAttackEvery > 0 && tick > 0 && tick%h.cfg.NpcAttackEvery == 0 {

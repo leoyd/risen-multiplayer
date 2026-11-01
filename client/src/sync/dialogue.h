@@ -54,8 +54,15 @@ void on_start_output(void* spu, const void* sample, int type) noexcept;
 // Détour d'AssessTalk (story 4.2), avant l'original : copie de la demande (PNJ self, demandeur other :
 // `Entity*` lus en eCEntity*, ceux de l'unité si nuls) pour la frame. Lecture mémoire et accesseurs
 // GetSelfEntity / GetOtherEntity seuls (sous SEH).
+// Story 4.3 : rend vrai (demande refusée : le détour rend 0 sans appeler l'original) si le demandeur est
+// le héros local et le PNJ celui que l'autre joueur occupe (set_busy) ; le message part de la frame.
 // Ne lève jamais d'exception.
-void on_assess_talk(void* spu, void* self, void* other) noexcept;
+bool on_assess_talk(void* spu, void* self, void* other) noexcept;
+
+// Story 4.3, frame : héros local et PNJ occupé par l'autre joueur (nul : aucun), lus par le détour
+// d'AssessTalk. Les demandes refusées affichent « <nom> ne peut pas vous parler, il est occupé. »
+// (GUI2::PrintGameLog, une fois par 2 s au plus) depuis host_frame ou guest_frame, et un Info.
+void set_busy(void* hero, void* npc);
 
 // Hôte, frame : file vidée ; en session (`in_session`), répliques du dialogue en cours → `out`
 // (LocalDialogLine, et LocalDialogReplayed pour les ignorées). Hors session : file vidée seulement.

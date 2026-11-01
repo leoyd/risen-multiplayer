@@ -503,6 +503,13 @@ void frame() {
     npc::drain_lost(g_inputs);  // story 4.2 : tenues ou libérations impossibles (frame précédente)
     world.routine_blocked = sync::anim_filter().take_routine_blocked();
     execute(g_session->tick(now, world, g_inputs));
+    // Story 4.3 : PNJ occupé par l'autre joueur (hôte : le PNJ tenu ; invité : celui de l'hôte), pour le
+    // détour d'AssessTalk.
+    if (const std::uint32_t busy = g_session->busy_npc(); busy != 0 && hero != nullptr) {
+        dialogue::set_busy(hero, g_role == Role::Host ? npc::held_entity(busy) : npc::replica_entity(busy));
+    } else {
+        dialogue::set_busy(hero, nullptr);
+    }
     // Story 3.5 : héros, rôle et état vus par le détour des dégâts (hors session dès Ended).
     hits::publish(world.loaded() ? reinterpret_cast<void*>(world.player) : nullptr, g_role,
                   g_session->state() == cs::State::InSession, thread);

@@ -4660,17 +4660,101 @@ TEST("dialogues 4.2 invité : fin de session pendant le dialogue → ReleaseNpc 
     CHECK_EQ(g.freed_replica(), 0u);
 }
 
-TEST("dialogues 4.2 invité : DialogState ou DialogLine{2} reçus → ignorés, Warn une fois") {
+TEST("dialogues 4.2 invité : DialogLine{2} reçu → ignoré, Warn une fois") {
     Session g = guest_with_npcs();
-    Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::DialogState{1001, 1})));
-    CHECK(count_of<FreeReplica>(out) == 0);
-    CHECK(has_log_at(out, Level::Warn, "ignoré : l'invité ne tient aucun PNJ"));
-    out = g.tick(410, loaded_world(), reliable(encode_r(proto::DialogLine{proto::kGuestNetId, 3, kSample})));
+    Output out = g.tick(410, loaded_world(), reliable(encode_r(proto::DialogLine{proto::kGuestNetId, 3, kSample})));
     CHECK(commands_of<ApplyDialogLine>(out).empty());
-    CHECK(has_log_at(out, Level::Debug, "ignoré : locuteur 2 = son propre héros"));  // même Warn que DialogState : une fois
-    out = g.tick(420, loaded_world(), reliable2(proto::DialogState{1001, 0}, proto::DialogLine{proto::kGuestNetId, 3, kSample}));
+    CHECK(has_log_at(out, Level::Warn, "ignoré : locuteur 2 = son propre héros"));
+    out = g.tick(420, loaded_world(), reliable(encode_r(proto::DialogLine{proto::kGuestNetId, 3, kSample})));
     CHECK(!has_log_at(out, Level::Warn, "ignoré"));
     CHECK(g.state() == State::InSession);
+}
+
+TEST("dialogues 4.3 invité : DialogState{1001, 1} de l'hôte → busy_npc 1001, Info ; {1001, 0} → 0") {
+    Session g = guest_with_npcs();
+    CHECK_EQ(g.busy_npc(), 0u);
+    Output out = g.tick(400, loaded_world(), reliable(encode_r(proto::DialogState{1001, 1})));
+    CHECK(count_of<FreeReplica>(out) == 0 && sent_of<proto::DialogState>(out).empty());
+    CHECK(has_log_at(out, Level::Info, "[sync] DialogState de l'hôte (PNJ 1001, occupé) : dialogue refusé à l'invité"));
+    CHECK_EQ(g.busy_npc(), 1001u);
+    out = g.tick(410, loaded_world(), reliable(encode_r(proto::DialogState{1000, 0})));  // autre PNJ : sans effet
+    CHECK_EQ(g.busy_npc(), 1001u);
+    out = g.tick(420, loaded_world(), reliable(encode_r(proto::DialogState{1001, 0})));
+    CHECK(has_log_at(out, Level::Info, "l'invité peut de nouveau lui parler"));
+    CHECK_EQ(g.busy_npc(), 0u);
+    // Despawn du PNJ occupé : plus rien à refuser.
+    g.tick(440, loaded_world(), reliable(encode_r(proto::DialogState{1001, 1})));
+    g.tick(450, loaded_world(), reliable(encode_r(proto::Despawn{1001})));
+    CHECK_EQ(g.busy_npc(), 0u);
+    // Fin de session : 0.
+    g.tick(460, loaded_world(), reliable(encode_r(proto::DialogState{1000, 1})));
+    CHECK_EQ(g.busy_npc(), 1000u);
+    g.tick(470, loaded_world(), reliable(encode_r(proto::SessionEnd{1})));
+    CHECK_EQ(g.busy_npc(), 0u);
+}
+
+TEST("dialogues 4.3 invité : l'hôte occupe le PNJ auquel l'invité parle déjà (course) → Warn") {
+    Session g = guest_with_npcs();
+    g.tick(400, loaded_world(), {LocalDialogState{1001, true}});
+    const Output out = g.tick(410, loaded_world(), reliable(encode_r(proto::DialogState{1001, 1})));
+    CHECK(has_log_at(out, Level::Warn, "l'hôte et l'invité lui parlent en même temps"));
+    CHECK_EQ(g.busy_npc(), 1001u);
+    CHECK_EQ(g.freed_replica(), 1001u);  // le dialogue local continue
+}
+
+TEST("dialogues 4.3 hôte : PNJ occupé par l'hôte → DialogState{1001, 1} envoyé, puis {1001, 0} ; busy_npc = PNJ tenu") {
+    Session s = host_with_npcs();  // 1000 = GUID 1, 1001 = GUID 2
+    World engaged = host_world({}, false);
+    engaged.engaged_ok = true;
+    engaged.engaged = guid_of(2);
+    Output out = s.tick(1060, engaged, {});
+    auto sent = sent_of<proto::DialogState>(out);
+    CHECK(sent.size() == 1 && sent[0].npc_net_id == 1001u && sent[0].active == 1);
+    CHECK(has_log_at(out, Level::Info, "[sync] PNJ 1001 occupé par l'hôte (dialogue)"));
+    CHECK(sent_of<proto::DialogState>(s.tick(1070, engaged, {})).empty());  // une seule fois
+    // Le dialogue en cours fait foi sur la demande : autre PNJ → fin de l'ancien, début du nouveau.
+    World talking = engaged;
+    talking.dialog_running = true;
+    talking.dialog_partner_ok = true;
+    talking.dialog_partner = guid_of(1);
+    out = s.tick(1080, talking, {});
+    sent = sent_of<proto::DialogState>(out);
+    CHECK(sent.size() == 2 && sent[0].npc_net_id == 1001u && sent[0].active == 0 && sent[1].npc_net_id == 1000u &&
+          sent[1].active == 1);
+    out = s.tick(1090, host_world({}, false), {});
+    sent = sent_of<proto::DialogState>(out);
+    CHECK(sent.size() == 1 && sent[0].npc_net_id == 1000u && sent[0].active == 0);
+    CHECK(has_log_at(out, Level::Info, "[sync] PNJ 1000 libéré par l'hôte"));
+    // busy_npc de l'hôte : le PNJ tenu pour l'invité.
+    CHECK_EQ(s.busy_npc(), 0u);
+    s.tick(1100, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    CHECK_EQ(s.busy_npc(), 1001u);
+}
+
+TEST("dialogues 4.3 hôte : PNJ non annoncé occupé → rien envoyé ; DialogState de l'invité pour le PNJ occupé → ignoré") {
+    Session s = host_with_npcs();
+    World other = host_world({}, false);
+    other.engaged_ok = true;
+    other.engaged = guid_of(9);  // pas annoncé
+    CHECK(sent_of<proto::DialogState>(s.tick(1060, other, {})).empty());
+    World engaged = host_world({}, false);
+    engaged.engaged_ok = true;
+    engaged.engaged = guid_of(2);
+    const Output out = s.tick(1070, engaged, reliable(encode_r(proto::DialogState{1001, 1})));
+    CHECK(count_of<HoldNpc>(out) == 0);
+    CHECK(has_log(out, "ignoré (PNJ occupé par l'hôte)"));
+}
+
+TEST("dialogues 4.3 hôte : l'hôte occupe le PNJ tenu (course) → UnholdNpc, Warn") {
+    Session s = host_with_npcs();
+    s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    World engaged = host_world({}, false);
+    engaged.engaged_ok = true;
+    engaged.engaged = guid_of(2);
+    const Output out = s.tick(1070, engaged, {});
+    CHECK(count_of<UnholdNpc>(out) == 1);
+    CHECK(has_log_at(out, Level::Warn, "[sync] PNJ 1001 rendu (routine reprise) : PNJ occupé par l'hôte"));
+    CHECK_EQ(s.held_npc(), 0u);
 }
 
 TEST("dialogues 4.2 hôte : DialogState{1001, 1} → HoldNpc{1001, GUID 2}, Info ; {1001, 0} → UnholdNpc") {
@@ -4713,7 +4797,7 @@ TEST("dialogues 4.2 hôte : PNJ inconnu, mort, en dialogue avec l'hôte → igno
     talking.dialog_partner = guid_of(2);
     out = s.tick(1070, talking, reliable(encode_r(proto::DialogState{1001, 1})));
     CHECK(count_of<HoldNpc>(out) == 0);
-    CHECK(has_log(out, "ignoré (PNJ en dialogue avec l'hôte)"));
+    CHECK(has_log(out, "ignoré (PNJ occupé par l'hôte)"));
     out = s.tick(1080, talking, reliable(encode_r(proto::DialogState{1000, 1})));  // autre PNJ : tenu
     CHECK(count_of<HoldNpc>(out) == 1);
     Session d = host_in_session();
@@ -4840,7 +4924,7 @@ TEST("dialogues 4.2 hôte : hôte en dialogue au partenaire illisible → tenue 
     out = s.tick(1090, talking, {});
     const auto unhold = commands_of<UnholdNpc>(out);
     CHECK(unhold.size() == 1 && unhold[0]->net_id == 1001u);
-    CHECK(has_log(out, "[sync] PNJ 1001 rendu (routine reprise) : PNJ en dialogue avec l'hôte"));
+    CHECK(has_log(out, "[sync] PNJ 1001 rendu (routine reprise) : PNJ occupé par l'hôte"));
     CHECK_EQ(s.held_npc(), 0u);
 }
 

@@ -81,6 +81,12 @@ bool dialog_being_talked_to(const Entity& e, bool& out);
 // Story 4.2 : Entity::IsDialogCameraActive (statique) : caméra de dialogue (bandes noires) encore
 // active. Symbole facultatif : absent, false.
 bool dialog_camera_active(bool& out);
+// Story 4.3 : PSInteraction::GetFocusName de l'entité (nom affiché au survol, traduit), copié dans
+// `buf` (`cap` caractères au plus, sans zéro final). Symbole facultatif : absent, false.
+bool focus_name(const Entity& e, wchar_t* buf, std::size_t cap, std::size_t& len);
+// Story 4.3 : GUI2::PrintGameLog(gui2, message, 1, false, nullptr) : message du journal en jeu (en haut
+// de l'écran). Symbole facultatif : absent, false.
+bool print_game_log(const wchar_t* message);
 
 // --- Parole --------------------------------------------------------------------------------
 // gCScriptProcessingUnit::sIsOutputPlaying(entité) : ressource de sortie en attente ou en cours.

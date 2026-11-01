@@ -108,6 +108,8 @@ void release_all(const std::string& cause);
 bool find_entity(const protocol::Guid& guid, void*& out);
 // Invité : entité de la réplique `net_id` (nul si inconnue ou morte). Frame seulement, jamais gardée.
 void* replica_entity(std::uint32_t net_id);
+// Story 4.3, hôte : entité du PNJ tenu `net_id` (nul : pas tenu).
+void* held_entity(std::uint32_t net_id);
 // Story 4.2, invité : NetId de la réplique vivante d'entité `entity` (0 si ce n'en est pas une).
 std::uint32_t replica_net_id(const void* entity);
 // Story 4.2, invité : libère (`freed`) ou re-fige la réplique `net_id` (FreeReplica). Inconnue ou

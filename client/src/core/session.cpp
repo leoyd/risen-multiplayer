@@ -316,7 +316,8 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         place_avatar(now, out);
         place_held(now, out);  // story 4.2 : gestes et pose du partenaire de l'invité
         place_npcs(now, out);
-        dialog_timers(now, out);  // story 4.2 : PNJ tenu trop longtemps
+        announce_host_dialog(out);  // story 4.3 : PNJ occupé par l'hôte, avant la tenue
+        dialog_timers(now, out);    // story 4.2 : PNJ tenu trop longtemps
         snapshot_stats(now, out);
     }
     return out;
@@ -768,6 +769,8 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     dialog_guest_warned_ = false;      // story 4.2
     guest_dialog_npc_ = 0;             // vides en pratique : remis à zéro à Ended
     held_npc_ = 0;
+    host_engaged_sent_ = 0;            // story 4.3
+    host_dialog_npc_ = 0;
     held_pending_.clear();
     held_interp_.reset();
     reset_respawn();                   // story 3.7
@@ -1029,6 +1032,7 @@ void Session::on_npc_despawn(std::uint32_t net_id, Output& out) {
         out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(net_id) +
                                              " : Despawn pendant le dialogue de l'invité : plus de pose de l'hôte"});
     }
+    if (net_id == host_dialog_npc_) host_dialog_npc_ = 0;  // story 4.3 : réplique rendue, plus rien à refuser
     replicas_.erase(it);
     out.commands.push_back(ReleaseNpc{net_id});
     out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(net_id) + " : Despawn reçu : réplique libérée"});
@@ -1471,10 +1475,7 @@ void Session::on_dialog_state(std::uint64_t now, const proto::DialogState& m, Ou
     const std::string what = "[sync] DialogState (PNJ " + std::to_string(m.npc_net_id) + ", " +
                              (m.active != 0 ? "début" : "fin") + ")";
     if (settings_.role != Role::Host) {
-        ++dialog_.ignored;
-        out.logs.push_back({dialog_guest_warned_ ? Level::Debug : Level::Warn,
-                            what + " ignoré : l'invité ne tient aucun PNJ"});
-        dialog_guest_warned_ = true;  // Warn une fois par session, puis Debug
+        on_host_dialog_state(m, out);  // story 4.3
         return;
     }
     ++dialog_.states_received;
@@ -1493,9 +1494,8 @@ void Session::on_dialog_state(std::uint64_t now, const proto::DialogState& m, Ou
         why = "PNJ non annoncé";
     } else if (world_.dialog_running && !world_.dialog_partner_ok) {
         why = "hôte en dialogue, partenaire illisible";
-    } else if (world_.dialog_running) {
-        const auto it = npc_ids_.find(world_.dialog_partner);
-        if (it != npc_ids_.end() && it->second == m.npc_net_id) why = "PNJ en dialogue avec l'hôte";
+    } else if (host_engaged_id() == m.npc_net_id) {
+        why = "PNJ occupé par l'hôte";  // story 4.3 : dialogue, demande en attente ou clôture
     }
     if (why != nullptr) {
         ++dialog_.ignored;
@@ -1516,6 +1516,80 @@ void Session::on_dialog_state(std::uint64_t now, const proto::DialogState& m, Ou
     out.commands.push_back(HoldNpc{m.npc_net_id, g->second});
     out.logs.push_back({Level::Info, what + " : PNJ " + std::to_string(m.npc_net_id) +
                                          " tenu (routine figée) pendant le dialogue de l'invité"});
+}
+
+std::uint32_t Session::busy_npc() const {
+    if (state_ != State::InSession || !settings_.dialogues) return 0;
+    return settings_.role == Role::Host ? held_npc_ : host_dialog_npc_;
+}
+
+std::uint32_t Session::host_engaged_id() const {
+    if (settings_.role != Role::Host || !settings_.dialogues) return 0;
+    // Le partenaire du dialogue en cours fait foi ; sinon la demande en attente ou la clôture.
+    const bool talking = world_.dialog_running && world_.dialog_partner_ok;
+    if (!talking && !world_.engaged_ok) return 0;
+    const auto it = npc_ids_.find(talking ? world_.dialog_partner : world_.engaged);
+    if (it == npc_ids_.end() || npc_active_.count(it->second) == 0) return 0;  // pas annoncé à l'invité
+    return it->second;
+}
+
+void Session::announce_host_dialog(Output& out) {
+    if (settings_.role != Role::Host) return;
+    const std::uint32_t id = host_engaged_id();
+    if (id == host_engaged_sent_) return;
+    const std::uint32_t old = host_engaged_sent_;
+    host_engaged_sent_ = id;
+    Bytes bytes;
+    if (old != 0 && proto::encode_reliable(proto::DialogState{old, 0}, bytes)) {
+        out.commands.push_back(SendReliable{std::move(bytes)});
+        ++dialog_.states_sent;
+        out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(old) +
+                                             " libéré par l'hôte : DialogState{" + std::to_string(old) +
+                                             ", 0} envoyé"});
+    }
+    if (id != 0 && proto::encode_reliable(proto::DialogState{id, 1}, bytes)) {
+        out.commands.push_back(SendReliable{std::move(bytes)});
+        ++dialog_.states_sent;
+        out.logs.push_back({Level::Info, "[sync] PNJ " + std::to_string(id) +
+                                             " occupé par l'hôte (dialogue) : DialogState{" + std::to_string(id) +
+                                             ", 1} envoyé, refusé à l'invité"});
+    }
+}
+
+void Session::on_host_dialog_state(const proto::DialogState& m, Output& out) {
+    const std::string what = "[sync] DialogState de l'hôte (PNJ " + std::to_string(m.npc_net_id) + ", " +
+                             (m.active != 0 ? "occupé" : "libre") + ")";
+    ++dialog_.states_received;
+    if (!settings_.dialogues) {
+        ++dialog_.ignored;
+        out.logs.push_back({Level::Debug, what + " ignoré (dialogues = 0)"});
+        dialog_ignored_off("DialogState", out);
+        return;
+    }
+    if (m.npc_net_id < proto::kFirstNpcNetId) {
+        ++dialog_.ignored;
+        out.logs.push_back({dialog_guest_warned_ ? Level::Debug : Level::Warn, what + " ignoré (NetId < 1000)"});
+        dialog_guest_warned_ = true;  // Warn une fois par session, puis Debug
+        return;
+    }
+    if (m.active == 0) {
+        if (m.npc_net_id != host_dialog_npc_) {
+            out.logs.push_back({Level::Debug, what + " : ignoré (pas le PNJ occupé par l'hôte)"});
+            return;
+        }
+        host_dialog_npc_ = 0;
+        out.logs.push_back({Level::Info, what + " : l'invité peut de nouveau lui parler"});
+        return;
+    }
+    host_dialog_npc_ = m.npc_net_id;
+    out.logs.push_back({Level::Info, what + " : dialogue refusé à l'invité tant que l'hôte l'occupe"});
+    if (guest_dialog_npc_ == m.npc_net_id) {
+        // Course : les deux demandes se sont croisées. L'hôte ignore le DialogState de l'invité, dont le
+        // dialogue local continue sans PNJ tenu chez l'hôte.
+        out.logs.push_back({Level::Warn, "[sync] PNJ " + std::to_string(m.npc_net_id) +
+                                             " : l'hôte et l'invité lui parlent en même temps (demandes croisées) : "
+                                             "le dialogue de l'invité n'est pas vu par l'hôte"});
+    }
 }
 
 void Session::unhold_npc(const std::string& why, Level level, Output& out) {
@@ -1548,13 +1622,11 @@ void Session::place_held(std::uint64_t now, Output& out) {
 
 void Session::dialog_timers(std::uint64_t now, Output& out) {
     if (held_npc_ == 0) return;
-    // L'hôte se met à parler au PNJ tenu : rendu (son dialogue a besoin de sa routine).
-    if (world_.dialog_running && world_.dialog_partner_ok) {
-        const auto it = npc_ids_.find(world_.dialog_partner);
-        if (it != npc_ids_.end() && it->second == held_npc_) {
-            unhold_npc("PNJ en dialogue avec l'hôte", Level::Info, out);
-            return;
-        }
+    // L'hôte occupe le PNJ tenu (course : sa demande est passée avant le DialogState de l'invité) : rendu,
+    // son dialogue a besoin de sa routine.
+    if (host_engaged_sent_ == held_npc_) {
+        unhold_npc("PNJ occupé par l'hôte", Level::Warn, out);
+        return;
     }
     if (now - held_since_ < kDialogHoldTimeoutMs) return;
     unhold_npc(std::to_string(kDialogHoldTimeoutMs / 1000) + " s sans activité du dialogue de l'invité", Level::Warn,
@@ -1711,6 +1783,7 @@ void Session::place_npcs(std::uint64_t now, Output& out) {
 
 void Session::apply_pending_death(std::uint32_t id, Replica& r, Output& out) {
     if (!r.death_pending || r.dead) return;
+    if (id == host_dialog_npc_) host_dialog_npc_ = 0;  // story 4.3 : mort, plus rien à refuser
     if (id == guest_dialog_npc_) {  // story 4.2 : re-figée d'abord (registre), puis tuée
         guest_dialog_npc_ = 0;
         out.commands.push_back(FreeReplica{id, false});
@@ -1741,6 +1814,8 @@ void Session::release_npcs(const std::string& why, Output& out) {
     }
     guest_dialog_npc_ = 0;       // story 4.2, invité : ReleaseNpc la rend au jeu, libérée ou non
     if (held_npc_ != 0) unhold_npc(why, Level::Info, out);  // story 4.2, hôte
+    host_engaged_sent_ = 0;      // story 4.3 : plus de PNJ annoncé, rien à signaler
+    host_dialog_npc_ = 0;
     early_npcs_.clear();         // story 3.4a : entrées en avance sans objet
     set_animated_npcs({}, out);  // hôte (story 3.4) : plus aucun PNJ capturé
     npc_param_batch_.clear();

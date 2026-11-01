@@ -70,6 +70,11 @@ constexpr const char* kStopTalk = "?StopTalk@GUI2@@QEAAXXZ";
 // l'entité est lue à [this] puis GetPropertySet(0x37) (gCDialog_PS) : désassemblage, 0x180220290.
 constexpr const char* kBeingTalkedTo = "?IsBeingTalkedTo@PSDialog@@QEBA_NXZ";
 constexpr const char* kDialogCameraActive = "?IsDialogCameraActive@Entity@@SA_NXZ";  // facultatif (story 4.2)
+// Story 4.3, facultatifs (Script.dll) : nom affiché au survol (`this` = Entity de 8 octets, l'entité est
+// lue à [this] puis GetPropertySet(0x28), gCInteraction_PS : désassemblage, 0x180222750 ; retour par sret)
+// et message du journal en jeu (`this` = gui2 ; type 1 comme PrintEquipMissingSkill de Script_Game.dll).
+constexpr const char* kFocusName = "?GetFocusName@PSInteraction@@QEBA?AVbCUnicodeString@@XZ";
+constexpr const char* kPrintGameLog = "?PrintGameLog@GUI2@@QEAAXAEBVbCUnicodeString@@W4gELogMessageType@@_NPEAD@Z";
 constexpr const char* kEntityCopyCtor = "??0Entity@@QEAA@AEBV0@@Z";
 constexpr const char* kGui2 = "gui2";
 constexpr const char* kLocGetInstance = "?GetInstance@eCLocAdmin2@@SAAEAV1@XZ";
@@ -103,6 +108,8 @@ struct DialogueAbi {
     StopTalkFn stop_talk = nullptr;
     bool (*being_talked_to)(const Entity* self) = nullptr;  // facultatif (story 4.2)
     bool (*dialog_camera_active)() = nullptr;                // facultatif (story 4.2)
+    void* (*focus_name)(const Entity* self, void* ustring_sret) = nullptr;                    // facultatif (4.3)
+    void (*print_game_log)(void* gui, const void* ustring, int type, bool flag, char* extra) = nullptr;  // idem
     EntityCopyCtorFn entity_copy_ctor = nullptr;
     void* gui2 = nullptr;
     LocGetInstanceFn loc_get_instance = nullptr;
@@ -247,6 +254,8 @@ bool resolve_dialogue(const char*& missing) {
     const char* optional = nullptr;
     lookup(script, kBeingTalkedTo, a.being_talked_to, optional);  // absent : dialog_being_talked_to rend false
     lookup(script, kDialogCameraActive, a.dialog_camera_active, optional);
+    lookup(script, kFocusName, a.focus_name, optional);         // absent : nom générique
+    lookup(script, kPrintGameLog, a.print_game_log, optional);  // absent : refus au journal seulement
     if (HMODULE script_game = GetModuleHandleW(L"Script_Game.dll"); script_game != nullptr) {
         lookup(script_game, kAssessTalk, a.assess_talk, optional);  // absent : pas de libération à la demande
     }
@@ -312,6 +321,44 @@ bool dialog_camera_active(bool& out) {
         out = false;
         return false;
     }
+}
+
+bool focus_name(const Entity& e, wchar_t* buf, std::size_t cap, std::size_t& len) {
+    len = 0;
+    if (!g_resolved || g_abi.focus_name == nullptr || e.ptr == nullptr || buf == nullptr) return false;
+    void* text = nullptr;  // bCUnicodeString (un pointeur), rempli par l'appelé
+    bool ok = false;
+    __try {
+        g_abi.focus_name(&e, &text);
+        len = raw_copy_wstr(g_abi.ustring_get_text(&text), buf, cap);
+        ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        len = 0;
+        ok = false;
+    }
+    __try {
+        if (text != nullptr) g_abi.ustring_dtor(&text);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return ok;
+}
+
+bool print_game_log(const wchar_t* message) {
+    if (!g_resolved || g_abi.print_game_log == nullptr || g_abi.gui2 == nullptr || message == nullptr) return false;
+    void* text = nullptr;
+    bool ok = false;
+    __try {
+        g_abi.ustring_ctor(&text, message);
+        g_abi.print_game_log(g_abi.gui2, &text, 1, false, nullptr);
+        ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    __try {
+        if (text != nullptr) g_abi.ustring_dtor(&text);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return ok;
 }
 
 bool info_is_running(bool& out) {

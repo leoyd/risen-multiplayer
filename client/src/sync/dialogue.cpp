@@ -10,12 +10,18 @@
 #include "sync/dialogue_rules.h"
 #include "sync/npc.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <cwchar>
 
 namespace mp::sync::dialogue {
 
@@ -54,6 +60,12 @@ struct TalkRequest {
 constexpr std::size_t kTalkRing = 8;
 TalkRequest g_talk_ring[kTalkRing];
 std::size_t g_talk_pending = 0;
+// Story 4.3 : PNJ occupé par l'autre joueur et héros local, publiés par la frame (set_busy) ; demandes
+// du héros local à ce PNJ refusées par le détour, en attente du message de la frame.
+void* g_busy_npc = nullptr;
+void* g_local_hero = nullptr;
+void* g_refused[kTalkRing] = {};
+std::size_t g_refused_pending = 0;
 
 // --- Thread principal uniquement -----------------------------------------------------------
 bool g_active = false;
@@ -71,6 +83,17 @@ bool g_guest_running = false;
 std::uint32_t g_guest_partner = 0;
 bool g_running_warned = false;
 bool g_npc_warned = false;
+// Story 4.3, hôte : PNJ que son héros occupe hors dialogue (demande acceptée en attente du dialogue, ou
+// clôture), comme g_talk_request et g_closing chez l'invité ; et état du dialogue à la frame précédente.
+void* g_host_request = nullptr;
+std::chrono::steady_clock::time_point g_host_request_deadline{};
+void* g_host_closing = nullptr;
+std::chrono::steady_clock::time_point g_host_closing_since{};
+bool g_host_running = false;
+void* g_host_partner = nullptr;
+// Story 4.3 : dernier message « occupé » affiché (un par kRefusalCooldown au plus), message absent signalé.
+std::chrono::steady_clock::time_point g_last_refusal_message{};
+bool g_refusal_message_warned = false;
 // Story 4.2 (correctif du test du 2026-10-25) : réplique à qui le héros invité a demandé à parler
 // (AssessTalk), comptée comme partenaire jusqu'au début du dialogue ou jusqu'à l'échéance.
 constexpr auto kTalkTimeout = std::chrono::seconds(5);
@@ -103,6 +126,23 @@ std::size_t drain_talks(TalkRequest (&batch)[kTalkRing]) {
     for (std::size_t i = 0; i < n; ++i) batch[i] = g_talk_ring[i];
     g_talk_pending = 0;
     return n;
+}
+
+std::size_t drain_refused(void* (&batch)[kTalkRing]) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const std::size_t n = g_refused_pending;
+    for (std::size_t i = 0; i < n; ++i) batch[i] = g_refused[i];
+    g_refused_pending = 0;
+    return n;
+}
+
+std::string utf8_of(const wchar_t* text, std::size_t len) {
+    if (len == 0) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, text, static_cast<int>(len), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(static_cast<std::size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text, static_cast<int>(len), out.data(), n, nullptr, nullptr);
+    return out;
 }
 
 std::string ptr_text(const void* p) {
@@ -153,7 +193,7 @@ void on_start_output(void* spu, const void* sample, int type) noexcept {
     }
 }
 
-void on_assess_talk(void* spu, void* self, void* other) noexcept {
+bool on_assess_talk(void* spu, void* self, void* other) noexcept {
     // Arguments de script : `Entity*` (enveloppe d'un eCEntity*), nuls pour ceux de l'unité.
     TalkRequest t;
     if (self != nullptr ? !game::read_entity_ptr(self, t.npc) : !game::spu_self_entity(spu, t.npc)) t.npc = nullptr;
@@ -162,9 +202,25 @@ void on_assess_talk(void* spu, void* self, void* other) noexcept {
     }
     try {
         std::lock_guard<std::mutex> lock(g_mutex);
+        // Story 4.3 : le héros local demande à parler au PNJ que l'autre joueur occupe : refusée.
+        if (t.npc != nullptr && t.npc == g_busy_npc && t.asker != nullptr && t.asker == g_local_hero) {
+            if (g_refused_pending < kTalkRing) g_refused[g_refused_pending++] = t.npc;
+            return true;
+        }
         if (g_talk_pending < kTalkRing) g_talk_ring[g_talk_pending++] = t;
     } catch (...) {
-        // std::system_error du verrou : demande perdue, jamais d'exception vers le jeu.
+        // std::system_error du verrou : demande perdue (laissée au jeu), jamais d'exception vers le jeu.
+    }
+    return false;
+}
+
+void set_busy(void* hero, void* npc) {
+    try {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_local_hero = hero;
+        g_busy_npc = npc;
+    } catch (...) {
+        // std::system_error du verrou : état précédent gardé.
     }
 }
 
@@ -239,17 +295,61 @@ void process_lines(const Captured* batch, std::size_t n, unsigned dropped, void*
 
 }  // namespace
 
+namespace {
+
+// Story 4.3 : demandes refusées par le détour : message du journal en jeu (un par kRefusalCooldown au
+// plus, une touche tenue en redemande) et Info.
+constexpr auto kRefusalCooldown = std::chrono::seconds(2);
+
+void notify_refusals() {
+    void* refused[kTalkRing];
+    const std::size_t n = drain_refused(refused);
+    if (n == 0) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - g_last_refusal_message < kRefusalCooldown) return;
+    g_last_refusal_message = now;
+    wchar_t name[128];
+    std::size_t len = 0;
+    if (!game::focus_name(game::Entity{refused[n - 1]}, name, sizeof name / sizeof name[0], len) || len == 0) {
+        static constexpr wchar_t kGeneric[] = L"Ce personnage";
+        len = sizeof kGeneric / sizeof kGeneric[0] - 1;
+        std::wmemcpy(name, kGeneric, len);
+    }
+    const std::wstring message = std::wstring(name, len) + L" ne peut pas vous parler, il est occupé.";
+    const bool shown = game::print_game_log(message.c_str());
+    log::info("[sync] dialogues : demande de dialogue au PNJ « " + utf8_of(name, len) + " » (" +
+              ptr_text(refused[n - 1]) + ") refusée : occupé par l'autre joueur" +
+              (shown ? std::string() : std::string(" (message à l'écran impossible)")));
+    if (!shown && !g_refusal_message_warned) {
+        g_refusal_message_warned = true;
+        log::warn("[sync] dialogues : GUI2::PrintGameLog absent ou en échec : refus de dialogue sans message à "
+                  "l'écran (une fois par session)");
+    }
+}
+
+}  // namespace
+
 void host_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
     Captured batch[kRing];
     unsigned dropped = 0;
     const std::size_t n = drain(batch, dropped);
     TalkRequest talks[kTalkRing];
-    const std::size_t nt = drain_talks(talks);  // hôte : PNJ natifs, rien à libérer ; journal seul
+    const std::size_t nt = drain_talks(talks);  // hôte : PNJ natifs, rien à libérer
+    notify_refusals();
+    // Story 4.3 : demande acceptée du héros de l'hôte : PNJ occupé jusqu'au dialogue (ou 5 s sans).
+    const auto now = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < nt && in_session && hero != nullptr; ++i) {
-        if (talks[i].asker == hero) log::debug("[sync] dialogues : AssessTalk du héros de l'hôte au PNJ " + ptr_text(talks[i].npc));
+        if (talks[i].asker != hero || talks[i].npc == nullptr) continue;
+        log::debug("[sync] dialogues : AssessTalk du héros de l'hôte au PNJ " + ptr_text(talks[i].npc));
+        g_host_request = talks[i].npc;
+        g_host_request_deadline = now + kTalkTimeout;
     }
     if (!g_active || !in_session || hero == nullptr) {
         g_ignored = 0;
+        g_host_request = nullptr;
+        g_host_closing = nullptr;
+        g_host_running = false;
+        g_host_partner = nullptr;
         return;
     }
     process_lines(batch, n, dropped, hero, false, out);
@@ -259,15 +359,48 @@ void host_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
 void read_host_state(cs::World& world) {
     world.dialog_running = false;
     world.dialog_partner_ok = false;
+    world.engaged_ok = false;
     if (!g_active || !world.loaded()) return;
     bool running = false;
-    if (!game::info_is_running(running) || !running) return;
-    world.dialog_running = true;
+    const bool readable = game::info_is_running(running);
     game::Entity partner;
+    if (readable && running) {
+        world.dialog_running = true;
+        std::uint8_t id[game::kPropertyIdSize];
+        if (game::info_dialog_npc(partner) && partner.ptr != nullptr && game::get_entity_id(partner, id)) {
+            std::memcpy(world.dialog_partner.data(), id, world.dialog_partner.size());
+            world.dialog_partner_ok = true;
+        }
+    }
+    // Story 4.3 : PNJ occupé par le héros de l'hôte hors dialogue : demande en attente, puis clôture
+    // (mêmes délais que la réplique libérée de l'invité : sa routine finit ZS_Talk).
+    const auto now = std::chrono::steady_clock::now();
+    if (readable && running) {
+        g_host_request = nullptr;  // dialogue commencé : son partenaire fait foi
+        g_host_closing = nullptr;
+    } else if (g_host_request != nullptr && now >= g_host_request_deadline) {
+        g_host_request = nullptr;
+    }
+    if (readable && g_host_running && !running && g_host_partner != nullptr && g_host_request == nullptr) {
+        g_host_closing = g_host_partner;
+        g_host_closing_since = now;
+    }
+    if (g_host_closing != nullptr && g_host_request == nullptr) {
+        bool camera = false;
+        const bool camera_ok = game::dialog_camera_active(camera);
+        const auto elapsed = now - g_host_closing_since;
+        if (!(elapsed < kCloseMin || (camera_ok && camera && elapsed < kCloseMax))) g_host_closing = nullptr;
+    }
+    if (readable) {
+        g_host_running = running;
+        g_host_partner = running ? partner.ptr : nullptr;
+    }
+    void* engaged = g_host_request != nullptr ? g_host_request : g_host_closing;
     std::uint8_t id[game::kPropertyIdSize];
-    if (!game::info_dialog_npc(partner) || partner.ptr == nullptr || !game::get_entity_id(partner, id)) return;
-    std::memcpy(world.dialog_partner.data(), id, world.dialog_partner.size());
-    world.dialog_partner_ok = true;
+    if (engaged != nullptr && game::get_entity_id(game::Entity{engaged}, id)) {
+        std::memcpy(world.engaged.data(), id, world.engaged.size());
+        world.engaged_ok = true;
+    }
 }
 
 void guest_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
@@ -276,6 +409,7 @@ void guest_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
     const std::size_t n = drain(batch, dropped);
     TalkRequest talks[kTalkRing];
     const std::size_t nt = drain_talks(talks);
+    notify_refusals();  // story 4.3
     if (!g_active || !in_session || hero == nullptr) {
         // Monde déchargé pendant un dialogue : fin signalée (la session l'ignore hors session).
         if (g_guest_partner != 0) out.push_back(cs::LocalDialogState{g_guest_partner, false});
@@ -460,6 +594,12 @@ void reset() {
     g_npc_warned = false;
     g_talk_request = 0;
     g_closing = 0;
+    g_host_request = nullptr;  // story 4.3
+    g_host_closing = nullptr;
+    g_host_running = false;
+    g_host_partner = nullptr;
+    g_refusal_message_warned = false;
+    set_busy(nullptr, nullptr);
 }
 
 }  // namespace mp::sync::dialogue

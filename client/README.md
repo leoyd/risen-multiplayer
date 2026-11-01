@@ -977,6 +977,29 @@ Prérequis : `log_level = debug` des deux côtés, DLL et configs installées (`
 6. **L'hôte parle au PNJ que l'invité veut aborder** : chez l'hôte, `ignoré (PNJ en dialogue avec
    l'hôte)`, rien n'est tenu.
 
+### PNJ occupé : un seul joueur parle à un PNJ (story 4.3, protocole v18, à valider en jeu)
+
+Quand un joueur parle à un PNJ, l'autre ne peut plus lui parler : sa demande (`AssessTalk`) est refusée
+comme en combat (le détour rend 0 sans l'original) et le journal en jeu affiche « *Nom* ne peut pas vous
+parler, il est occupé. » (`GUI2::PrintGameLog`, nom de `PSInteraction::GetFocusName`, une fois par 2 s
+au plus).
+
+- **Hôte qui parle** : son PNJ est occupé dès sa demande acceptée (5 s pour que le dialogue commence),
+  pendant le dialogue et sa clôture (2 s, puis tant que la caméra de dialogue est active, 10 s au plus).
+  Info `[sync] PNJ N occupé par l'hôte (dialogue) : DialogState{N, 1} envoyé`, puis `PNJ N libéré par
+  l'hôte`. Chez l'invité : Info `[sync] DialogState de l'hôte (PNJ N, occupé) : dialogue refusé à
+  l'invité…`, puis `… l'invité peut de nouveau lui parler`.
+- **Invité qui parle** : le PNJ tenu chez l'hôte (story 4.2) est refusé au héros de l'hôte.
+- **Refus** (chez celui qui demande) : Info `[sync] dialogues : demande de dialogue au PNJ « Nom » (0x…)
+  refusée : occupé par l'autre joueur`. Sans `PrintGameLog` : Warn une fois, refus sans message.
+- **Course** (demandes croisées dans la même latence) : l'hôte garde son dialogue. Chez l'invité, Warn
+  `l'hôte et l'invité lui parlent en même temps (demandes croisées)` ; chez l'hôte, un PNJ tenu qu'il se
+  met à occuper est rendu (Warn `PNJ occupé par l'hôte`). Non résolu proprement (story 4.4).
+
+Test : l'hôte parle à un PNJ ; l'invité essaie de lui parler (message, pas de dialogue) puis réessaie
+après la fin (dialogue normal). Puis l'inverse. Vérifier aussi que deux PNJ différents restent
+accessibles en même temps.
+
 ### Overlay à l'écran (rôle et état de session)
 
 Une ligne permanente en haut à gauche de l'image dit quelle fenêtre est l'hôte et laquelle est

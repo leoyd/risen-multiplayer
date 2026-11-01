@@ -1,4 +1,4 @@
-# Reprise du travail — état au 2026-10-25
+# Reprise du travail — état au 2026-11-01
 
 Note de passation : où en est le projet et quoi faire à la prochaine session. Le détail de chaque livraison est dans sa spec, sous `_bmad-output/implementation-artifacts/spec-*.md`.
 
@@ -33,10 +33,11 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 |---|---|---|
 | 4.0 | Étude de G3 Together (Gothic 3, même moteur) + spike des dialogues (sonde Num7–Num9) | fait, **validé en jeu** : détection par `gCScriptProcessingUnit::StartOutput`, rejeu par `sStartOutput` + `StartFacialAni` (voix + lèvres) ; sous-titres non résolus (`docs/re/spike-j3.md`) |
 | 4.1 | Dialogue de l'hôte vu par l'invité (`DialogLine`, protocole **v16**) | fait, **validé en jeu** (correctif : voix des répliques figées par `UpdateChannel`) |
-| 4.2 | Dialogue de l'invité vu par l'hôte (`DialogState`, protocole **v17** ; réplique libérée chez l'invité, PNJ tenu chez l'hôte) | fait, relu, commité (`2398b1b`), **installé, pas encore testé en jeu** |
-| 4.3, 4.4 | Dialogues simultanés ; robustesse | à faire |
+| 4.2 | Dialogue de l'invité vu par l'hôte (`DialogState`, protocole **v17** ; réplique libérée chez l'invité, PNJ tenu chez l'hôte) | fait, **validé en jeu** le 2026-11-01 après correctifs (`64b19f5` : détour d'`AssessTalk`, gestes et pose du partenaire) |
+| 4.3 | PNJ occupé (`DialogState` hôte → invité, protocole **v18**) : demande de dialogue refusée au second joueur, message « *Nom* ne peut pas vous parler, il est occupé. » | fait, **blocage validé en jeu** le 2026-11-01 ; vu au test : garde natif non répliqué réagissant chez l'invité, PNJ sans riposte aux coups de l'avatar |
+| 4.4 | Robustesse (dont la course : demandes croisées au même PNJ) | à faire |
 
-- **Branches** (rien de poussé) : `main` contient l'epic 3 et la planification de l'epic 4. Travail en cours en chaîne : `story/4-0-spike-j3` → `story/4-1-dialogue-hote-vu-invite` → `story/4-2-dialogue-invite-vu-hote` (branche courante).
+- **Branches** (rien de poussé) : `main` contient l'epic 3 et la planification de l'epic 4. Travail en cours en chaîne : `story/4-0-spike-j3` → `story/4-1-dialogue-hote-vu-invite` → `story/4-2-dialogue-invite-vu-hote` → `story/4-3-dialogues-simultanes` (branche courante).
 - **Reports nés des tests** (`deferred-work.md`) : PNJ en T-pose en ville chez l'invité (8 PNJ animés seulement, story 3.4c proposée) ; objets tenus par les PNJ non répliqués (balai, story 3.4d proposée).
 
 ## Décisions de l’utilisateur à ne pas rediscuter
@@ -54,9 +55,9 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre
 
-1. **Tester la story 4.2** (DLL déjà installée dans `~/Games/Risen-host` et `Risen-invite`) : l'invité parle à un PNJ près de l'hôte. Point clé (H1) : le dialogue natif démarre-t-il avec une réplique figée ? Sinon, libérer la réplique dès la demande (journal debug `IsBeingTalkedTo`). Procédure : `client/README.md`, section de la 4.2.
-2. Selon le résultat : corriger, puis stories 4.3 (dialogues simultanés) et 4.4 (robustesse) ; ensuite 3.4c / 3.4d (PNJ de ville).
-3. Fusionner la chaîne 4.0 → 4.2 dans `main` une fois la 4.2 validée.
+1. **Tester la story 4.3** (DLL installée) : un joueur parle à un PNJ, l'autre essaie de lui parler (message « occupé », pas de dialogue), dans les deux sens ; puis deux PNJ différents en même temps. Points à vérifier : rendu du message (`PrintGameLog` type 1) et nom affiché (`GetFocusName`). Procédure : `client/README.md`, section « PNJ occupé ».
+2. Selon le résultat : corriger, commiter la 4.3, puis story 4.4 (robustesse, course des demandes croisées) ; ensuite 3.4c / 3.4d (PNJ de ville).
+3. Fusionner la chaîne 4.0 → 4.3 dans `main`.
 
 ## Points ouverts à vérifier en jeu
 

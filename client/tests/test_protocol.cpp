@@ -413,14 +413,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v17 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v18 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 17);
+    CHECK_EQ(version, 18);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 17);
+    CHECK_EQ(version, 18);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -431,12 +431,12 @@ TEST("protocole : peek_hello_version sur v17 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 17") {
+TEST("protocole : l'encodeur refuse une version autre que 18") {
     Hello h = sample_hello();
-    h.protocol_version = 16;
+    h.protocol_version = 17;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 18;
+    h.protocol_version = 19;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -568,7 +568,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 17);
+    CHECK_EQ(kProtocolVersion, 18);
     CHECK_EQ(static_cast<int>(kSpawnTypeHero), 0);
     CHECK_EQ(static_cast<int>(kSpawnTypeNpc), 1);
     CHECK_EQ(kFirstNpcNetId, 1000u);
@@ -890,8 +890,9 @@ TEST("protocole : vecteur dialog_line_guest.bin (v17) : DialogLine de l'invité"
     CHECK(enc(DialogLine{kGuestNetId, 3, "INFO_Sara_1_PC_Hero_DE_%_PC_Hero.wav"}) == b);
 }
 
-// v17 (story 4.2) : l'invité commence un dialogue avec la réplique 1033.
-TEST("protocole : vecteur dialog_state.bin (v17) : DialogState") {
+// v17 (story 4.2) : l'invité commence un dialogue avec la réplique 1033. Format inchangé en v18
+// (story 4.3), où l'hôte l'envoie aussi : le codec ne vérifie pas le sens.
+TEST("protocole : vecteur dialog_state.bin (v17, deux sens en v18) : DialogState") {
     const Bytes b = load_vector("dialog_state.bin");
     CHECK(b == (Bytes{0x1f, 0x09, 0x04, 0x00, 0x00, 0x01}));
     const auto d = dr(b);

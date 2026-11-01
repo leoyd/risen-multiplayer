@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 17
+# Protocole Risen Multiplayer — version 18
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -18,7 +18,9 @@ story 3.8b, sans changement de format ni de version : aussi invité → hôte, `
 attaque du héros invité rejouée par son avatar), la v16 (story 4.1) `DialogLine` (réplique d'un dialogue de
 l'hôte, rejouée chez l'invité sur l'entité du locuteur), la v17 (story 4.2) `DialogLine` dans l'autre sens
 (locuteur 2, héros de l'invité) et `DialogState` (début et fin d'un dialogue de l'invité avec une réplique
-de PNJ, que l'hôte tient pendant ce temps).
+de PNJ, que l'hôte tient pendant ce temps), la v18 (story 4.3) `DialogState` dans l'autre sens, format
+inchangé (PNJ avec lequel le héros de l'hôte est engagé, que l'invité marque « occupé ») et le refus d'une
+demande de dialogue vers un PNJ occupé par l'autre joueur.
 
 ## 1. Règles générales
 
@@ -67,7 +69,7 @@ de PNJ, que l'hôte tient pendant ce temps).
 | 25 | `Respawn` | fiable | hôte → invité : ordre de réapparition de l'invité ; invité → hôte : accusé, avec le premier tick de snapshot valide (v14) |
 | 29 | `NpcAttack` | fiable | hôte → invité : début d'une attaque d'un PNJ capturé (mouvement de combat et cible), lancée nativement par la réplique (v15) ; invité → hôte (story 3.8b) : début d'une attaque du héros invité (`NetId` 2), lancée nativement par son avatar |
 | 30 | `DialogLine` | fiable | hôte → invité : une réplique d'un dialogue de l'hôte (locuteur, type de sortie, fichier voix), rejouée par l'invité sur l'entité du locuteur (v16) ; invité → hôte (v17) : une réplique d'un dialogue de l'invité, rejouée par l'hôte |
-| 31 | `DialogState` | fiable | invité → hôte : début ou fin d'un dialogue de l'invité avec une réplique de PNJ ; l'hôte tient ce PNJ (routine figée) pendant le dialogue (v17) |
+| 31 | `DialogState` | fiable | invité → hôte : début ou fin d'un dialogue de l'invité avec une réplique de PNJ ; l'hôte tient ce PNJ (routine figée) pendant le dialogue (v17) ; hôte → invité (v18) : début ou fin de l'engagement du héros de l'hôte avec un PNJ annoncé, que l'invité marque « occupé » |
 
 Aucune valeur n'est réservée (depuis la v14). Toute autre valeur, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -79,7 +81,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `17` en v17 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `18` en v18 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -297,15 +299,22 @@ du locuteur, sans dialogue, caméra ni menu. Les bornes de
 l'échantillon sont vérifiées par l'encodeur, par le décodeur et par l'émetteur avant l'envoi : un nom
 reçu n'est jamais un chemin. Un tampon trop court pour la longueur annoncée → `Truncated`.
 
-### `DialogState` (31) — fiable — v17
+### `DialogState` (31) — fiable — v17, deux sens en v18
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `pnj` | `u32` | NetId du PNJ partenaire du dialogue de l'invité, **≥ 1000** ; autre → `BadValue` |
-| `actif` | `u8` | **1** = dialogue commencé, **0** = dialogue fini ; autre → `BadValue` |
+| `pnj` | `u32` | NetId du PNJ avec lequel l'émetteur est engagé, **≥ 1000** ; autre → `BadValue` |
+| `actif` | `u8` | **1** = engagement commencé, **0** = engagement fini ; autre → `BadValue` |
 
-Taille : 6 octets. Invité → hôte seulement (§8, « Dialogues ») : l'hôte tient le PNJ (routine figée)
-de `actif = 1` à `actif = 0`, 60 s au plus. Un invité qui reçoit `DialogState` l'ignore.
+Taille : 6 octets. Même format dans les deux sens ; le décodeur ne vérifie pas le sens (§8, « Dialogues ») :
+
+- **invité → hôte** (v17) : début ou fin d'un dialogue de l'invité avec une réplique ; l'hôte tient le
+  PNJ (routine figée) de `actif = 1` à `actif = 0`, 60 s au plus ;
+- **hôte → invité** (v18) : début ou fin de l'engagement du héros de l'hôte avec un PNJ annoncé
+  (dialogue en cours, demande de dialogue acceptée en attente du dialogue, ou clôture d'environ 2 s
+  qui le suit) ; l'invité marque la réplique « occupée » de `actif = 1` à `actif = 0` et refuse la
+  demande de dialogue de son héros vers elle. Jusqu'à la v17, un invité qui recevait `DialogState`
+  l'ignorait.
 
 ### `MotionParam` (26) — fiable — v6
 
@@ -383,13 +392,13 @@ Le décodeur ne lit jamais hors du tampon. Il refuse avec une erreur typée :
 | `Truncated` | tampon plus court que le message (y compris tampon vide), ou que les `nombre` entités d'un snapshot |
 | `UnknownChannel` | octet 0 ≠ 2 pour un datagramme de contrôle, ≠ 1 pour un snapshot |
 | `UnknownType` | `MsgType` inconnu, réservé ou hors de son canal |
-| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 17 (la suite n'est pas lue) |
+| `UnsupportedVersion` | `Hello` dont `version_protocole` ≠ 18 (la suite n'est pas lue) |
 | `BadLength` | longueur de `str8` hors bornes (ex. pseudo vide ou de 33 octets, nom d'`AniName` vide) ; l'encodeur refuse aussi un nom de `Weapon` ou d'`Armor` de plus de 255 octets |
 | `TrailingBytes` | octets restants après la fin du message |
 | `BadValue` | champ hors de son domaine (`Motion` : `type` > 7, bit inconnu dans `flags`, scalaire non nul sans le bit 1 ; `Spawn` : `type` autre que 0 ou 1 ; snapshot : `nombre` > 54 ; `MotionParam` : `type` > 7, `nature` > 3, valeur ou durée hors domaine, durée non nulle pour une vitesse ; `DialogLine` : locuteur autre que 1, 2 ou ≥ 1000, `type` > 3, échantillon de moins de 5 ou de plus de 128 octets, hors `[A-Za-z0-9_%.]`, contenant `..` ou sans suffixe `.wav` ; `DialogState` : `pnj` < 1000, `actif` autre que 0 ou 1) |
 
 L'encodeur vérifie les mêmes bornes **avant** d'écrire et refuse (sans tronquer) un texte
-hors bornes, une version autre que 17, un champ hors domaine ou un résultat de plus de 1200
+hors bornes, une version autre que 18, un champ hors domaine ou un résultat de plus de 1200
 octets.
 
 ## 6. Compatibilité
@@ -421,13 +430,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=17`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=18`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 1100 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -437,7 +446,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `11 00` | `version_protocole` = 17 |
+| 0x02 | `12 00` | `version_protocole` = 18 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -662,7 +671,9 @@ v17 (story 4.2) : le héros de l'invité, `locuteur=2`, dit la réplique `INFO_S
 
 #### `dialog_state.bin` — `DialogState` (fiable, sans octet de canal), 6 octets
 
-v17 (story 4.2) : l'invité commence un dialogue avec la réplique `pnj=1033`, `actif=1`.
+v17 (story 4.2) : l'invité commence un dialogue avec la réplique `pnj=1033`, `actif=1`. Format inchangé
+en v18 (story 4.3) : les mêmes octets, envoyés par l'hôte, annoncent que son héros est engagé avec le
+PNJ 1033.
 
 <!-- vector: dialog_state.bin -->
 ```text
@@ -673,7 +684,7 @@ v17 (story 4.2) : l'invité commence un dialogue avec la réplique `pnj=1033`, `
 |---|---|---|
 | 0x00 | `1f` | `MsgType` DialogState (31) |
 | 0x01 | `09 04 00 00` | `pnj` = 1033 |
-| 0x05 | `01` | `actif` = 1 (dialogue commencé) |
+| 0x05 | `01` | `actif` = 1 (engagement commencé) |
 
 #### `spawn.bin` — `Spawn` (fiable, sans octet de canal), 22 octets
 
@@ -913,11 +924,11 @@ vecteur reste valable à chaque incrémentation.
 #### `hello_truncated.bin` — `Hello` coupé, 22 octets
 
 Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine.dll) →
-`Truncated` ; `peek_hello_version` → 17.
+`Truncated` ; `peek_hello_version` → 18.
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 1100 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -927,7 +938,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 1100 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -997,7 +1008,7 @@ type ; un type inconnu n'est pas lisible).
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité, la v15 les attaques natives des répliques, la v16 les répliques de dialogue de l'hôte, la v17 celles de l'invité et la tenue du PNJ de son dialogue. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité, la v15 les attaques natives des répliques, la v16 les répliques de dialogue de l'hôte, la v17 celles de l'invité et la tenue du PNJ de son dialogue, la v18 les PNJ occupés par l'hôte et le refus des demandes de dialogue vers un PNJ occupé. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -1383,7 +1394,7 @@ d'appels.
     registre puis la tue. Une fin de session libère toutes les répliques, comme toujours.
   - **Hôte, tenue** : à `DialogState{NetId, 1}` d'un PNJ annoncé et vivant, sa routine est figée (IA
     bloquée, comme une réplique ; voix et lèvres jouent toujours). Ignoré et compté : PNJ non annoncé
-    ou mort, PNJ en dialogue avec l'hôte lui-même. Un seul PNJ tenu à la fois : un nouveau
+    ou mort, PNJ occupé par l'hôte (v18 : celui de son engagement en cours, voir « PNJ occupés »). Un seul PNJ tenu à la fois : un nouveau
     `DialogState{…, 1}` rend d'abord le précédent. Le PNJ est rendu à `DialogState{NetId, 0}`, à sa
     sortie de la sélection (`Despawn` ou `Death`), à la fin de session, quand l'hôte se met à lui parler,
     ou après **60 s** sans activité du dialogue (Warn ; chaque `DialogLine` de l'invité accepté et chaque
@@ -1405,8 +1416,26 @@ d'appels.
     ceux du PNJ tenu sont rejoués sur lui au même instant d'affichage que l'avatar (gestes, puis
     `MoveTo`), sans être renvoyés à l'invité ; ceux d'un autre NetId ≥ 1000 sont ignorés (comptés).
     Files vidées quand le PNJ est rendu. Pas de nouveau message : formats inchangés.
-  - Un invité qui reçoit `DialogState` ou `DialogLine{2, …}` l'ignore (Warn une fois par session, puis
-    Debug).
+  - Un invité qui reçoit `DialogLine{2, …}` l'ignore (Warn une fois par session, puis Debug). Depuis la
+    v18, `DialogState` reçu par l'invité n'est plus ignoré (voir « PNJ occupés »).
+- **PNJ occupés** (v18, story 4.3) : un PNJ ne parle qu'à un joueur à la fois.
+  - **Hôte, annonce** : le héros de l'hôte est **engagé** avec un PNJ pendant son dialogue, dès sa
+    demande de dialogue acceptée (en attente du dialogue) et pendant la clôture d'environ 2 s qui le
+    suit. Au début de l'engagement avec un PNJ annoncé à l'invité (NetId ≥ 1000), l'hôte envoie
+    `DialogState{NetId, 1}` ; à sa fin (ou à un changement de PNJ, qui envoie d'abord la fin du
+    précédent) `DialogState{NetId, 0}`. Un PNJ non annoncé n'est pas signalé. À la fin de session, rien
+    n'est envoyé : l'invité efface ses marques à `Ended`.
+  - **Invité, marque** : `DialogState{NetId, 1}` reçu de l'hôte marque la réplique de ce NetId
+    « occupée » jusqu'à `DialogState{NetId, 0}`, sa sortie de la sélection (`Despawn` ou `Death`) ou la
+    fin de session. Un `DialogState{…, 0}` pour une réplique non marquée est ignoré.
+  - **Refus** : chaque côté refuse la demande de dialogue de son propre héros vers un PNJ occupé par
+    l'autre joueur — chez l'invité, la réplique marquée occupée par l'hôte ; chez l'hôte, le PNJ qu'il
+    tient pour l'invité (« Hôte, tenue », sans changement de protocole). Le hook de
+    `AssessTalk` renvoie 0 sans appeler l'original ; le message « X ne peut pas vous parler : il est
+    occupé. » s'affiche à l'écran (X = nom du PNJ) et une ligne Info est journalisée. Rien n'est envoyé
+    au pair.
+  - Un `DialogState{N, 1}` de l'invité pour le PNJ avec lequel l'hôte est engagé est ignoré par l'hôte
+    (raison journalisée : « PNJ occupé par l'hôte »).
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 
@@ -1421,4 +1450,4 @@ d'appels.
   `SessionEnd` reçu) : pas de nouvel essai automatique dans le même monde.
   Conséquence voulue (décision du 2026-10-17) : quand l'hôte recharge ou meurt, l'invité reçoit
   `SessionEnd{2}` ou `{3}`, revient au solo et ne se reconnecte qu'à son **propre** prochain
-  chargement. Pas de reconnexion automatique (v1, inchangé en v17).
+  chargement. Pas de reconnexion automatique (v1, inchangé en v18).

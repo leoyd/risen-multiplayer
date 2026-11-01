@@ -153,6 +153,8 @@ type sessionResult struct {
 	NpcAttacksTx int // NpcAttack envoyés (v15, story 3.8b : --attack-move)
 	// Dialogues de l'hôte (v16, story 4.1) : journalisés, jamais rejoués.
 	DialogLinesRx int // DialogLine reçus
+	// PNJ occupés par l'hôte (v18, story 4.3) : DialogState de l'hôte, journalisés, jamais appliqués.
+	DialogStatesRx int // DialogState reçus
 	// Dialogues de l'invité (v17, story 4.2) : --dialog-every.
 	DialogStatesTx int // DialogState envoyés
 	DialogLinesTx  int // DialogLine envoyés
@@ -849,6 +851,9 @@ func (g *guest) drain() (sessionResult, bool) {
 		case protocol.DialogLine:
 			g.res.DialogLinesRx++
 			g.log.printf("<- DialogLine locuteur=%d type=%d échantillon=%s", m.Speaker, m.OutputType, m.Sample)
+		case protocol.DialogState:
+			g.res.DialogStatesRx++
+			g.log.printf("<- DialogState pnj=%d actif=%d", m.NpcNetId, m.Active)
 		case protocol.Respawn:
 			g.respawn(m)
 		case protocol.SessionEnd:
@@ -1137,9 +1142,9 @@ func (g *guest) npcSummary() {
 
 func (g *guest) end(code int, reason string) sessionResult {
 	g.npcSummary()
-	if g.res.DialogLinesRx > 0 || g.cfg.DialogEvery > 0 {
-		g.log.printf("Bilan dialogues : DialogLine reçus=%d envoyés=%d DialogState envoyés=%d", g.res.DialogLinesRx,
-			g.res.DialogLinesTx, g.res.DialogStatesTx)
+	if g.res.DialogLinesRx > 0 || g.res.DialogStatesRx > 0 || g.cfg.DialogEvery > 0 {
+		g.log.printf("Bilan dialogues : DialogLine reçus=%d envoyés=%d DialogState envoyés=%d reçus=%d", g.res.DialogLinesRx,
+			g.res.DialogLinesTx, g.res.DialogStatesTx, g.res.DialogStatesRx)
 	}
 	if g.cfg.HitInterval > 0 || g.res.HitsOnGuestRx > 0 || g.res.NpcAttacksRx > 0 {
 		g.log.printf("Bilan coups : HitRequest envoyés=%d HitOnGuest reçus=%d NpcAttack reçus=%d envoyés=%d", g.res.HitsTx,

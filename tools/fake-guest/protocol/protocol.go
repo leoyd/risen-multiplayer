@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 17, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 18, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 17
+	ProtocolVersion   = 18
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -55,7 +55,7 @@ const (
 	TypeRespawn     MsgType = 25 // v14 (story 3.7)
 	TypeNpcAttack   MsgType = 29 // v15 (story 3.8)
 	TypeDialogLine  MsgType = 30 // v16 (story 4.1) ; v17 : aussi invité → hôte (story 4.2)
-	TypeDialogState MsgType = 31 // v17 (story 4.2)
+	TypeDialogState MsgType = 31 // v17 (story 4.2) ; v18 : aussi hôte → invité (story 4.3)
 	TypeMotionParam MsgType = 26 // v6
 	TypeWeapon      MsgType = 27 // v7
 	TypeArmor       MsgType = 28 // v8
@@ -270,8 +270,9 @@ func validDialogLine(m DialogLine) bool {
 }
 
 // DialogState (v17, story 4.2) : début (Active = 1) ou fin (Active = 0) d'un dialogue de l'invité avec
-// la réplique NpcNetId (≥ 1000), invité → hôte. Autre valeur : ErrBadValue au décodage, ErrOutOfBounds
-// à l'encodage.
+// la réplique NpcNetId (≥ 1000), invité → hôte. v18 (story 4.3), format inchangé : aussi hôte → invité,
+// début ou fin de l'engagement du héros de l'hôte avec le PNJ NpcNetId (l'invité le marque « occupé »).
+// Le codec ne vérifie pas le sens. Autre valeur : ErrBadValue au décodage, ErrOutOfBounds à l'encodage.
 type DialogState struct {
 	NpcNetId uint32
 	Active   uint8

@@ -755,6 +755,28 @@ func TestDialogLine(t *testing.T) {
 		"<- DialogLine locuteur=1 type=3 échantillon="+dialogHeroSample, "Bilan dialogues : DialogLine reçus=")
 }
 
+// Story 4.3 : DialogState (v18) de l'hôte, journalisé une fois par message reçu et compté au bilan,
+// jamais appliqué (plus traité comme inattendu).
+func TestHostDialogState(t *testing.T) {
+	t.Parallel()
+	hc := defaultHost()
+	hc.HostDialogStateEvery = 4 // toutes les 200 ms
+	host := startHost(t, hc)
+	cfg := guestConfig(host.addr())
+	cfg.Duration = 1200 * time.Millisecond
+	r := runGuest(t, context.Background(), cfg)
+	expectCode(t, r, exitOK)
+	sent := host.record().hostStates
+	if r.res.DialogStatesRx < 3 {
+		t.Errorf("DialogState reçus %d, attendu au moins 3 (envoyés %d)", r.res.DialogStatesRx, sent)
+	}
+	if r.res.DialogStatesRx > sent || sent-r.res.DialogStatesRx > 1 {
+		t.Errorf("DialogState reçus %d, envoyés %d (au plus un en vol à la fin)", r.res.DialogStatesRx, sent)
+	}
+	expectLog(t, r, "<- DialogState pnj=1004 actif=1", "<- DialogState pnj=1004 actif=0",
+		"Bilan dialogues : DialogLine reçus=0 envoyés=0 DialogState envoyés=0 reçus=")
+}
+
 // Story 3.8 : NpcAttack (v15) de l'hôte, journalisé une fois par message reçu et compté au bilan,
 // jamais appliqué.
 func TestNpcAttack(t *testing.T) {
