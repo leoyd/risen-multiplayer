@@ -58,6 +58,7 @@ bool AnimFilter::set_freed(const void* entity, bool freed) {
     for (TrackedEntity& e : entities_) {
         if (e.entity == entity && e.role == EntityRole::NpcReplica) {
             e.freed = freed;
+            npc_last_.erase(e.net_id);  // filtre des réglages capturés à neuf
             return true;
         }
     }
@@ -164,9 +165,13 @@ AnimFilter::Verdict AnimFilter::classify(void* ptr, std::uint32_t thread_id, std
     std::lock_guard<std::mutex> lock(mutex_);
     // Le PS local passe avant tout : jamais bloqué, même suivi comme avatar par erreur.
     if (ptr == local_) return Verdict::Capture;
-    // PNJ animé de l'hôte (story 3.4) : capturé sous son NetId, jamais bloqué.
+    // PNJ animé de l'hôte (story 3.4) : capturé sous son NetId, jamais bloqué. Story 4.2 : réplique libérée
+    // de l'invité, idem (gestes du partenaire vers l'hôte). Le rejeu passe sans être capturé (chez l'hôte,
+    // gestes de l'invité rejoués sur le PNJ tenu : pas d'écho).
     for (const TrackedEntity& e : entities_) {
-        if (e.role == EntityRole::NpcCapture && e.net_id != 0 && (e.animation_ps == ptr || e.wrapper == ptr)) {
+        const bool captured = e.role == EntityRole::NpcCapture || (e.role == EntityRole::NpcReplica && e.freed);
+        if (captured && e.net_id != 0 && (e.animation_ps == ptr || e.wrapper == ptr)) {
+            if (replaying()) return Verdict::Pass;
             net_id = e.net_id;
             return Verdict::Capture;
         }

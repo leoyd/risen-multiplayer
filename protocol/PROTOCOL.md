@@ -1398,6 +1398,13 @@ d'appels.
     sur le PNJ natif de ce NetId s'il est le PNJ tenu ; mêmes règles que chez l'invité (20 m du héros
     de l'hôte, hôte pas lui-même en dialogue, entité présente et vivante). `DialogLine{1, …}` reçu par
     l'hôte : ignoré (Warn une fois par session, puis Debug).
+  - **Gestes et pose du partenaire** (invité → hôte) : tant qu'elle est le partenaire en cours, chaque
+    `PlayMotion` et réglage de locomotion que le moteur de l'invité joue sur la réplique libérée part
+    en `Motion{NetId}` / `MotionParam{NetId}` (même espace d'`AniId` et mêmes règles que ceux de son
+    héros), et sa pose entre dans les snapshots de l'invité (entrée `NetId`, PV non lus). Chez l'hôte,
+    ceux du PNJ tenu sont rejoués sur lui au même instant d'affichage que l'avatar (gestes, puis
+    `MoveTo`), sans être renvoyés à l'invité ; ceux d'un autre NetId ≥ 1000 sont ignorés (comptés).
+    Files vidées quand le PNJ est rendu. Pas de nouveau message : formats inchangés.
   - Un invité qui reçoit `DialogState` ou `DialogLine{2, …}` l'ignore (Warn une fois par session, puis
     Debug).
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair

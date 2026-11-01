@@ -15,7 +15,8 @@
 //   (par type et nature) n'entrent pas dans l'anneau.
 // - Story 4.2 (dialogues de l'invité) : une réplique peut être « libérée » le temps du dialogue de
 //   l'invité (set_freed) : elle reste au registre (recherches, NetId) mais ni ses animations ni sa
-//   routine ne sont plus bloquées. Chez l'hôte, un PNJ peut être « tenu » (hold_routine) : seul son
+//   routine ne sont plus bloquées ; ses appels sont capturés sous son NetId, comme ceux d'un PNJ
+//   animé de l'hôte (gestes du partenaire vers l'hôte). Chez l'hôte, un PNJ peut être « tenu » (hold_routine) : seul son
 //   PS de routine est figé, sans entrée au registre (il peut en avoir une, NpcCapture, à part).
 // - Anneau des captures, vidé par la frame.
 //
@@ -79,7 +80,7 @@ struct TrackedEntity {
     EntityRole role = EntityRole::Avatar;
     std::uint32_t net_id = 0;      // NetId (rôle NpcCapture : porté par ses captures)
     // Story 4.2 : réplique libérée pour le dialogue de l'invité (set_freed) : ni animations ni
-    // routine bloquées. Faux à l'inscription (track).
+    // routine bloquées, appels capturés sous `net_id`. Faux à l'inscription (track).
     bool freed = false;
 };
 
@@ -120,8 +121,8 @@ public:
 
     // --- Hook ---
     // `ptr` : PS d'animation (PlayMotion, SetRagDollEnabled) ou enveloppe EMotionFX (réglages de
-    // locomotion). Capture pour le PS local ; Block pour un avatar ou une réplique de PNJ hors
-    // rejeu ; Pass sinon.
+    // locomotion). Capture pour le PS local, un PNJ capturé ou une réplique libérée (story 4.2) hors
+    // rejeu ; Block pour un avatar ou une réplique de PNJ hors rejeu ; Pass sinon.
     Verdict classify(void* ptr, std::uint32_t thread_id);
     // Idem ; sur Capture, `net_id` reçoit 0 (héros local) ou le NetId du PNJ capturé (story 3.4).
     Verdict classify(void* ptr, std::uint32_t thread_id, std::uint32_t& net_id);

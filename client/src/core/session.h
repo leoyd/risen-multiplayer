@@ -122,6 +122,12 @@
 // sélection (Despawn, Death), à Ended ou kDialogHoldTimeoutMs après le début (Warn). DialogLine{2}
 // donne ApplyDialogLine sur l'avatar de l'invité, DialogLine{NetId} sur le PNJ tenu. Un hôte qui reçoit
 // DialogLine{1}, un invité qui reçoit DialogLine{2} ou DialogState : ignoré (Warn une fois par session).
+// Gestes du partenaire (correctif du test du 2026-10-25) : chez l'invité, la réplique libérée est
+// animée par son propre moteur ; ses PlayMotion et réglages (LocalMotion et LocalParam portant son
+// NetId, captés par le filtre) partent en Motion et MotionParam{NetId}, et sa pose (World::freed_*)
+// entre dans ses snapshots, tant qu'elle est le partenaire en cours. Chez l'hôte, ceux du PNJ tenu
+// attendent le même instant d'affichage que l'avatar, puis deviennent PlayNpcMotion, PlayNpcParam et
+// MoveNpc sur ce PNJ ; files vidées quand il est rendu. Tout autre NetId ≥ 1000 reçu par l'hôte : ignoré.
 //
 // Robustesse (story 3.4a) : Start porte le Heartbeat encodé et ses délais, que le transport envoie
 // depuis son thread quand la frame ne le lit plus (pause du jeu). Chez l'invité, l'entrée de
@@ -217,6 +223,11 @@ struct World {
     bool dialog_running = false;
     bool dialog_partner_ok = false;
     protocol::Guid dialog_partner{};
+    // Invité (story 4.2) : pose de la réplique libérée pour son dialogue (sync/npc), lue à chaque frame.
+    // Elle n'entre dans le snapshot que si `freed_npc` est le partenaire en cours de la session.
+    std::uint32_t freed_npc = 0;
+    bool freed_pose_ok = false;
+    Pose freed_pose;
 
     bool loaded() const { return player != 0 && running; }  // monde chargé
 };
@@ -415,7 +426,7 @@ struct SpawnNpc {  // apparier le PNJ natif de ce GUID, l'inscrire comme répliq
     protocol::Guid guid{};
     Pose pose;
 };
-struct MoveNpc {  // placer la réplique (Entity::MoveTo), à chaque tick
+struct MoveNpc {  // placer la réplique (Entity::MoveTo), à chaque tick ; story 4.2 : le PNJ tenu chez l'hôte
     std::uint32_t net_id = 0;
     Pose pose;
 };
@@ -496,7 +507,8 @@ struct FreeReplica {
     std::uint32_t net_id = 0;
     bool freed = false;
 };
-// Invité : rejouer un Motion ou un réglage de l'hôte sur la réplique, sous ReplayGuard.
+// Invité : rejouer un Motion ou un réglage de l'hôte sur la réplique, sous ReplayGuard. Story 4.2, hôte :
+// ceux de la réplique libérée de l'invité, sur le PNJ tenu.
 struct PlayNpcMotion {
     std::uint32_t net_id = 0;
     std::string name;
@@ -648,6 +660,10 @@ private:
     void on_dialog_state(std::uint64_t now, const protocol::DialogState& m, Output& out);
     void unhold_npc(const std::string& why, Level level, Output& out);
     void dialog_timers(std::uint64_t now, Output& out);
+    // Story 4.2, hôte : Motion ou MotionParam du PNJ tenu mis en attente, puis rejoué avec sa pose au même
+    // instant d'affichage que l'avatar.
+    void push_held(PendingMotion e);
+    void place_held(std::uint64_t now, Output& out);
     void dialog_ignored_off(const char* what, Output& out);  // dialogues = 0 : Info une fois par session
     // Story 3.7. Invité : mise à terre (LocalDown), Respawn reçu (ordre), repli. Hôte : Death{2} reçu,
     // envoi du Respawn dû, accusé reçu, repli ; filtre des entrées de snapshot du NetId 2.
@@ -869,6 +885,10 @@ private:
     std::uint32_t guest_dialog_npc_ = 0;
     std::uint32_t held_npc_ = 0;
     std::uint64_t held_since_ = 0;
+    // Story 4.2, hôte : pose et gestes du PNJ tenu venus de l'invité (réplique libérée), vidés quand il
+    // est rendu.
+    core::Interpolator held_interp_;
+    std::deque<PendingMotion> held_pending_;
     // Story 3.7 : à terre et réapparition. Invité : à terre (Death{2} envoyé), depuis quand, mort native
     // (IsDead) en cours et déjà signalée. Hôte : Respawn à envoyer, accusé attendu depuis
     // respawn_sent_at_, premier tick valide des entrées du NetId 2.

@@ -4866,3 +4866,79 @@ TEST("dialogues 4.2 : LocalDialogNpcLost → hôte : tenue oubliée (Warn) ; inv
     CHECK_EQ(dialog_tail(guest_stats_line(g, 600)),
              std::string("dialogues : DialogLine envoyés 0, reçus 0, rejoués 0, ignorés 0 ; DialogState envoyés 2, reçus 0"));
 }
+
+TEST("dialogues 4.2 invité : gestes et pose de la réplique libérée → Motion, MotionParam et snapshot{1001} ; fin → plus rien") {
+    Session g = guest_with_npcs();
+    // Avant le dialogue : capture d'une réplique jetée.
+    Output out = g.tick(400, loaded_world(), {LocalMotion{"Talk_Gesture", local_motion_of(), 1001}});
+    CHECK(sent_of<proto::Motion>(out).empty());
+    World w = loaded_world();
+    w.freed_npc = 1001;
+    w.freed_pose_ok = true;
+    w.freed_pose = Pose{5.0f, 6.0f, 7.0f, 0.25f};
+    out = g.tick(460, w,
+                 {LocalDialogState{1001, true}, LocalMotion{"Talk_Gesture", local_motion_of(), 1001},
+                  LocalMotion{"Autre", local_motion_of(), 1000},
+                  npc_param_in(1001, 0, proto::MotionParamKind::TargetWeight, 0.5f, 0.2f)});
+    const auto motions = sent_of<proto::Motion>(out);
+    CHECK(motions.size() == 1 && motions[0].net_id == 1001u);
+    const auto names = sent_of<proto::AniName>(out);
+    CHECK(names.size() == 1 && names[0].name == "Talk_Gesture");
+    const auto params = sent_of<proto::MotionParam>(out);
+    CHECK(params.size() == 1 && params[0].net_id == 1001u && params[0].value == 0.5f);
+    auto snaps = snapshots_sent(out);
+    CHECK(snaps.size() == 1 && snaps[0].entities.size() == 2);
+    if (snaps.size() == 1 && snaps[0].entities.size() == 2) {
+        const proto::SnapshotEntity& f = snaps[0].entities[1];
+        CHECK(f.net_id == 1001u && f.x == 5.0f && f.y == 6.0f && f.z == 7.0f && f.yaw == 0.25f);
+    }
+    // Pose d'une autre réplique, ou illisible : pas d'entrée.
+    World other = w;
+    other.freed_npc = 1000;
+    snaps = snapshots_sent(g.tick(510, other, {}));
+    CHECK(snaps.size() == 1 && snaps[0].entities.size() == 1);
+    World unread = w;
+    unread.freed_pose_ok = false;
+    snaps = snapshots_sent(g.tick(560, unread, {}));
+    CHECK(snaps.size() == 1 && snaps[0].entities.size() == 1);
+    // Fin : gestes jetés, pose plus envoyée.
+    out = g.tick(610, w, {LocalDialogState{1001, false}, LocalMotion{"Talk_Gesture", local_motion_of(), 1001}});
+    CHECK(sent_of<proto::Motion>(out).empty());
+    snaps = snapshots_sent(out);
+    CHECK(snaps.size() == 1 && snaps[0].entities.size() == 1);
+}
+
+TEST("dialogues 4.2 hôte : gestes et pose de l'invité pour le PNJ tenu → PlayNpcMotion, PlayNpcParam, MoveNpc ; rendu → plus rien") {
+    Session s = host_with_npcs();  // 1000 = GUID 1, 1001 = GUID 2
+    // Pas encore tenu : ignorés.
+    Output out = s.tick(1055, host_world({}, false),
+                        reliable2(proto::AniName{9, "Talk_Gesture"}, host_npc_motion(1001, 9, 0)));
+    CHECK(count_of<PlayNpcMotion>(out) == 0);
+    s.tick(1060, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
+    // Horloge pas prête : gestes aussitôt, pas de pose.
+    out = s.tick(1070, host_world({}, false), reliable2(host_npc_motion(1001, 9, 10), host_npc_motion(1000, 9, 10)));
+    auto played = commands_of<PlayNpcMotion>(out);
+    CHECK(played.size() == 1 && played[0]->net_id == 1001u && played[0]->name == "Talk_Gesture");
+    out = s.tick(1080, host_world({}, false), reliable(encode_r(host_npc_param(1001, 20, 0, 0.5f))));
+    const auto params = commands_of<PlayNpcParam>(out);
+    CHECK(params.size() == 1 && params[0]->net_id == 1001u && params[0]->param.value == 0.5f);
+    CHECK(count_of<MoveNpc>(out) == 0);
+    // Snapshots de l'invité avec la pose de sa réplique libérée : MoveNpc sur le PNJ tenu.
+    bool moved = false;
+    for (std::uint32_t tick = 0; tick < 6; ++tick) {
+        out = s.tick(1100 + tick * 50, host_world({}, false),
+                     snapshot_in(npc_snapshot(tick, {npc_entity(proto::kGuestNetId, 1.0f, 100),
+                                                     npc_entity(1001, 40.0f, 0)})));
+        for (const auto* m : commands_of<MoveNpc>(out)) {
+            CHECK(m->net_id == 1001u);
+            if (m->pose.x == 40.0f) moved = true;
+        }
+    }
+    CHECK(moved);
+    // Rendu : plus de pose ni de geste.
+    s.tick(1400, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 0})));
+    out = s.tick(1410, host_world({}, false),
+                 {SnapshotIn{npc_snapshot(6, {npc_entity(proto::kGuestNetId, 1.0f, 100), npc_entity(1001, 40.0f, 0)})},
+                  ReliableIn{encode_r(host_npc_motion(1001, 9, 400))}});
+    CHECK(count_of<MoveNpc>(out) == 0 && count_of<PlayNpcMotion>(out) == 0);
+}

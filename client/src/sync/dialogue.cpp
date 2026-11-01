@@ -10,6 +10,7 @@
 #include "sync/dialogue_rules.h"
 #include "sync/npc.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -44,6 +45,15 @@ std::mutex g_mutex;
 Captured g_ring[kRing];  // sous g_mutex
 std::size_t g_pending = 0;
 unsigned g_dropped = 0;
+// Story 4.2 : demandes de dialogue (AssessTalk) en attente de la frame, sous g_mutex. Au-delà de
+// kTalkRing par frame, les suivantes sont perdues (sans conséquence : le héros n'en fait qu'une).
+struct TalkRequest {
+    void* npc = nullptr;
+    void* asker = nullptr;
+};
+constexpr std::size_t kTalkRing = 8;
+TalkRequest g_talk_ring[kTalkRing];
+std::size_t g_talk_pending = 0;
 
 // --- Thread principal uniquement -----------------------------------------------------------
 bool g_active = false;
@@ -61,6 +71,18 @@ bool g_guest_running = false;
 std::uint32_t g_guest_partner = 0;
 bool g_running_warned = false;
 bool g_npc_warned = false;
+// Story 4.2 (correctif du test du 2026-10-25) : réplique à qui le héros invité a demandé à parler
+// (AssessTalk), comptée comme partenaire jusqu'au début du dialogue ou jusqu'à l'échéance.
+constexpr auto kTalkTimeout = std::chrono::seconds(5);
+std::uint32_t g_talk_request = 0;
+std::chrono::steady_clock::time_point g_talk_deadline{};
+// Story 4.2 (même test) : re-figée dès la fin d'IsRunning, la réplique ne finissait pas son ZS_Talk et
+// l'invité restait sous les bandes noires. Après la fin, elle reste libre au moins kCloseMin, puis tant
+// que la caméra de dialogue est active, kCloseMax au plus.
+constexpr auto kCloseMin = std::chrono::seconds(2);
+constexpr auto kCloseMax = std::chrono::seconds(10);
+std::uint32_t g_closing = 0;
+std::chrono::steady_clock::time_point g_closing_since{};
 // Story 4.2 : vrai pendant le sStartOutput d'un rejeu (même thread que le détour) : le détour ne relève
 // pas ces répliques rejouées, qui ne sont pas celles du joueur local.
 thread_local bool t_replaying = false;
@@ -73,6 +95,20 @@ std::size_t drain(Captured (&batch)[kRing], unsigned& dropped) {
     dropped = g_dropped;
     g_dropped = 0;
     return n;
+}
+
+std::size_t drain_talks(TalkRequest (&batch)[kTalkRing]) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const std::size_t n = g_talk_pending;
+    for (std::size_t i = 0; i < n; ++i) batch[i] = g_talk_ring[i];
+    g_talk_pending = 0;
+    return n;
+}
+
+std::string ptr_text(const void* p) {
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "0x%llx", static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(p)));
+    return buf;
 }
 
 void push_counts(std::vector<cs::Input>& out) {
@@ -114,6 +150,21 @@ void on_start_output(void* spu, const void* sample, int type) noexcept {
         }
     } catch (...) {
         // std::system_error du verrou : la réplique est perdue, jamais d'exception vers le jeu.
+    }
+}
+
+void on_assess_talk(void* spu, void* self, void* other) noexcept {
+    // Arguments de script : `Entity*` (enveloppe d'un eCEntity*), nuls pour ceux de l'unité.
+    TalkRequest t;
+    if (self != nullptr ? !game::read_entity_ptr(self, t.npc) : !game::spu_self_entity(spu, t.npc)) t.npc = nullptr;
+    if (other != nullptr ? !game::read_entity_ptr(other, t.asker) : !game::spu_other_entity(spu, t.asker)) {
+        t.asker = nullptr;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_talk_pending < kTalkRing) g_talk_ring[g_talk_pending++] = t;
+    } catch (...) {
+        // std::system_error du verrou : demande perdue, jamais d'exception vers le jeu.
     }
 }
 
@@ -192,6 +243,11 @@ void host_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
     Captured batch[kRing];
     unsigned dropped = 0;
     const std::size_t n = drain(batch, dropped);
+    TalkRequest talks[kTalkRing];
+    const std::size_t nt = drain_talks(talks);  // hôte : PNJ natifs, rien à libérer ; journal seul
+    for (std::size_t i = 0; i < nt && in_session && hero != nullptr; ++i) {
+        if (talks[i].asker == hero) log::debug("[sync] dialogues : AssessTalk du héros de l'hôte au PNJ " + ptr_text(talks[i].npc));
+    }
     if (!g_active || !in_session || hero == nullptr) {
         g_ignored = 0;
         return;
@@ -218,11 +274,15 @@ void guest_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
     Captured batch[kRing];
     unsigned dropped = 0;
     const std::size_t n = drain(batch, dropped);
+    TalkRequest talks[kTalkRing];
+    const std::size_t nt = drain_talks(talks);
     if (!g_active || !in_session || hero == nullptr) {
         // Monde déchargé pendant un dialogue : fin signalée (la session l'ignore hors session).
         if (g_guest_partner != 0) out.push_back(cs::LocalDialogState{g_guest_partner, false});
         g_guest_running = false;
         g_guest_partner = 0;
+        g_talk_request = 0;
+        g_closing = 0;
         push_counts(out);  // bilan des rejeux de la frame précédente
         return;
     }
@@ -245,7 +305,59 @@ void guest_frame(void* hero, bool in_session, std::vector<cs::Input>& out) {
                       "l'invité gardé (une fois par session)");
         }
     }
-    const std::uint32_t partner_id = readable && running ? npc::replica_net_id(partner.ptr) : 0;
+    const bool was_running = g_guest_running;
+    std::uint32_t partner_id = readable && running ? npc::replica_net_id(partner.ptr) : 0;
+    // Story 4.2 : demande de dialogue du héros invité. Une réplique figée n'exécuterait jamais le
+    // ZS_Talk lancé par AssessTalk : elle est libérée dès maintenant, avant IsRunning.
+    const auto now = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < nt; ++i) {
+        if (talks[i].asker != hero) continue;  // conversation entre PNJ : pas l'affaire de l'invité
+        const std::uint32_t id = npc::replica_net_id(talks[i].npc);
+        log::debug("[sync] dialogues : AssessTalk du héros invité au PNJ " + ptr_text(talks[i].npc) +
+                   (id != 0 ? " (réplique " + std::to_string(id) + ")" : std::string(" (pas une réplique)")));
+        if (id == 0) continue;
+        if (g_talk_request != id) {
+            log::info("[sync] dialogues : demande de dialogue de l'invité au PNJ " + std::to_string(id) +
+                      " : réplique libérée avant le dialogue");
+        }
+        g_talk_request = id;
+        g_talk_deadline = now + kTalkTimeout;
+    }
+    if (g_talk_request != 0) {
+        if (readable && running) {
+            g_talk_request = 0;  // dialogue commencé : son partenaire fait foi
+        } else if (now >= g_talk_deadline) {
+            log::info("[sync] dialogues : pas de dialogue 5 s après la demande au PNJ " +
+                      std::to_string(g_talk_request) + " : réplique re-figée");
+            g_talk_request = 0;
+        } else {
+            partner_id = g_talk_request;  // en attente du dialogue : reste libérée
+        }
+    }
+    if (readable && was_running && !running && g_guest_partner != 0 && g_talk_request == 0) {
+        g_closing = g_guest_partner;
+        g_closing_since = now;
+        log::debug("[sync] dialogues : fin du dialogue avec le PNJ " + std::to_string(g_closing) +
+                   " : réplique laissée libre le temps de clore");
+    }
+    if (g_closing != 0) {
+        if ((readable && running) || g_talk_request != 0) {
+            g_closing = 0;  // nouveau dialogue ou nouvelle demande : ils font foi
+        } else {
+            bool camera = false;
+            const bool camera_ok = game::dialog_camera_active(camera);
+            const auto elapsed = now - g_closing_since;
+            if (elapsed < kCloseMin || (camera_ok && camera && elapsed < kCloseMax)) {
+                partner_id = g_closing;
+            } else {
+                log::debug("[sync] dialogues : PNJ " + std::to_string(g_closing) + " : dialogue clos après " +
+                           std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) +
+                           " ms (caméra de dialogue " +
+                           (!camera_ok ? "illisible" : camera ? "encore active, délai dépassé" : "inactive") + ")");
+                g_closing = 0;
+            }
+        }
+    }
     if (readable && running != g_guest_running) {
         char ptr[24];
         std::snprintf(ptr, sizeof ptr, "0x%llx",
@@ -346,6 +458,8 @@ void reset() {
     g_guest_partner = 0;
     g_running_warned = false;
     g_npc_warned = false;
+    g_talk_request = 0;
+    g_closing = 0;
 }
 
 }  // namespace mp::sync::dialogue

@@ -416,7 +416,7 @@ TEST("registre : find_by_entity (story 3.5) — entrée de l'entité, rôle et N
     CHECK(!f.find_by_entity(&g_entity_b, out));
 }
 
-TEST("registre : réplique libérée pour un dialogue de l'invité (story 4.2) — ni animations ni routine bloquées") {
+TEST("registre : réplique libérée pour un dialogue de l'invité (story 4.2) — ni bloquée ni figée, capturée sous son NetId") {
     AnimFilter f;
     TrackedEntity npc;
     npc.entity = &g_entity_a;
@@ -430,9 +430,19 @@ TEST("registre : réplique libérée pour un dialogue de l'invité (story 4.2) �
     CHECK(f.classify(kReplica, 1) == Verdict::Block);
     CHECK(f.set_freed(&g_entity_a, true));
     CHECK(!f.blocks_routine(&g_routine_a));
-    CHECK(f.classify(kReplica, 1) == Verdict::Pass);
-    CHECK(f.classify(&g_wrapper_a, 1) == Verdict::Pass);
-    CHECK(f.classify_ragdoll(kReplica, true, 1) == Verdict::Pass);
+    std::uint32_t id = 0;
+    CHECK(f.classify(kReplica, 1, id) == Verdict::Capture && id == 1033);  // gestes vers l'hôte
+    id = 0;
+    CHECK(f.classify(&g_wrapper_a, 1, id) == Verdict::Capture && id == 1033);
+    {
+        AnimFilter::ReplayGuard guard;  // un rejeu n'est jamais capturé
+        CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+    }
+    // Filtre des réglages remis à neuf à chaque libération.
+    CHECK(f.npc_param_changed(1033, 0, 0, 1.0f, 0.2f));
+    CHECK(!f.npc_param_changed(1033, 0, 0, 1.0f, 0.2f));
+    CHECK(f.set_freed(&g_entity_a, true));
+    CHECK(f.npc_param_changed(1033, 0, 0, 1.0f, 0.2f));
     TrackedEntity found;
     CHECK(f.find_by_entity(&g_entity_a, found) && found.freed && found.net_id == 1033);  // toujours au registre
     // Rendue : de nouveau bloquée.
@@ -478,6 +488,10 @@ TEST("registre : PNJ tenu chez l'hôte (story 4.2) — routine figée sans entr�
     f.hold_routine(&g_routine_a);
     CHECK(f.blocks_routine(&g_routine_a));
     CHECK(f.classify(kReplica, 1) == Verdict::Capture);
+    {
+        AnimFilter::ReplayGuard guard;  // gestes de l'invité rejoués sur le PNJ tenu : pas d'écho
+        CHECK(f.classify(kReplica, 1) == Verdict::Pass);
+    }
     f.release_routine(&routine_b);
     CHECK(!f.blocks_routine(&routine_b));
     CHECK(f.blocks_routine(&g_routine_a));

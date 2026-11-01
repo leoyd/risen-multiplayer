@@ -59,6 +59,9 @@ struct Held {
     protocol::Guid guid{};
     game::Entity entity;
     void* routine_ps = nullptr;
+    void* animation_ps = nullptr;  // rejeu des gestes de la réplique libérée de l'invité (nul : aucun)
+    void* wrapper = nullptr;
+    bool param_error_logged = false;
 };
 std::map<std::uint32_t, Held> g_held;
 bool g_talk_error_logged = false;  // story 4.2 : IsBeingTalkedTo absent ou en SEH, signalé une fois
@@ -297,10 +300,11 @@ void spawn(std::uint32_t net_id, const protocol::Guid& guid, const Pose& pose) {
               ", IA et animations figées");
 }
 
-void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion) {
-    auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.dead || it->second.freed || it->second.animation_ps == nullptr) return;
-    Replica& r = it->second;
+namespace {
+
+// Rejeu d'un Motion ou d'un réglage sur le PS d'animation ou l'enveloppe d'un PNJ (réplique chez l'invité,
+// PNJ tenu chez l'hôte : story 4.2), sous ReplayGuard.
+void replay_motion(std::uint32_t net_id, void* animation_ps, const std::string& name, const protocol::Motion& motion) {
     auto failed = [&](const char* why) {
         if (g_failed_names.insert(name).second) {
             log::warn(who(net_id) + " : « " + name + " » non rejoué (" + why + ")");
@@ -322,41 +326,65 @@ void play(std::uint32_t net_id, const std::string& name, const protocol::Motion&
     }
     static std::uint8_t desc[game::kPlayDescSize];
     const void* desc_arg = game::replay_desc(motion, desc);
-    if (!game::set_motion(r.animation_ps, motion.type, res->second)) {
+    if (!game::set_motion(animation_ps, motion.type, res->second)) {
         failed("SetMotion a levé une exception (SEH)");
         return;
     }
     AnimFilter::ReplayGuard guard;  // le hook laisse passer ce PlayMotion sur la réplique
-    if (!game::play_motion(r.animation_ps, motion.type, const_cast<void*>(desc_arg), game::replay_flag(motion))) {
+    if (!game::play_motion(animation_ps, motion.type, const_cast<void*>(desc_arg), game::replay_flag(motion))) {
         failed("PlayMotion a levé une exception (SEH)");
     }
 }
 
-void play_param(std::uint32_t net_id, const protocol::MotionParam& param) {
-    auto it = g_replicas.find(net_id);
-    if (it == g_replicas.end() || it->second.dead || it->second.freed || it->second.wrapper == nullptr) return;
-    Replica& r = it->second;
+void replay_param(std::uint32_t net_id, void* wrapper, const protocol::MotionParam& param, bool& error_logged) {
     bool ok = false;
     {
         AnimFilter::ReplayGuard guard;  // le hook laisse passer ce réglage sur la réplique
         switch (static_cast<protocol::MotionParamKind>(param.kind)) {
             case protocol::MotionParamKind::TargetWeight:
-                ok = game::set_target_weight(r.wrapper, param.type, param.value, param.time);
+                ok = game::set_target_weight(wrapper, param.type, param.value, param.time);
                 break;
             case protocol::MotionParamKind::PlaySpeed:
-                ok = game::set_play_speed(r.wrapper, param.type, param.value);
+                ok = game::set_play_speed(wrapper, param.type, param.value);
                 break;
             case protocol::MotionParamKind::FadeOut:
-                ok = game::switch_fade_out(r.wrapper, param.type, param.value != 0.0f, param.time);
+                ok = game::switch_fade_out(wrapper, param.type, param.value != 0.0f, param.time);
                 break;
             case protocol::MotionParamKind::StopMotion:
-                ok = game::wrapper_stop_motion(r.wrapper, param.type, param.time, param.value != 0.0f);
+                ok = game::wrapper_stop_motion(wrapper, param.type, param.time, param.value != 0.0f);
                 break;
         }
     }
-    if (!ok && !r.param_error_logged) {
-        r.param_error_logged = true;
+    if (!ok && !error_logged) {
+        error_logged = true;
         log::error(who(net_id) + " : réglage de locomotion a levé une exception (SEH)");
+    }
+}
+
+}  // namespace
+
+void play(std::uint32_t net_id, const std::string& name, const protocol::Motion& motion) {
+    auto it = g_replicas.find(net_id);
+    if (it != g_replicas.end()) {
+        if (it->second.dead || it->second.freed || it->second.animation_ps == nullptr) return;
+        replay_motion(net_id, it->second.animation_ps, name, motion);
+        return;
+    }
+    auto h = g_held.find(net_id);  // story 4.2, hôte : geste de la réplique libérée de l'invité
+    if (h != g_held.end() && h->second.animation_ps != nullptr) replay_motion(net_id, h->second.animation_ps, name, motion);
+}
+
+void play_param(std::uint32_t net_id, const protocol::MotionParam& param) {
+    auto it = g_replicas.find(net_id);
+    if (it != g_replicas.end()) {
+        Replica& r = it->second;
+        if (r.dead || r.freed || r.wrapper == nullptr) return;
+        replay_param(net_id, r.wrapper, param, r.param_error_logged);
+        return;
+    }
+    auto h = g_held.find(net_id);  // story 4.2, hôte
+    if (h != g_held.end() && h->second.wrapper != nullptr) {
+        replay_param(net_id, h->second.wrapper, param, h->second.param_error_logged);
     }
 }
 
@@ -378,6 +406,20 @@ void uncapture(std::uint32_t net_id) {
 
 void move(std::uint32_t net_id, const Pose& pose) {
     auto it = g_replicas.find(net_id);
+    if (it == g_replicas.end()) {
+        // Story 4.2, hôte : pose de la réplique libérée de l'invité, sur le PNJ tenu.
+        auto h = g_held.find(net_id);
+        if (h == g_held.end()) return;
+        game::Matrix m{};
+        matrix_of(pose, m);
+        if (!game::move_to(h->second.entity, m)) {
+            log::warn(who(net_id) + " : Entity::MoveTo du PNJ tenu a levé une exception (SEH) : rendu");
+            anim_filter().release_routine(h->second.routine_ps);
+            g_lost.push_back(net_id);
+            g_held.erase(h);
+        }
+        return;
+    }
     // Inconnu, introuvable, perdu ou mort : ignoré ; libérée pour le dialogue de l'invité (story 4.2) aussi.
     if (it == g_replicas.end() || it->second.dead || it->second.freed) return;
     // Story 3.8 (correctif du 2026-10-24) : mouvement local d'une attaque native arrêté une fois son
@@ -784,9 +826,16 @@ void hold(std::uint32_t net_id, const protocol::Guid& guid) {
         g_lost.push_back(net_id);
         return;
     }
+    // Gestes de la réplique libérée de l'invité rejoués sur son PS et son enveloppe. Absents : figé sans geste.
+    if (!game::get_animation_ps(h.entity, h.animation_ps) || h.animation_ps == nullptr) {
+        h.animation_ps = nullptr;
+        log::warn(who(net_id) + " : pas d'eCAnimation_PS : gestes de l'invité non rejoués");
+    } else if (!game::get_actor_wrapper(h.animation_ps, h.wrapper) || h.wrapper == nullptr) {
+        h.wrapper = nullptr;
+    }
     anim_filter().hold_routine(h.routine_ps);
     g_held.emplace(net_id, h);
-    log::info(who(net_id) + " tenu (routine figée) : dialogue de l'invité");
+    log::info(who(net_id) + " tenu (routine figée) : dialogue de l'invité, gestes et pose de l'invité rejoués");
 }
 
 void drain_lost(std::vector<cs::Input>& out) {
@@ -800,6 +849,21 @@ void unhold(std::uint32_t net_id) {
     anim_filter().release_routine(it->second.routine_ps);  // AD-12 : le registre d'abord
     g_held.erase(it);
     log::info(who(net_id) + " rendu (routine reprise)");
+}
+
+void freed_pose(cs::World& world) {
+    world.freed_npc = 0;
+    world.freed_pose_ok = false;
+    for (const auto& [id, r] : g_replicas) {
+        if (!r.freed || r.dead) continue;
+        world.freed_npc = id;
+        game::Matrix m{};
+        if (game::get_pose(r.entity, m)) {
+            world.freed_pose = pose_of(m);
+            world.freed_pose_ok = true;
+        }
+        return;
+    }
 }
 
 void* replica_entity(std::uint32_t net_id) {

@@ -314,6 +314,7 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         respawn_timers(now, world, out);  // story 3.7 : replis, puis Respawn dû (hôte), avant la pose
         send_snapshot(now, world, out);
         place_avatar(now, out);
+        place_held(now, out);  // story 4.2 : gestes et pose du partenaire de l'invité
         place_npcs(now, out);
         dialog_timers(now, out);  // story 4.2 : PNJ tenu trop longtemps
         snapshot_stats(now, out);
@@ -767,6 +768,8 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     dialog_guest_warned_ = false;      // story 4.2
     guest_dialog_npc_ = 0;             // vides en pratique : remis à zéro à Ended
     held_npc_ = 0;
+    held_pending_.clear();
+    held_interp_.reset();
     reset_respawn();                   // story 3.7
     respawn_ = RespawnCounters{};
     avatar_pose_ok_ = false;
@@ -808,6 +811,11 @@ void Session::on_snapshot(std::uint64_t now, const SnapshotIn& in, Output& /*out
             if (accepts_guest_entry(decoded.message.tick)) {
                 interp_.push(decoded.message.tick, Pose{e.x, e.y, e.z, e.yaw});
             }
+            continue;
+        }
+        // Story 4.2 : chez l'hôte, pose de la réplique libérée de l'invité, pour le PNJ tenu.
+        if (settings_.role == Role::Host && held_npc_ != 0 && e.net_id == held_npc_) {
+            held_interp_.push(decoded.message.tick, Pose{e.x, e.y, e.z, e.yaw});
             continue;
         }
         if (!on_npc_entity(now, decoded.message.tick, e)) ++snap_.ignored;
@@ -1421,6 +1429,7 @@ void Session::on_local_dialog_state(const LocalDialogState& in, Output& out) {
     Bytes bytes;
     if (!proto::encode_reliable(proto::DialogState{in.net_id, 1}, bytes)) return;
     guest_dialog_npc_ = in.net_id;
+    npc_last_params_.erase(in.net_id);  // ses réglages repartent tous (gestes vers l'hôte)
     out.commands.push_back(FreeReplica{in.net_id, true});
     out.commands.push_back(SendReliable{std::move(bytes)});
     ++dialog_.states_sent;
@@ -1513,8 +1522,28 @@ void Session::unhold_npc(const std::string& why, Level level, Output& out) {
     const std::uint32_t id = held_npc_;
     if (id == 0) return;
     held_npc_ = 0;
+    npc_anim_.ignored += static_cast<unsigned>(held_pending_.size());
+    held_pending_.clear();
+    held_interp_.reset();
     out.commands.push_back(UnholdNpc{id});
     out.logs.push_back({level, "[sync] PNJ " + std::to_string(id) + " rendu (routine reprise) : " + why});
+}
+
+void Session::push_held(PendingMotion e) {
+    if (held_pending_.size() >= kMaxPendingMotions) {
+        held_pending_.pop_front();
+        ++npc_anim_.dropped;
+    }
+    held_pending_.push_back(std::move(e));
+}
+
+void Session::place_held(std::uint64_t now, Output& out) {
+    if (held_npc_ == 0) return;
+    const bool ready = clock_.ready();
+    const double shown = ready ? clock_.remote_ms(now) - core::kInterpolationDelayMs : 1e300;
+    play_due(held_pending_, shown, held_npc_, out);
+    // Pas encore de pose de l'invité : le PNJ reste où il est.
+    if (ready && !held_interp_.empty()) out.commands.push_back(MoveNpc{held_npc_, held_interp_.sample(shown).pose});
 }
 
 void Session::dialog_timers(std::uint64_t now, Output& out) {
@@ -1536,6 +1565,8 @@ void Session::on_dialog_npc_lost(std::uint32_t net_id, Output& out) {
     if (state_ != State::InSession || net_id == 0) return;
     if (settings_.role == Role::Host && net_id == held_npc_) {
         held_npc_ = 0;  // sync/npc ne le tient pas (ou plus) : rien à rendre
+        held_pending_.clear();
+        held_interp_.reset();
         out.logs.push_back({Level::Warn, "[sync] PNJ " + std::to_string(net_id) +
                                              " : tenue impossible ou perdue chez l'hôte : oubliée"});
     } else if (settings_.role == Role::Guest && net_id == guest_dialog_npc_) {
@@ -1737,6 +1768,20 @@ void Session::send_snapshot(std::uint64_t now, const World& world, Output& out) 
     e.hp = clamp_hp(world.hp);  // v9
     snapshot.entities.push_back(e);
     if (settings_.role == Role::Host) select_npcs(world, snapshot.entities, out);  // story 3.3
+    // Story 4.2 : chez l'invité, pose de la réplique libérée pour son dialogue (PNJ tenu chez l'hôte).
+    if (settings_.role == Role::Guest && guest_dialog_npc_ != 0 && world.freed_npc == guest_dialog_npc_ &&
+        world.freed_pose_ok && finite_pose(world.freed_pose.x, world.freed_pose.y, world.freed_pose.z,
+                                           world.freed_pose.yaw)) {
+        proto::SnapshotEntity f;
+        f.net_id = guest_dialog_npc_;
+        f.x = world.freed_pose.x;
+        f.y = world.freed_pose.y;
+        f.z = world.freed_pose.z;
+        f.yaw = world.freed_pose.yaw;
+        const auto it = replicas_.find(guest_dialog_npc_);
+        f.hp = it != replicas_.end() ? clamp_hp(it->second.last_hp) : 0;  // non lu par l'hôte
+        snapshot.entities.push_back(f);
+    }
     Bytes bytes;
     if (!proto::encode_snapshot(snapshot, bytes)) return;
     out.commands.push_back(SendSnapshot{std::move(bytes)});
@@ -1755,8 +1800,9 @@ void Session::clear_peer_avatar_state() {
 void Session::on_local_motion(std::uint64_t now, const LocalMotion& in, Output& out) {
     if (state_ != State::InSession) return;
     // Story 3.4 : un PNJ capturé qui n'est plus animé (capture d'une frame en retard) est jeté.
+    // Story 4.2 : chez l'invité, seule la réplique libérée pour son dialogue (gestes vers l'hôte).
     const bool npc = in.net_id != 0;
-    if (npc && (settings_.role != Role::Host || npc_animated_.count(in.net_id) == 0)) {
+    if (npc && (settings_.role == Role::Host ? npc_animated_.count(in.net_id) == 0 : in.net_id != guest_dialog_npc_)) {
         ++npc_anim_.ignored;
         return;
     }
@@ -2109,7 +2155,7 @@ bool Session::keep_param(LastParam& last, const proto::MotionParam& p) {
 }
 
 void Session::on_npc_local_param(std::uint64_t now, const LocalParam& in) {
-    if (settings_.role != Role::Host || npc_animated_.count(in.net_id) == 0) {
+    if (settings_.role == Role::Host ? npc_animated_.count(in.net_id) == 0 : in.net_id != guest_dialog_npc_) {
         ++npc_anim_.params_ignored;
         return;
     }
@@ -2156,6 +2202,17 @@ void Session::on_peer_param(const proto::MotionParam& p) {
         on_npc_param(p);
         return;
     }
+    if (settings_.role == Role::Host && p.net_id >= proto::kFirstNpcNetId) {  // story 4.2 : PNJ tenu
+        if (held_npc_ == 0 || p.net_id != held_npc_) {
+            ++npc_anim_.params_ignored;
+            return;
+        }
+        PendingMotion e;
+        e.is_param = true;
+        e.param = p;
+        push_held(std::move(e));
+        return;
+    }
     if (!accepts_peer_animation(p.net_id)) {
         ++anim_.params_ignored;
         return;
@@ -2173,6 +2230,20 @@ void Session::on_peer_param(const proto::MotionParam& p) {
 void Session::on_peer_motion(const proto::Motion& m, Output& out) {
     if (settings_.role == Role::Guest && m.net_id >= proto::kFirstNpcNetId) {  // story 3.4
         on_npc_motion(m, out);
+        return;
+    }
+    if (settings_.role == Role::Host && m.net_id >= proto::kFirstNpcNetId) {  // story 4.2 : PNJ tenu
+        const auto name = peer_names_.find(m.ani_id);
+        const bool finite =
+            std::isfinite(m.d00) && std::isfinite(m.d04) && std::isfinite(m.d0c) && std::isfinite(m.d14);
+        if (held_npc_ == 0 || m.net_id != held_npc_ || name == peer_names_.end() || !finite) {
+            ++npc_anim_.ignored;
+            return;
+        }
+        PendingMotion e;
+        e.motion = m;
+        e.name = name->second;
+        push_held(std::move(e));
         return;
     }
     if (!accepts_peer_animation(m.net_id)) {

@@ -60,6 +60,7 @@ struct Entry {
     // l'avatar sans Weapon du pair (test en jeu du 2026-10-23) : reprise par reassert_weapon.
     std::string weapon;
     unsigned weapon_check_frames = 0;
+    unsigned sheathe_retries = 0;  // arme rangée mais main occupée : rangements répétés (Info au 1er par Weapon)
     // Story 3.8b : attaques natives ignorées faute d'arme en main ; SEH déjà signalée (avatar = session).
     unsigned attacks_unarmed = 0;
     bool attack_error_logged = false;
@@ -398,12 +399,44 @@ void apply_pending_inventory(Entry& e) {
     }
 }
 
+// Range l'arme en main : EquipStack, puis, si la main reste occupée (test du 2026-10-25 : après une
+// pile « trouvée » reprise en main, EquipStack rend true sans rien changer), HoldRightStack(-1) :
+// gCInventory_PS::HoldStackRightHand remet d'abord l'objet en main dans son emplacement d'équipement
+// (désassemblage de Game.dll, 0x1808c46c0). `after` = pile en main à la sortie.
+bool sheathe(Entry& e, int held, int& after, std::string& how) {
+    bool ok = false;
+    if (!game::equip_stack(e.entity, held, ok)) return false;
+    after = -1;
+    game::get_right_hold_stack(e.entity, after);
+    how = std::string("EquipStack → ") + (ok ? "true" : "false");
+    if (after < 0) return true;
+    bool cleared = false;
+    if (!game::hold_right_stack(e.entity, -1, cleared)) return false;
+    after = -1;
+    game::get_right_hold_stack(e.entity, after);
+    how += std::string(", main encore occupée : HoldRightStack(-1) → ") + (cleared ? "true" : "false");
+    return true;
+}
+
 // L'arme du dernier Weapon n'est plus en main (vidée par le jeu) : HoldRightStack de sa pile.
 // True si l'arme est en main à la sortie (ou si aucune n'est attendue).
+// Test du 2026-10-25 : arme rangée par Weapon (EquipStack → true), mais l'épée de l'avatar de l'hôte
+// restait en main chez l'invité. Arme rangée attendue et main occupée : EquipStack à nouveau.
 bool reassert_weapon(Entry& e) {
-    if (e.dead || !e.inventory_ready || e.weapon.empty()) return e.weapon.empty();
+    if (e.dead || !e.inventory_ready) return e.weapon.empty();
     int held = -1;
     if (!game::get_right_hold_stack(e.entity, held)) return false;
+    if (e.weapon.empty()) {
+        if (held < 0) return true;
+        int after = -1;
+        std::string how;
+        if (!sheathe(e, held, after, how)) return false;
+        (++e.sheathe_retries == 1 ? log::info : log::debug)(
+            "[sync] arme : avatar " + std::to_string(e.net_id) + " : main occupée (pile " + std::to_string(held) +
+            ") alors que l'arme est rangée : " + how + ", main ensuite : pile " + std::to_string(after) + " (essai " +
+            std::to_string(e.sheathe_retries) + ")");
+        return after < 0;
+    }
     if (held >= 0) return true;
     const auto it = e.item_stacks.find(e.weapon);
     if (it == e.item_stacks.end()) return false;
@@ -564,6 +597,7 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
             log::debug(who + " mort : Weapon ignoré");
             return;
         }
+        e.sheathe_retries = 0;     // nouvel épisode : premier rangement repris en Info
         if (!e.inventory_ready) {  // appliqué par move(), une fois l'inventaire prêt
             e.pending_weapon_set = true;
             e.pending_weapon = name;
@@ -581,12 +615,13 @@ void set_weapon(std::uint32_t net_id, const std::string& name) {
                 log::debug(who + " : main déjà vide, rien à ranger");
                 return;
             }
-            bool ok = false;
-            if (!game::equip_stack(e.entity, held, ok)) {
-                log::error(who + " : EquipStack a levé une exception (SEH)");
+            int after = -1;
+            std::string how;
+            if (!sheathe(e, held, after, how)) {
+                log::error(who + " : EquipStack ou HoldRightStack a levé une exception (SEH)");
             } else {
-                log::info(who + " range son arme (pile " + std::to_string(held) + ", EquipStack → " +
-                          (ok ? "true" : "false") + ")");
+                log::info(who + " range son arme (pile " + std::to_string(held) + ", " + how + ", main ensuite : pile " +
+                          std::to_string(after) + ")");
             }
             return;
         }

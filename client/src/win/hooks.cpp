@@ -33,6 +33,7 @@ game::WrapperStopMotionFn g_original_wrapper_stop_motion = nullptr;
 game::RoutineOnProcessFn g_original_routine_on_process = nullptr;  // spike J2 (Num4)
 game::ScriptFn g_original_kill = nullptr;                           // spike J2 (Num6)
 game::ScriptFn g_original_down_or_dead[3] = {};  // spike J2 (Num6, 5ᵉ test) ; session (story 3.7) : sonde et session sont exclusives
+game::AssessTalkFn g_original_assess_talk = nullptr;              // session (story 4.2) : demande de dialogue
 game::StartOutputFn g_original_start_output = nullptr;            // spike J3 (journal des répliques) ; session (story 4.1) : sonde et session sont exclusives
 using DamageDoDamageFn = bool (*)(void* damage_ps, void* target);
 DamageDoDamageFn g_original_damage = nullptr;                       // story 3.5 (Q8)
@@ -187,6 +188,13 @@ bool detour_start_output_session(void* spu, const void* sample, int type) {
     const bool result = g_original_start_output(spu, sample, type);
     sync::dialogue::on_start_output(spu, sample, type);  // noexcept
     return result;
+}
+
+// Story 4.2 : demande de dialogue faite à un PNJ. Copie pour la frame (accesseurs seuls, AD-2), puis
+// l'original, qui lance ZS_Talk sur le PNJ.
+long long detour_assess_talk_session(void* spu, void* self, void* other, long long arg) {
+    sync::dialogue::on_assess_talk(spu, self, other);  // noexcept
+    return g_original_assess_talk(spu, self, other, arg);
 }
 
 // Spike J3 : bloc facultatif. Un échec rend le journal des répliques et Num7 à Num9 inactifs ;
@@ -380,6 +388,7 @@ bool install_session(bool damage_hook, bool native_attacks, bool dialogues) {
     // Story 4.1 (AD-13) : dialogues, bloc facultatif en tout ou rien : un échec laisse la session sans
     // dialogues (Warn). Statut publié à sync/dialogue avant le premier OnProcess.
     bool dialogue = false;
+    bool assess_talk = false;
     if (!dialogues) {
         log::info("[hooks] dialogues désactivés (dialogues = 0)");
     } else if (!game::resolve_dialogue(missing)) {
@@ -388,6 +397,10 @@ bool install_session(bool damage_hook, bool native_attacks, bool dialogues) {
     } else if (create(game::start_output_address(), reinterpret_cast<void*>(&detour_start_output_session),
                       reinterpret_cast<void**>(&g_original_start_output), "gCScriptProcessingUnit::StartOutput")) {
         dialogue = true;
+        // Story 4.2 : facultatif dans le bloc. Sans lui, parler à une réplique bloque l'invité.
+        assess_talk = game::assess_talk_address() != nullptr &&
+                      create(game::assess_talk_address(), reinterpret_cast<void*>(&detour_assess_talk_session),
+                             reinterpret_cast<void**>(&g_original_assess_talk), "AssessTalk");
     } else {
         log::warn("[hooks] dialogues inactifs : hook gCScriptProcessingUnit::StartOutput impossible (session sans "
                   "dialogues)");
@@ -422,6 +435,12 @@ bool install_session(bool damage_hook, bool native_attacks, bool dialogues) {
     }
     if (down_or_dead) log::info("[hooks] détours DownOrDeadBy* de session posés (mise à terre de l'invité)");
     if (dialogue) log::info("[hooks] dialogues : hook StartOutput posé (répliques vues par le pair, dans les deux sens)");
+    if (dialogue && assess_talk) {
+        log::info("[hooks] dialogues : hook AssessTalk posé (réplique libérée dès la demande de dialogue)");
+    } else if (dialogue) {
+        log::warn("[hooks] dialogues : AssessTalk introuvable ou hook impossible : parler à une réplique bloquera "
+                  "l'invité");
+    }
     watchdog::start();
     return true;
 }

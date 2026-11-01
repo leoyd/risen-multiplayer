@@ -35,7 +35,10 @@
 //     play_param et attack sont sans effet ; die la re-fige d'abord. Journal debug des transitions de
 //     PSDialog::IsBeingTalkedTo des répliques (H1 : la demande de dialogue passe-t-elle avec l'IA figée ?) ;
 //   - hôte : hold fige la routine du PNJ de ce GUID (AnimFilter::hold_routine, sans rôle de réplique),
-//     unhold la rend ; validate rend un PNJ tenu perdu, release_all les rend tous.
+//     unhold la rend ; validate rend un PNJ tenu perdu, release_all les rend tous. play, play_param et
+//     move rejouent sur lui les gestes et la pose de la réplique libérée de l'invité (sous ReplayGuard :
+//     un PNJ tenu aussi capturé n'en renvoie pas l'écho) ;
+//   - invité : libérée, la réplique est capturée sous son NetId (AnimFilter) et freed_pose lit sa pose.
 //
 // Tout est appelé depuis la frame (hook OnProcess, AD-2). Les erreurs sont journalisées ;
 // aucune ne remonte.
@@ -110,6 +113,8 @@ std::uint32_t replica_net_id(const void* entity);
 // Story 4.2, invité : libère (`freed`) ou re-fige la réplique `net_id` (FreeReplica). Inconnue ou
 // morte : sans effet (journalisé en debug).
 void set_freed(std::uint32_t net_id, bool freed);
+// Story 4.2, invité : World::freed_* = NetId et pose de la réplique libérée (une au plus), à chaque frame.
+void freed_pose(core::session::World& world);
 // Story 4.2, invité : transitions de PSDialog::IsBeingTalkedTo de chaque réplique, en debug seulement
 // (`running` : InfoSystem::IsRunning de l'invité à cette frame, pour le journal).
 void log_talk_states(bool running);

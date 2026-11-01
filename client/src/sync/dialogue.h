@@ -16,6 +16,11 @@
 //   frame, sa fin (ou un autre partenaire) LocalDialogState{NetId, 0} après. Ses répliques suivent la
 //   règle de l'hôte (son héros, ou le partenaire traduit en NetId de réplique, 0 sinon). Transitions
 //   de PSDialog::IsBeingTalkedTo des répliques en debug (H1, sync/npc).
+//   H1 réfuté (test du 2026-10-25) : la demande de dialogue (script AssessTalk) lance ZS_Talk dans la
+//   routine du PNJ, figée pour une réplique : soft lock. Détour d'AssessTalk (on_assess_talk) : une
+//   demande du héros invité à une réplique la compte comme partenaire dès la frame suivante (libérée,
+//   DialogState{NetId, 1}), jusqu'au début du dialogue ou 5 s sans dialogue (re-figée) ; après
+//   la fin, libre encore 2 s puis tant que la caméra de dialogue est active (10 s au plus).
 // - Hôte, à chaque frame (read_host_state, story 4.2) : son propre dialogue (IsRunning, GUID du
 //   partenaire) dans World, pour refuser de tenir un PNJ qui lui parle.
 // - Rejeu (replay, ApplyDialogLine), chez l'un ou l'autre : entité du locuteur résolue par l'appelant
@@ -25,7 +30,7 @@
 //   sous ReplayGuard (le registre bloque les animations natives de l'avatar et des répliques). Jamais
 //   StartSay, caméra, menu ni ZS_Talk. SEH : Warn une fois.
 //
-// Tout sauf on_start_output est appelé depuis la frame (hook OnProcess, AD-2).
+// Tout sauf on_start_output et on_assess_talk est appelé depuis la frame (hook OnProcess, AD-2).
 #pragma once
 
 #include <cstdint>
@@ -45,6 +50,12 @@ bool active();
 // accesseurs GetSelfEntity, bCString::GetText, InfoSystem::IsRunning et GetNPC (sous SEH).
 // Ne lève jamais d'exception.
 void on_start_output(void* spu, const void* sample, int type) noexcept;
+
+// Détour d'AssessTalk (story 4.2), avant l'original : copie de la demande (PNJ self, demandeur other :
+// `Entity*` lus en eCEntity*, ceux de l'unité si nuls) pour la frame. Lecture mémoire et accesseurs
+// GetSelfEntity / GetOtherEntity seuls (sous SEH).
+// Ne lève jamais d'exception.
+void on_assess_talk(void* spu, void* self, void* other) noexcept;
 
 // Hôte, frame : file vidée ; en session (`in_session`), répliques du dialogue en cours → `out`
 // (LocalDialogLine, et LocalDialogReplayed pour les ignorées). Hors session : file vidée seulement.

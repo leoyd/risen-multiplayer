@@ -56,6 +56,13 @@ bool resolve_dialogue(const char*& missing);
 bool dialogue_resolved();
 void* start_output_address();  // après resolve_dialogue (sinon nul)
 
+// Story 4.2, correctif du test du 2026-10-25 : script `AssessTalk(spu, self, other, arg)` de
+// Script_Game.dll, appelé sur le PNJ (self) à qui le héros (other) demande à parler ; il lance
+// l'état `ZS_Talk` du PNJ, que sa routine exécute (figée pour une réplique : soft lock). self et
+// other sont des `Entity*`, nuls pour ceux de l'unité (désassemblage, 0x1800c0f20). Facultatif.
+using AssessTalkFn = long long (*)(void* spu, void* self, void* other, long long arg);
+void* assess_talk_address();
+
 // --- Depuis le détour (accesseurs) ---------------------------------------------------------
 bool spu_self_entity(void* spu, void*& out);  // gCScriptProcessingUnit::GetSelfEntity
 // bCString::GetText, copié dans `buf` (`cap` octets au plus, sans zéro final). `len` = octets copiés.
@@ -71,6 +78,9 @@ bool info_say_speaker(Entity& out);
 // Story 4.2 (H1, journal debug) : PSDialog::IsBeingTalkedTo de l'entité. Symbole facultatif, hors du
 // bloc en tout ou rien : absent, false.
 bool dialog_being_talked_to(const Entity& e, bool& out);
+// Story 4.2 : Entity::IsDialogCameraActive (statique) : caméra de dialogue (bandes noires) encore
+// active. Symbole facultatif : absent, false.
+bool dialog_camera_active(bool& out);
 
 // --- Parole --------------------------------------------------------------------------------
 // gCScriptProcessingUnit::sIsOutputPlaying(entité) : ressource de sortie en attente ou en cours.

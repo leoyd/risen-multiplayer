@@ -43,6 +43,8 @@ using UStringGetTextFn = const wchar_t* (*)(const void* self);
 
 constexpr const char* kStartOutput = "?StartOutput@gCScriptProcessingUnit@@QEAA_NAEBVbCString@@W4gEOutputType@@@Z";
 constexpr const char* kGetSelfEntity = "?GetSelfEntity@gCScriptProcessingUnit@@QEAAPEAVeCGeometryEntity@@XZ";
+// Script_Game.dll, facultatif (story 4.2) : demande de dialogue reçue par le PNJ.
+constexpr const char* kAssessTalk = "?AssessTalk@@YA_JPEAVgCScriptProcessingUnit@@PEAX1_J@Z";
 constexpr const char* kSStartOutput =
     "?sStartOutput@gCScriptProcessingUnit@@KA_NPEAVeCGeometryEntity@@AEBVbCString@@W4gEOutputType@@@Z";
 constexpr const char* kSIsOutputPlaying = "?sIsOutputPlaying@gCScriptProcessingUnit@@KA_NPEAVeCGeometryEntity@@@Z";
@@ -67,6 +69,7 @@ constexpr const char* kStopTalk = "?StopTalk@GUI2@@QEAAXXZ";
 // Story 4.2 (H1, diagnostic seulement, hors du bloc en tout ou rien) : `this` = Entity (8 octets),
 // l'entité est lue à [this] puis GetPropertySet(0x37) (gCDialog_PS) : désassemblage, 0x180220290.
 constexpr const char* kBeingTalkedTo = "?IsBeingTalkedTo@PSDialog@@QEBA_NXZ";
+constexpr const char* kDialogCameraActive = "?IsDialogCameraActive@Entity@@SA_NXZ";  // facultatif (story 4.2)
 constexpr const char* kEntityCopyCtor = "??0Entity@@QEAA@AEBV0@@Z";
 constexpr const char* kGui2 = "gui2";
 constexpr const char* kLocGetInstance = "?GetInstance@eCLocAdmin2@@SAAEAV1@XZ";
@@ -80,6 +83,7 @@ constexpr const char* kUStringGetText = "?GetText@bCUnicodeString@@QEBAPEB_WXZ";
 
 struct DialogueAbi {
     void* start_output = nullptr;  // cible du détour
+    void* assess_talk = nullptr;   // cible du détour, facultative (story 4.2)
     SpuGetSelfFn spu_get_self = nullptr;
     SStartOutputFn s_start_output = nullptr;
     SIsOutputPlayingFn s_is_output_playing = nullptr;
@@ -98,6 +102,7 @@ struct DialogueAbi {
     StartTalkFn start_talk = nullptr;
     StopTalkFn stop_talk = nullptr;
     bool (*being_talked_to)(const Entity* self) = nullptr;  // facultatif (story 4.2)
+    bool (*dialog_camera_active)() = nullptr;                // facultatif (story 4.2)
     EntityCopyCtorFn entity_copy_ctor = nullptr;
     void* gui2 = nullptr;
     LocGetInstanceFn loc_get_instance = nullptr;
@@ -241,6 +246,10 @@ bool resolve_dialogue(const char*& missing) {
     if (!ok) return false;
     const char* optional = nullptr;
     lookup(script, kBeingTalkedTo, a.being_talked_to, optional);  // absent : dialog_being_talked_to rend false
+    lookup(script, kDialogCameraActive, a.dialog_camera_active, optional);
+    if (HMODULE script_game = GetModuleHandleW(L"Script_Game.dll"); script_game != nullptr) {
+        lookup(script_game, kAssessTalk, a.assess_talk, optional);  // absent : pas de libération à la demande
+    }
     g_abi = a;
     g_resolved = true;
     return true;
@@ -249,6 +258,8 @@ bool resolve_dialogue(const char*& missing) {
 bool dialogue_resolved() { return g_resolved; }
 
 void* start_output_address() { return g_resolved ? g_abi.start_output : nullptr; }
+
+void* assess_talk_address() { return g_resolved ? g_abi.assess_talk : nullptr; }
 
 // --- Détour --------------------------------------------------------------------------------
 
@@ -263,6 +274,7 @@ bool spu_self_entity(void* spu, void*& out) {
         return false;
     }
 }
+
 
 bool read_bcstring(const void* bcstring, char* buf, std::size_t cap, std::size_t& len) {
     len = 0;
@@ -283,6 +295,18 @@ bool dialog_being_talked_to(const Entity& e, bool& out) {
     if (!g_resolved || g_abi.being_talked_to == nullptr || e.ptr == nullptr) return false;
     __try {
         out = g_abi.being_talked_to(&e);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = false;
+        return false;
+    }
+}
+
+bool dialog_camera_active(bool& out) {
+    out = false;
+    if (!g_resolved || g_abi.dialog_camera_active == nullptr) return false;
+    __try {
+        out = g_abi.dialog_camera_active();
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = false;

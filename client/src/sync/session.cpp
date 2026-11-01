@@ -498,6 +498,7 @@ void frame() {
         if (in_session) dialogue::read_host_state(world);
     } else {
         dialogue::guest_frame(hero, in_session, g_inputs);
+        if (in_session) npc::freed_pose(world);  // story 4.2 : pose du partenaire, vers l'hôte
     }
     npc::drain_lost(g_inputs);  // story 4.2 : tenues ou libérations impossibles (frame précédente)
     world.routine_blocked = sync::anim_filter().take_routine_blocked();

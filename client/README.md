@@ -945,6 +945,12 @@ ce PNJ, qui ne repart pas avant la fin. Les effets du dialogue restent chez l'in
   l'avatar de l'invité, `DialogLine{N}` sur le PNJ tenu ; Debug `[sync] DialogLine (locuteur N, …)
   rejouée sur l'avatar de l'invité|le PNJ tenu à X m`. La voix du PNJ tenu passe par la pompe du canal
   de sortie (routine figée, comme une réplique en 4.1).
+- **Gestes et pose du partenaire** (correctif du test du 2026-10-25 : PNJ figé en plein geste chez
+  l'hôte) : chez l'invité, les animations natives de la réplique libérée sont capturées sous son NetId
+  et partent en `Motion` / `MotionParam{N}`, et sa pose entre dans ses snapshots, tant qu'elle est le
+  partenaire en cours. Chez l'hôte, elles sont rejouées sur le PNJ tenu (même retard que l'avatar,
+  puis `MoveTo` à sa pose) sans écho vers l'invité ; Info `[sync] PNJ N tenu (routine figée) : dialogue
+  de l'invité, gestes et pose de l'invité rejoués`. Comptés au bilan des animations des PNJ.
 - Bilan `[sync] snapshots (5 s)` : `… ; DialogState envoyés …, reçus …` en fin de ligne.
 - Faux invité : `--dialog-every 5s` (et `--dialog-npc N`) commence puis finit un dialogue avec le
   premier PNJ annoncé (`-> DialogState pnj=N actif=1|0`, `-> DialogLine locuteur=2|N …`) ; scénarios
