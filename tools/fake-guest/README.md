@@ -48,7 +48,7 @@ raccourcis (100 ms au lieu de 500 ms, etc.). Ils sont aussi lancés par `ctest` 
 | `--host <ipv4>` | — (obligatoire) | adresse de l'hôte |
 | `--port` | `27960` | port UDP de l'hôte |
 | `--nickname` | `Invite` | pseudo du `Hello` (1 à 32 octets) |
-| `--mod-version` | `0.1.0` | version du mod du `Hello` (comparée octet par octet par l'hôte) |
+| `--mod-version` | `0.2.0` | version du mod du `Hello` (comparée octet par octet par l'hôte) |
 | `--duration` | `0` | durée de la session, comptée à partir de `InSession` ; `0` = jusqu'à Ctrl-C |
 | `--weapon` | `It_1H_Sword` | arme en main de l'invité : `Weapon{2, nom}` part juste après le `Spawn` (story 3.2) ; `-` = arme rangée (nom vide) |
 | `--armor` | (vide) | armure de l'invité : `Armor{2, nom}` part juste après le `Weapon` (story 3.2c) ; `-` = sans armure (nom vide) ; vide = pas d'`Armor` |

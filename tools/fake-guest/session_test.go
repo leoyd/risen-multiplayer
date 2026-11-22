@@ -498,7 +498,7 @@ func TestParseConfig(t *testing.T) {
 		t.Errorf("délais par défaut : %+v", cfg)
 	}
 	if cfg.Host != netip.MustParseAddrPort("10.0.0.7:27960") || cfg.Hello.Nickname != "Invite" ||
-		cfg.Hello.ModVersion != "0.1.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != protocol.ProtocolVersion ||
+		cfg.Hello.ModVersion != "0.2.0" || cfg.Hello.Fingerprint != steamFingerprint || cfg.Hello.ProtocolVersion != protocol.ProtocolVersion ||
 		cfg.Duration != 0 || cfg.Kill || cfg.Drop != 0 || cfg.Seed != 1 || cfg.DupHello || cfg.BadVersion ||
 		cfg.Weapon != "It_1H_Sword" || cfg.Armor != nil || cfg.StrictTimeout || cfg.HitInterval != 0 || cfg.HitTarget != 0 ||
 		cfg.AttackMove != 0 {

@@ -99,7 +99,7 @@ func parseConfig(args []string, stderr io.Writer) (sessionConfig, int) {
 	host := fs.String("host", "", "adresse IPv4 de l'hôte (obligatoire)")
 	port := fs.Uint("port", 27960, "port UDP de l'hôte")
 	nickname := fs.String("nickname", "Invite", "pseudo envoyé dans Hello (1 à 32 octets)")
-	modVersion := fs.String("mod-version", "0.1.0", "version du mod envoyée dans Hello (0 à 255 octets)")
+	modVersion := fs.String("mod-version", "0.2.0", "version du mod envoyée dans Hello (0 à 255 octets)")
 	duration := fs.Duration("duration", 0, "durée de la session, ex. 30s (0 = jusqu'à Ctrl-C)")
 	drop := fs.Int("drop", 0, "pourcentage de datagrammes sortants jetés (0 à 100)")
 	seed := fs.Int64("seed", 1, "graine des pertes de --drop")

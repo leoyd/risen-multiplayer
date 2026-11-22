@@ -8,13 +8,14 @@ Explore Faranga together, clear dungeons side by side, fight the same monsters.
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20(Proton)-informational)
 ![Game](https://img.shields.io/badge/Risen-Steam%20x64-8a2be2)
-![Status](https://img.shields.io/badge/status-J2%20in%20progress-orange)
+![Version](https://img.shields.io/badge/version-0.2.0-success)
+![Status](https://img.shields.io/badge/status-J3%20in%20progress-orange)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus)
 
 </div>
 
 > [!WARNING]
-> **Early development.** The mod loads natively, hosts or joins a session, and shows the other player's avatar moving, animating, holding the same weapon, wearing the same armour and the guest's starting equipment (milestone J1, start of J2). This has been validated in-game on one machine against a scripted fake guest. The two-machine validation and co-op combat (rest of J2) are next. See the [roadmap](#️-roadmap).
+> **Early development (v0.2.0).** Co-op melee combat works (milestone J2, closed on 2026-10-24) and NPC dialogues are mirrored on both sides (J3, in progress). Everything has been validated in-game with **two Risen instances on one Linux machine**; a test between two real machines is still pending. See the [roadmap](#️-roadmap).
 
 > [!IMPORTANT]
 > Fan project, **not affiliated** with Piranha Bytes, THQ Nordic or Plaion. The repository contains **no game files**. You need to own Risen on Steam to use it.
@@ -57,30 +58,32 @@ This is a **hobby project**, released as open source so that others can pick it 
 | 🛡️ | Game version check: on an unknown version, the mod disables itself cleanly | J0 | ✅ |
 | 📝 | `multiplayer.ini` config file + timestamped log | J0 | ✅ |
 | 🔗 | Host listens, guest joins by IP; version/fingerprint checks; clean session end (quit, reload, death) | J1 | ✅ Validated in-game |
-| 👥 | Each player sees the other's avatar: appears next to the host, moves smoothly (20 Hz, interpolated), replays gestures (walk, run, jump, draw, attacks, death) | J1 | ✅ Validated on one machine — two-machine test pending |
-| 🗡️ | The avatar holds the same weapon as its player, drawn or sheathed (any one-handed weapon, axe, fists) | J2 | ✅ Validated on one machine |
-| 🎽 | Guest equipment from `guest_equipment`: the guest's hero is equipped on joining (items created only if missing), and its avatar on the host wears it | J2 | ✅ Validated on one machine (avatar side) |
-| 🛡️ | The avatar wears the same armour as its player, both ways, changed or removed during the session | J2 | ✅ Validated on one machine |
-| 👹 | NPC replicas: on the guest, the NPCs within 50 m of either player follow the host's positions and HP, with their local AI frozen (released at session end) | J2 | 🧪 Implemented (story 3.3), in-game test pending |
-| ⚔️ | Melee co-op combat against the same monsters (shared HP, host-authoritative) | J2 | 🚧 In progress (stories 3.4 to 3.7) |
-| 💬 | NPC dialogues played on both sides | J3 | 💭 Later |
+| 👥 | Each player sees the other's avatar: appears next to the host, moves smoothly (20 Hz, interpolated), replays gestures (walk, run, jump, draw, attacks) | J1 | ✅ Validated in-game |
+| 🗡️ | The avatar holds the same weapon and wears the same armour as its player; guest starting equipment from `guest_equipment` | J2 | ✅ Validated in-game |
+| 👹 | NPC replicas: on the guest, the NPCs around the players follow the host's positions, animations, HP, held items and deaths; their local AI is frozen | J2 | ✅ Validated in-game |
+| ⚔️ | Melee co-op combat against the same monsters: the guest's hits are applied by the host, monsters' hits hurt the guest, native hit effects (blood, recoil) on both sides | J2 | ✅ Validated in-game |
+| 🩹 | A guest at 0 HP goes down, then respawns next to the host with full HP | J2 | ✅ Validated in-game |
+| 💬 | NPC dialogues mirrored: each player sees and hears the other's conversations (voice and lip sync) | J3 | ✅ Validated in-game |
+| 🚫 | An NPC talks to one player at a time: the other gets "*Name* can't talk to you, he's busy" | J3 | ✅ Validated in-game |
+| 🧲 | Leash: the guest stays within 35 m of the host (where the host's engine keeps NPCs alive), with a red on-screen warning from 28 m | — | ✅ Validated in-game |
+| 🌀 | Shared teleport: when one player teleports, the other follows | — | 🧪 Implemented, in-game test pending |
 | 💾 | Persistent guest profile (gear, XP, loot), shared side quests | J4 | 💭 Later |
-| 🩹 | Reviving a downed ally | J5 | 💭 Later |
+| 🤝 | Reviving a downed ally | J5 | 💭 Later |
 
-**Known J1 limitations** (tracked in [`deferred-work.md`](_bmad-output/implementation-artifacts/deferred-work.md)):
+**Known limitations** (tracked in [`deferred-work.md`](_bmad-output/implementation-artifacts/deferred-work.md)):
 - the avatar has no collisions in your world: you walk through it. This is a choice (story 3.1): the "solid" setup found in the J2 spike detaches its animated model. NPCs still target and hit it;
-- the walk → stop transition is not very smooth, and the walk animation can occasionally stall for a moment;
+- NPCs do not always react to the avatar as they would to a hero (drawn weapon, trespassing, a guard hit once may not fight back);
+- the host's engine only processes NPCs within about 40 m of its camera. Raising that range at runtime does not work (story 3.4f), hence the leash;
+- some town NPCs can stay in T-pose on the guest, and some objects they hold (broom…) are not replicated;
+- the avatar's run can occasionally look like a moonwalk on the host (diagnostic in the log, fix pending);
 - only the right hand and the armour are replicated (no shield, torch, rings or amulets);
-- a guest who sells or drops an item listed in `guest_equipment` gets it back on the next session (items are created when missing);
-- NPC replicas are animated by the host (story 3.4, the 8 NPCs closest to a player; the others stay frozen in their last animation) — **implemented and tested on the bench, not yet validated in-game**; their deaths are not replicated yet (story 3.4b);
-- a replica killed locally by the guest's hero (possible until story 3.5 routes the guest's hits to the host) stays standing: its engine animations and ragdoll are blocked; an NPC that only exists in the host's game (spawned during play) is ignored on the guest;
-- in story 3.3 the guest's hero can still hit or even kill a replica locally: damage is not synchronised yet (stories 3.5 and 3.6), so the replica's HP is simply overwritten by the host's on the next change.
+- a change of world (loading screen) ends the session; subtitles of the other player's dialogues are not shown.
 
 ## 📦 Installation (players)
 
 **Requirements:** _Risen_ on **Steam**, current version (64-bit, January 2023 update), on Windows or on Linux with Proton.
 
-1. Get `Script_Multiplayer.dll` (no release yet: see [Building from source](#️-building-from-source)).
+1. Get `Script_Multiplayer.dll` (no binary release yet: see [Building from source](#️-building-from-source)).
 2. Copy the DLL into `<Steam>/steamapps/common/Risen/bin/scripts/`. This is the folder that already contains `Script_Game.dll`.
 3. Copy [`client/multiplayer.example.ini`](client/multiplayer.example.ini) to the same folder as `multiplayer.ini`, then edit it (see below).
 4. **On Linux/Proton, disable the Steam overlay for Risen** (Properties → General → "Enable the Steam Overlay while in-game"). Otherwise the game can freeze during a session (see [Troubleshooting](#-troubleshooting)).
@@ -109,10 +112,21 @@ nickname = Leo
 ; A-Z a-z 0-9 _ each, 16 names, 255 bytes at most). Validated in both roles, applied as guest only:
 ; the hero equips them on joining (created if missing), and the host dresses the guest's avatar.
 guest_equipment = It_Armor_Don_Fighter, It_1H_Sword_Rusty
+; Guest only: maximum horizontal distance to the host, in metres (0 = no leash). Default: 35.
+leash_radius = 35
+; On-screen overlay (role, name, session state, leash warning). Default: 1.
+overlay = 1
+; Combat and dialogue features, all on by default (0 = off, for troubleshooting).
+damage_hook = 1
+native_attacks = 1
+dialogues = 1
 ; debug writes diagnostics (snapshots, animations, locomotion) every few seconds. Default: info.
 log_level = info
-; Reverse-engineering probe (J1 spike). Keep 0 to play.
+; Reverse-engineering probe and diagnostics. Keep 0 to play.
 probe = 0
+trace_assess = 0
+; Experimental (story 3.4f, does not work): engine processing range in metres. Keep 0.
+processing_range = 0
 ```
 
 - Comments (`;` or `#`) go **on their own line**. At the end of a line, they would become part of the value.
@@ -127,6 +141,8 @@ graph LR
 
 - **There is no server to run.** The host's game *is* the server. Strictly two players: a third client is refused ("session pleine").
 - The session starts by itself once a save is loaded. The guest's hero is teleported 2 m in front of the host.
+- **Stay together:** the guest cannot go further than 35 m from the host (a red border appears from 28 m). If either player teleports, the other is placed next to them.
+- **Talking to NPCs:** each player can talk to a different NPC at the same time; the other one sees and hears the conversation. An NPC already talking to one player refuses the other.
 - The guest must be able to reach the host over UDP. Three options:
   - **Same local network:** use the host's local IP (`192.168.x.x`).
   - **Over the Internet:** forward the UDP port (27960 by default) on the host's router.
@@ -186,7 +202,7 @@ More details: [`client/README.md`](client/README.md) (in French), including the 
 
 ## 🧪 Testing without a second player
 
-Two copies of Risen cannot run on the same machine, so the repository ships a **fake guest** written in Go ([`tools/fake-guest/`](tools/fake-guest/README.md), never shipped to players). Run Risen as host, then:
+**Two instances on one Linux machine** work: two copies of the game folder, each with its own Wine/Proton prefix, one as host and one as guest on `127.0.0.1` (this is how every feature since J2 was validated). The repository also ships a **fake guest** written in Go ([`tools/fake-guest/`](tools/fake-guest/README.md), never shipped to players). Run Risen as host, then:
 
 ```bash
 # Join, hold the session 20 s, leave cleanly
@@ -212,17 +228,17 @@ graph TD
 ```
 
 - **The host is authoritative.** Each player's game simulates their own hero; the other side shows a **replica** (avatar) driven by the network.
-- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v14**):
+- **Network** ([`protocol/PROTOCOL.md`](protocol/PROTOCOL.md), currently **v19**):
   - one UDP socket, a channel byte at the start of every datagram;
   - channel 2: handshake (`Hello`, `Welcome`, `Reject`);
-  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn`, `AniName`/`Motion` (animations by name), `MotionParam` (locomotion weights and speeds), `Death`, `Weapon` (name of the weapon in hand, empty when sheathed), `Armor` (name of the armour worn, empty when none); since v9, `Spawn` type 1 announces an NPC replica (NetId ≥ 1000, matched on the guest by its 16-byte GUID); since v10, the host also sends `Motion`/`MotionParam` for its 8 closest NPC replicas; since v11, an NPC killed on the host gets `Death` (instead of `Despawn`) and its replica dies once on the guest, without a native `Kill` (no XP, no quest), and is never announced again during the session; since v12, the guest's hits on an NPC replica are blocked locally and sent as `HitRequest`, which the host applies with the guest avatar's weapon (`PSDamage::DoDamage`); since v13, the guest's avatar is invulnerable on the host: a monster's hit on it is blocked and sent as `HitOnGuest` (raw damage, no armour yet), the only way the guest hero loses HP (native hits on the guest hero are blocked); since v14, a lethal hit leaves the guest hero at 1 HP, "downed": the guest sends `Death{2}` once, the host answers `Respawn` (2 m in front of its hero, no ragdoll) and the guest teleports there with full HP and acknowledges with the first snapshot tick carrying the new pose, so stale snapshots are discarded (to be confirmed in game) (native deaths by falling or deep water are a known limit: the session ends when the guest reloads);
-  - channel 1: unreliable full-state snapshots at 20 Hz (hero, plus up to 53 NPCs from the host, closest first, with their HP);
+  - channel 0: reliable events over [KCP](https://github.com/skywind3000/kcp) — heartbeat, session end, `Spawn`/`Despawn` (avatars, and NPC replicas matched on the guest by their 16-byte GUID), `AniName`/`Motion`/`MotionParam` (animations by name and locomotion settings, for the heroes and the host's closest NPCs), `Weapon`/`Armor`, `Death` (NPC deaths, guest downed), `HitRequest` (guest's hit, applied by the host), `HitOnGuest` (monster's hit on the guest), `Respawn` (with acknowledgement), `NpcAttack` (native attacks replayed on replicas and avatars), `DialogLine`/`DialogState` (mirrored dialogues, busy NPCs), `Regroup` (shared teleport);
+  - channel 1: unreliable full-state snapshots at 20 Hz (hero, plus up to 400 NPCs from the host, closest first, with their HP), split over several datagrams;
   - display delayed by 150 ms, Hermite interpolation, extrapolation ≤ 250 ms;
   - every message has binary test vectors checked by both the C++ and Go codecs.
 - **Main thread only:** every game call happens from a [MinHook](https://github.com/TsudaKageyu/minhook) hook on `eCApplication::OnProcess`, called once per frame.
 - **Animations replayed by name:** the local hero's `eCAnimation_PS::PlayMotion` calls are captured, sent as `Motion` events, and replayed on the avatar (`GetMotion` → `SetMotion` → `PlayMotion`). The engine is blocked from animating the avatar by itself.
 
-The detailed decisions (AD-1 to AD-12) are in the [architecture spine](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md) (in French).
+The detailed decisions (AD-1 to AD-13) are in the [architecture spine](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md) (in French).
 
 ### Repository layout
 
@@ -261,12 +277,13 @@ Established on the Steam x64 build. Useful for anyone picking up the project.
 ## 🗺️ Roadmap
 
 - [x] **J0 — It loads:** native loading, version check, config, log
-- [ ] **J1 — I can see you:** host/guest session ✅, avatar that appears, moves and animates ✅ (one machine) — two-machine validation pending
-- [ ] **J2 — We fight together** ← **MVP goal**: J2 spike ✅, entity registry ✅, weapon in hand ✅ (one machine), guest equipment ✅ (one machine), armour worn ✅ (one machine); next: host-driven NPC replicas (3.3, 3.4), damage both ways (3.5, 3.6), downed and respawn (3.7)
-- [ ] J3 — Mirrored dialogues
+- [x] **J1 — I can see you:** host/guest session, avatar that appears, moves and animates (two-machine test pending)
+- [x] **J2 — We fight together** (MVP): weapon, armour and equipment, NPC replicas with animations and deaths, damage both ways, downed and respawn, native attacks — closed on 2026-10-24
+- [ ] **J3 — Mirrored dialogues** ← **in progress**: host's and guest's dialogues mirrored ✅, busy NPCs ✅; next: robustness (crossed requests to the same NPC)
+- [x] Leash between players and shared teleport (v0.2.0)
 - [ ] J4 — Persistent guest profile, shared side quests
 - [ ] J5 — Reviving a downed ally
-- [ ] Later: co-op archery and magic, leash between players, GOG version
+- [ ] Later: NPC reactions to the avatar, co-op archery and magic, GOG version
 
 ## 🤝 Taking over or contributing
 
@@ -278,7 +295,7 @@ The project is designed to be picked up. Where to start:
    - [PRD](_bmad-output/planning-artifacts/prds/prd-risen-multiplayer-2026-10-15/prd.md): requirements FR-1 to FR-12;
    - [architecture](_bmad-output/planning-artifacts/architecture/architecture-risen-multiplayer-2026-10-15/ARCHITECTURE-SPINE.md): the rules to follow;
    - `_bmad-output/implementation-artifacts/`: one spec per delivery, plus `deferred-work.md` for known follow-ups.
-2. **Respect the architecture invariants** (AD-1 to AD-12), especially:
+2. **Respect the architecture invariants** (AD-1 to AD-13), especially:
    - only `game/` calls the game;
    - every game call happens on the main thread;
    - no pointer ever goes over the network;
