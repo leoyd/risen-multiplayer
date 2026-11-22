@@ -22,7 +22,7 @@
 
 namespace mp::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 18;
+inline constexpr std::uint16_t kProtocolVersion = 19;
 inline constexpr std::size_t kMaxDatagram = 1200;      // octets, canal compris
 inline constexpr std::size_t kMaxModVersion = 255;     // str8 : 0 à 255 octets
 inline constexpr std::size_t kMinNickname = 1;
@@ -58,6 +58,7 @@ enum class MsgType : std::uint8_t {
     NpcAttack = 29,    // v15 (story 3.8)
     DialogLine = 30,   // v16 (story 4.1) ; v17 : aussi invité → hôte (story 4.2)
     DialogState = 31,  // v17 (story 4.2) ; v18 : aussi hôte → invité (story 4.3)
+    Regroup = 32,      // v19 (story 4.5)
 };
 
 enum class RejectReason : std::uint8_t {
@@ -251,6 +252,15 @@ struct DialogState {
     std::uint8_t active = 0;       // 1 : engagement commencé, 0 : fini
 };
 
+// Téléportation commune (v19, story 4.5), fiable, 17 octets, dans les deux sens : le héros de
+// l'émetteur vient de faire un saut de position (pierre de téléportation, console…) jusqu'à cette pose ;
+// le récepteur place son propre héros à côté. Le décodeur ne vérifie aucune valeur : le récepteur
+// ignore une pose non finie.
+struct Regroup {
+    float x = 0.0f, y = 0.0f, z = 0.0f;  // position (unités du monde)
+    float yaw = 0.0f;                    // radians, atan2(m[8], m[10]) (AD-7)
+};
+
 // Réglage de locomotion (story 2.4b) : eCWrapper_emfx3ActorInstance::SetTargetWeight(type,
 // valeur, durée) ou SetPlaySpeed(type, valeur). Daté comme Motion, rejoué au même instant.
 enum class MotionParamKind : std::uint8_t {
@@ -291,7 +301,7 @@ struct Armor {
 using ControlMessage = std::variant<Hello, Welcome, Reject>;
 using ReliableMessage =
     std::variant<Heartbeat, SessionEnd, Motion, Spawn, Despawn, AniName, Death, MotionParam, Weapon, Armor,
-                 HitRequest, HitOnGuest, Respawn, NpcAttack, DialogLine, DialogState>;
+                 HitRequest, HitOnGuest, Respawn, NpcAttack, DialogLine, DialogState, Regroup>;
 
 enum class DecodeError : std::uint8_t {
     None = 0,

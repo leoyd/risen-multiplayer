@@ -29,6 +29,7 @@ damage_hook = 1
 overlay = 1
 log_level = debug
 trace_assess = 1
+processing_range = 0
 EOF
 
 installer ~/Games/Risen-invite/bin/scripts <<'EOF'
@@ -42,6 +43,8 @@ damage_hook = 1
 overlay = 1
 log_level = debug
 trace_assess = 1
+processing_range = 0
+leash_radius = 35
 EOF
 
 echo "Installé ($(git -C "$RACINE" rev-parse --short HEAD), $(git -C "$RACINE" branch --show-current))"

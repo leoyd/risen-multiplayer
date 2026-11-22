@@ -1,4 +1,4 @@
-# Protocole Risen Multiplayer — version 18
+# Protocole Risen Multiplayer — version 19
 
 Contrat binaire entre l'hôte et l'invité (DLL `Script_Multiplayer.dll`) et le faux invité de
 test (`tools/fake-guest/`, Go). Ce document fait foi : le codec C++ (`client/src/core/protocol.*`)
@@ -20,7 +20,9 @@ l'hôte, rejouée chez l'invité sur l'entité du locuteur), la v17 (story 4.2) 
 (locuteur 2, héros de l'invité) et `DialogState` (début et fin d'un dialogue de l'invité avec une réplique
 de PNJ, que l'hôte tient pendant ce temps), la v18 (story 4.3) `DialogState` dans l'autre sens, format
 inchangé (PNJ avec lequel le héros de l'hôte est engagé, que l'invité marque « occupé ») et le refus d'une
-demande de dialogue vers un PNJ occupé par l'autre joueur.
+demande de dialogue vers un PNJ occupé par l'autre joueur, la v19 (story 4.5) `Regroup` (téléportation
+commune : quand un joueur se téléporte, l'autre est placé à côté de lui) et le champ de force de l'invité
+(sans message).
 
 ## 1. Règles générales
 
@@ -70,6 +72,7 @@ demande de dialogue vers un PNJ occupé par l'autre joueur.
 | 29 | `NpcAttack` | fiable | hôte → invité : début d'une attaque d'un PNJ capturé (mouvement de combat et cible), lancée nativement par la réplique (v15) ; invité → hôte (story 3.8b) : début d'une attaque du héros invité (`NetId` 2), lancée nativement par son avatar |
 | 30 | `DialogLine` | fiable | hôte → invité : une réplique d'un dialogue de l'hôte (locuteur, type de sortie, fichier voix), rejouée par l'invité sur l'entité du locuteur (v16) ; invité → hôte (v17) : une réplique d'un dialogue de l'invité, rejouée par l'hôte |
 | 31 | `DialogState` | fiable | invité → hôte : début ou fin d'un dialogue de l'invité avec une réplique de PNJ ; l'hôte tient ce PNJ (routine figée) pendant le dialogue (v17) ; hôte → invité (v18) : début ou fin de l'engagement du héros de l'hôte avec un PNJ annoncé, que l'invité marque « occupé » |
+| 32 | `Regroup` | fiable | les deux sens : le héros de l'émetteur vient de se téléporter à cette pose ; le récepteur place son héros à côté (v19) |
 
 Aucune valeur n'est réservée (depuis la v14). Toute autre valeur, et un type reçu sur le mauvais canal (ex.
 `Heartbeat` en contrôle) sont refusés comme **type inconnu**. Ajouter un type exige de
@@ -81,7 +84,7 @@ mettre à jour ce document et d'incrémenter la version du protocole.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `version_protocole` | `u16` | `18` en v18 — **position figée pour toujours** |
+| `version_protocole` | `u16` | `19` en v19 — **position figée pour toujours** |
 | `version_mod` | `str8` | 0 à 255 octets, ex. `0.1.0` |
 | empreinte Game.dll | `u32 TimeDateStamp`, `u32 SizeOfImage` | en-tête PE du module chargé |
 | empreinte Engine.dll | `u32`, `u32` | idem |
@@ -316,6 +319,16 @@ Taille : 6 octets. Même format dans les deux sens ; le décodeur ne vérifie pa
   demande de dialogue de son héros vers elle. Jusqu'à la v17, un invité qui recevait `DialogState`
   l'ignorait.
 
+### `Regroup` (32) — fiable — v19
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `x`, `y`, `z` | `f32` ×3 | nouvelle position du héros de l'émetteur (unités du monde), finie |
+| `lacet` | `f32` | radians, `atan2(m[8], m[10])` (AD-7), fini |
+
+Taille : 17 octets. Deux sens, même format (§8, « Téléportation commune »). Le décodeur ne vérifie
+aucune valeur : le récepteur ignore une pose non finie (journalisé).
+
 ### `MotionParam` (26) — fiable — v6
 
 Un réglage de l'enveloppe EMotionFX (`eCWrapper_emfx3ActorInstance`) que Risen applique chaque
@@ -437,13 +450,13 @@ l'encodeur testé. Le commentaire `<!-- vector: … -->` qui précède chaque bl
 
 #### `hello.bin` — `Hello`, 58 octets
 
-`version_protocole=18`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
+`version_protocole=19`, `version_mod="0.1.0"`, empreintes de Risen Steam x64 (janvier 2023) :
 Game `0x63c9aff6`/`0x01417000`, Engine `0x63ca945d`/`0x00d3a000`, Script `0x63c9b014`/`0x004d1000`,
 SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"`.
 
 <!-- vector: hello.bin -->
 ```text
-00000000: 0201 1200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1300 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 034c 656f 0b49  M..i.c..%..Leo.I
 00000030: 745f 5377 6f72 645f 3031                 t_Sword_01
@@ -453,7 +466,7 @@ SharedBase `0x63c569b6`/`0x0025a000`, `pseudo="Leo"`, `équipement="It_Sword_01"
 |---|---|---|
 | 0x00 | `02` | canal contrôle |
 | 0x01 | `01` | `MsgType` Hello |
-| 0x02 | `12 00` | `version_protocole` = 18 |
+| 0x02 | `13 00` | `version_protocole` = 19 |
 | 0x04 | `05` `30 2e 31 2e 30` | `version_mod` = "0.1.0" |
 | 0x0a | `f6 af c9 63` `00 70 41 01` | Game.dll |
 | 0x12 | `5d 94 ca 63` `00 a0 d3 00` | Engine.dll |
@@ -621,6 +634,24 @@ v14 (story 3.7) : réapparition du héros de l'invité (`net_id=2`) en `(100.0, 
 | 0x0d | `00 00 48 c2` | `z` = -50.0 |
 | 0x11 | `00 00 c0 3f` | `lacet` = 1.5 |
 | 0x15 | `2a 00 00 00` | `tick` = 42 |
+
+#### `regroup.bin` — `Regroup` (fiable, sans octet de canal), 17 octets
+
+v19 (story 4.5) : le héros de l'émetteur s'est téléporté en `(100.0, 0.0, -50.0)`, lacet `1.5`.
+
+<!-- vector: regroup.bin -->
+```text
+00000000: 2000 00c8 4200 0000 0000 0048 c200 00c0   ...B......H....
+00000010: 3f                                       ?
+```
+
+| Offset | Octets | Champ |
+|---|---|---|
+| 0x00 | `20` | `MsgType` Regroup (32) |
+| 0x01 | `00 00 c8 42` | `x` = 100.0 |
+| 0x05 | `00 00 00 00` | `y` = 0.0 |
+| 0x09 | `00 00 48 c2` | `z` = -50.0 |
+| 0x0d | `00 00 c0 3f` | `lacet` = 1.5 |
 
 #### `npc_attack.bin` — `NpcAttack` (fiable, sans octet de canal), 13 octets
 
@@ -935,7 +966,7 @@ Les 22 premiers octets de `hello.bin` (coupé après le `TimeDateStamp` d'Engine
 
 <!-- vector: hello_truncated.bin -->
 ```text
-00000000: 0201 1200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1300 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63                           A.]..c
 ```
 
@@ -945,7 +976,7 @@ Identique à `hello.bin` sauf `pseudo` = 33 × `A` (`21` puis 33 × `41`) → `B
 
 <!-- vector: hello_long_nickname.bin -->
 ```text
-00000000: 0201 1200 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
+00000000: 0201 1300 0530 2e31 2e30 f6af c963 0070  .....0.1.0...c.p
 00000010: 4101 5d94 ca63 00a0 d300 14b0 c963 0010  A.]..c.......c..
 00000020: 4d00 b669 c563 00a0 2500 2141 4141 4141  M..i.c..%.!AAAAA
 00000030: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
@@ -1015,7 +1046,7 @@ type ; un type inconnu n'est pas lisible).
 
 ## 8. Règles de session
 
-Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité, la v15 les attaques natives des répliques, la v16 les répliques de dialogue de l'hôte, la v17 celles de l'invité et la tenue du PNJ de son dialogue, la v18 les PNJ occupés par l'hôte et le refus des demandes de dialogue vers un PNJ occupé. Elles s'appliquent à la
+Règles **normatives** depuis la v1 ; la v3 ajoute les avatars (`Spawn`, `Despawn`), la v4 les snapshots, la v5 les animations (`AniName`, `Motion`) et la mort (`Death`), la v6 les réglages de locomotion (`MotionParam`), la v7 l'arme en main (`Weapon`), la v8 l'armure portée (`Armor`), la v9 les répliques de PNJ, la v10 leurs animations, la v11 leur mort, la v12 les coups de l'invité, la v13 les coups subis par l'invité, la v14 la mise à terre et la réapparition de l'invité, la v15 les attaques natives des répliques, la v16 les répliques de dialogue de l'hôte, la v17 celles de l'invité et la tenue du PNJ de son dialogue, la v18 les PNJ occupés par l'hôte et le refus des demandes de dialogue vers un PNJ occupé, la v19 la téléportation commune et le champ de force de l'invité. Elles s'appliquent à la
 DLL (hôte et invité, stories 1.4 et 1.5) comme au faux invité `tools/fake-guest/`. Tous les
 délais se mesurent à l'**horloge monotone** (QPC sous Windows), jamais en nombre d'images ou
 d'appels.
@@ -1179,21 +1210,22 @@ d'appels.
 - **Répliques des PNJ** (v9, story 3.3) : l'hôte fait autorité sur les PNJ ; chez l'invité, ses
   propres PNJ (même sauvegarde) deviennent des répliques sans IA locale.
   - **Sélection** (hôte, à chaque snapshot) : les PNJ de `Entity::ms_arrNPCs`, sauf son héros et
-    l'avatar de l'invité, vivants (`Entity::IsDead` = 0), de pose finie, à **100 m** (10000 unités ;
-    50 m avant la story 3.4e) au plus de son héros ou de la pose affichée de l'avatar de l'invité
+    l'avatar de l'invité, vivants (`Entity::IsDead` = 0), de pose finie, à **200 m** (20000 unités ;
+    50 m avant la story 3.4e, 100 m avant la 3.4f) au plus de son héros ou de la pose affichée de l'avatar de l'invité
     (s'il existe), triés du plus proche au plus loin (distance au plus proche des deux joueurs). Les
-    **200** PNJ les plus proches sont retenus (53 avant la story 3.4e), les autres attendent. Une
+    **400** PNJ les plus proches sont retenus (53 avant la story 3.4e, 200 avant la 3.4f), les autres attendent. Une
     lecture de la liste en échec laisse les PNJ annoncés tels quels et le snapshot ne porte que le
     héros.
   - **Snapshot en plusieurs datagrammes** (story 3.4e, format inchangé) : un datagramme porte au plus
     54 entités ; au-delà, le snapshot d'un tick est envoyé en plusieurs datagrammes de canal 1 de
-    **même `tick`**, le héros en tête du premier (4 au plus). Le récepteur traite chaque entité pour
+    **même `tick`**, le héros en tête du premier (8 au plus). Le récepteur traite chaque entité pour
     elle-même ; un datagramme perdu ne prive que ses entités de ce tick.
   - **PNJ natifs non annoncés** (story 3.4e) : chez l'invité, tout PNJ de `Entity::ms_arrNPCs` qui
     n'est pas une réplique a aussi sa routine figée (relu toutes les 10 frames) : seul l'hôte fait
     vivre le monde. Il est rendu à sa sortie de la liste, quand il devient réplique, et à la fin de
-    session. La liste de l'hôte ne contient que les entités que son moteur traite (`EntityROI`,
-    40 m par défaut, relevé à 100 m dans `ConfigLocal.xml`).
+    session. La liste de l'hôte ne contient que les entités que son moteur traite (sphère `EntityROI`
+    autour de la caméra, 40 m par défaut ; story 3.4f : relevée en session à `processing_range`,
+    250 m par défaut, sur les deux machines).
   - **NetId** : attribué par l'hôte à la première sélection d'un GUID, à partir de **1000**, puis
     lié à ce GUID pour toute la session et jamais réutilisé pendant celle-ci (un PNJ qui revient
     dans le rayon reprend le même). Le compteur et la table repartent à chaque session.
@@ -1452,6 +1484,29 @@ d'appels.
     au pair.
   - Un `DialogState{N, 1}` de l'invité pour le PNJ avec lequel l'hôte est engagé est ignoré par l'hôte
     (raison journalisée : « PNJ occupé par l'hôte »).
+- **Téléportation commune** (v19, story 4.5) : les deux joueurs restent ensemble.
+  - à chaque tick en session, chaque pair compare la pose de son héros à celle du tick précédent ;
+    un saut de plus de **15 m** (1500 unités) d'un tick à l'autre est une téléportation (pierre de
+    téléportation, console…) : il envoie `Regroup{nouvelle pose}`. Un saut causé par la session
+    elle-même (placement au `Welcome`, `Respawn`, `Regroup` reçu, champ de force) n'est pas signalé,
+    ni aucun saut pendant **3 s** après lui ; ni un saut de l'invité à terre, ni d'un héros mort ;
+  - le récepteur place son héros à 2 m devant cette pose, tourné vers elle (même règle que le
+    placement de l'invité au `Welcome`), sauf pose non finie, héros mort, invité à terre ou en
+    dialogue (ignoré, journalisé) ; pendant 3 s, ses propres sauts ne sont pas signalés et, chez
+    l'invité, le champ de force est suspendu ;
+  - deux téléportations croisées dans la même seconde ne sont pas arbitrées (cas jugé improbable) ;
+  - un changement de monde (chargement) n'est pas couvert : il finit la session (« fin de monde »).
+- **Champ de force de l'invité** (story 4.5, sans message, réglage local `leash_radius`, 35 m par
+  défaut, 0 = désactivé) : le moteur de l'hôte ne fait vivre les PNJ qu'à ~40 m de lui.
+  - à chaque tick en session, l'invité mesure la distance **horizontale** (x, z) entre son héros et
+    l'avatar de l'hôte tel qu'il l'affiche ; au-delà de `leash_radius`, son héros est ramené sur le
+    cercle de rayon `leash_radius − 0,5 m` autour de l'hôte (même hauteur, même lacet), avec un
+    message à l'écran (au plus toutes les 3 s) ;
+  - un écart de plus de `leash_radius + 20 m` n'est pas ramené au bord : c'est une téléportation
+    dont le `Regroup` est attendu. S'il dure **3 s**, l'invité est placé devant l'hôte (règle du
+    `Welcome`) ;
+  - suspendu sans avatar de l'hôte affiché, invité à terre, en dialogue, mort, et 3 s après un
+    `Regroup` envoyé ou reçu.
 - **Quitter le jeu** n'envoie rien (aucun travail réseau à la fin du processus) : le pair
   conclut au timeout de 5 s.
 

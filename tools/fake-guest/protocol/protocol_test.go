@@ -65,6 +65,7 @@ func TestValidVectorsRoundTrip(t *testing.T) {
 		{"hit_on_guest.bin", true, HitOnGuest{Source: FirstNpcNetId, Damage: 18}},
 		// v14 (story 3.7) : réapparition de l'invité (forme d'un accusé).
 		{"respawn.bin", true, Respawn{NetId: GuestNetId, X: 100, Y: 0, Z: -50, Yaw: 1.5, Tick: 42}},
+		{"regroup.bin", true, Regroup{X: 100, Y: 0, Z: -50, Yaw: 1.5}},
 		// v15 (story 3.8) : début d'une attaque du PNJ 1005 sur l'avatar de l'invité.
 		{"npc_attack.bin", true, NpcAttack{NetId: 1005, Move: 11, Target: GuestNetId}},
 		// v16 (story 4.1) : réplique de dialogue du PNJ 1004.
@@ -144,7 +145,8 @@ func TestAllVectorsCovered(t *testing.T) {
 		"weapon.bin": true, "weapon_sheathed.bin": true, "armor.bin": true, "armor_removed.bin": true,
 		"spawn_npc.bin": true, "spawn_bad_type.bin": true, "snapshot_multi.bin": true, "motion_npc.bin": true,
 		"death_npc.bin": true, "hit_request.bin": true, "hit_on_guest.bin": true, "respawn.bin": true,
-		"npc_attack.bin": true, "dialog_line.bin": true, "dialog_line_guest.bin": true, "dialog_state.bin": true}
+		"npc_attack.bin": true, "dialog_line.bin": true, "dialog_line_guest.bin": true, "dialog_state.bin": true,
+		"regroup.bin": true}
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".bin") && !known[e.Name()] {
 			t.Errorf("vecteur %s non testé", e.Name())
@@ -167,7 +169,7 @@ func TestDecodeErrors(t *testing.T) {
 		{"canal snapshot", []byte{1, 1}, false, ErrUnknownChannel},
 		{"heartbeat en contrôle", []byte{2, 16}, false, ErrUnknownType},
 		{"hello en fiable", []byte{1, 1, 0}, true, ErrUnknownType},
-		{"type absent", []byte{32}, true, ErrUnknownType},
+		{"type absent", []byte{33}, true, ErrUnknownType},
 		{"dialogstate en contrôle", []byte{2, 31}, false, ErrUnknownType},
 		{"dialogstate tronqué", []byte{31, 9, 4, 0, 0}, true, ErrTruncated},
 		{"dialogstate trop long", []byte{31, 9, 4, 0, 0, 1, 0}, true, ErrTrailingBytes},
@@ -361,7 +363,7 @@ func TestMotionAndAniNameErrors(t *testing.T) {
 		t.Fatal("AniName de 256 octets encodé")
 	}
 	// Aucun type réservé (depuis la v14) ; un type absent de la liste reste inconnu.
-	for _, typ := range []byte{4, 15, 32} {
+	for _, typ := range []byte{4, 15, 33} {
 		if _, err := DecodeReliable([]byte{typ}); !errors.Is(err, ErrUnknownType) {
 			t.Fatalf("type inconnu %d : %v", typ, err)
 		}

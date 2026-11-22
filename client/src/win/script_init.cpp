@@ -265,6 +265,7 @@ void start_session() {
         mp::log::info("[overlay] désactivé (overlay = 0)");
     } else if (mp::win::overlay::install()) {
         mp::sync::session::set_overlay_sink(&mp::win::overlay::set_text);
+        mp::sync::session::set_warning_sink(&mp::win::overlay::set_warning);  // story 4.5
     }
 }
 

@@ -189,6 +189,21 @@ ConfigResult parse_config(std::string_view text) {
             } else {
                 return fail(std::move(r), key, value, "valeurs possibles : 0, 1");
             }
+        } else if (key == "processing_range" || key == "leash_radius") {
+            const bool range = key == "processing_range";
+            const std::uint32_t def = range ? kDefaultProcessingRange : kDefaultLeashRadius;
+            const std::uint32_t max = range ? kMaxProcessingRange : kMaxLeashRadius;
+            unsigned meters = 0;
+            bool ok = !value.empty() && value.size() <= 4;
+            for (char c : value) {
+                if (c < '0' || c > '9') ok = false;
+                else meters = meters * 10 + static_cast<unsigned>(c - '0');
+            }
+            if (!value.empty() && (!ok || meters > max)) {
+                return fail(std::move(r), key, value, "entier attendu entre 0 et " + std::to_string(max) + " (mètres)");
+            }
+            const std::uint32_t v = value.empty() ? def : meters;  // `clé =` : valeur par défaut
+            (range ? r.config.processing_range : r.config.leash_radius) = v;
         } else if (key == "overlay") {
             if (value.empty() || value == "1") {
                 r.config.overlay = true;  // `overlay =` : valeur par défaut

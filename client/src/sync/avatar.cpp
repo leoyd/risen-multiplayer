@@ -806,7 +806,7 @@ void attack(std::uint32_t move, void* target, std::uint32_t target_net_id) {
                (target_set ? "1" : "0") + ", StartMove -> " + (started ? "1" : "0") + ", main " + std::to_string(held));
 }
 
-bool teleport_player(const Pose& pose, const char* what) {
+bool teleport_player(const Pose& pose, const char* what, bool quiet) {
     game::Entity player;
     if (!game::get_player(player) || player.ptr == nullptr) {
         log::error("[sync] téléportation impossible : pas de héros local");
@@ -816,7 +816,7 @@ bool teleport_player(const Pose& pose, const char* what) {
         log::error("[sync] téléportation : Entity::MoveTo a levé une exception (SEH)");
         return false;
     }
-    log::info(std::string("[sync] héros local ") + what + " : " + pose_text(pose));
+    if (!quiet) log::info(std::string("[sync] héros local ") + what + " : " + pose_text(pose));
     return true;
 }
 

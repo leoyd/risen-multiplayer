@@ -415,7 +415,7 @@ start_host_npcs() {  # comme start_host, avec --npcs
     kill "$host_pid" 2>/dev/null; wait "$host_pid" 2>/dev/null
     return 1
 }
-if start_host_npcs pnj $p 30000 230; then
+if start_host_npcs pnj $p 30000 430; then
     h=$work/pnj.host.log
     "$guest" --host 127.0.0.1 --port $p --duration 8s --quit > "$work/pnj.guest.log" 2>&1; rc=$?
     wait $host_pid
@@ -435,8 +435,8 @@ if start_host_npcs pnj $p 30000 230; then
     expect_log "PNJ : bilan des morts de l'invité" "$g" "Bilan PNJ : .* Death=1 "
     first=$(grep -m1 -n "annoncé (Spawn)" "$h" | cut -d: -f1)
     n53=$(awk -v f="$first" 'NR >= f && /annoncé \(Spawn\)/ { n++ } NR >= f && !/annoncé \(Spawn\)/ && n > 0 { print n; exit }' "$h")
-    if [[ $n53 -eq 200 ]]; then ok "PNJ : 200 PNJ au plus au premier snapshot (story 3.4e)"; else ko "PNJ : ${n53:-?} annonces au premier snapshot (200 attendu)"; fi
-    expect_log "PNJ : PNJ en attente annoncé quand une place se libère" "$h" "PNJ 1200 annoncé (Spawn)"
+    if [[ $n53 -eq 400 ]]; then ok "PNJ : 400 PNJ au plus au premier snapshot (story 3.4f)"; else ko "PNJ : ${n53:-?} annonces au premier snapshot (400 attendu)"; fi
+    expect_log "PNJ : PNJ en attente annoncé quand une place se libère" "$h" "PNJ 1400 annoncé (Spawn)"
     expect_log "PNJ : évincé au retour de plus proches" "$h" "retiré (Despawn) : évincé par plus proche"
     expect_log "PNJ : Spawn{1} reçu par l'invité" "$g" "<- Spawn PNJ netid=1000 guid="
     expect_log "PNJ : Despawn reçu par l'invité" "$g" "<- Despawn PNJ netid=10[0-9][0-9] (poses reçues="
@@ -453,19 +453,19 @@ if start_host_npcs pnj $p 30000 230; then
     # Un NetId n'est jamais lié à deux GUID : chaque NetId du bilan apparaît une fois.
     dup=$(grep -oE "^.*  PNJ netid=[0-9]+" "$g" | grep -oE "netid=[0-9]+" | sort | uniq -d | wc -l)
     if [[ $dup -eq 0 ]]; then ok "PNJ : un NetId par GUID"; else ko "PNJ : NetId en double dans le bilan"; fi
-    # Story 3.4 : les 8 plus proches sont animés ; Motion et MotionParam par NetId de PNJ.
-    expect_count "animations PNJ : jamais plus de 8 PNJ capturés par l'hôte" "$h" "ERROR.*CaptureNpc" 0
+    # Story 3.4 (3.4f : 48) : les plus proches sont animés ; Motion et MotionParam par NetId de PNJ.
+    expect_count "animations PNJ : jamais plus de 48 PNJ capturés par l'hôte" "$h" "ERROR.*CaptureNpc" 0
     expect_log "animations PNJ : PNJ capturés par l'hôte" "$h" "CaptureNpc NetId 1000 : PNJ animés="
     expect_log "animations PNJ : PNJ sorti du groupe" "$h" "UncaptureNpc NetId 10[0-9][0-9]"
     expect_log "animations PNJ : premier geste d'un PNJ reçu" "$g" "<- Motion PNJ netid=10[0-9][0-9] premier geste ani=[0-9]* nom=Npc_Walk"
     animated=$(sed -nE 's/.*au plus ([0-9]+) PNJ animés en 1 s.*/\1/p' "$g" | tail -1)
-    if [[ -n $animated && $animated -ge 24 && $animated -le 48 ]]; then
-        ok "animations PNJ : $animated PNJ animés en 1 s au plus (24 à la fois, relèves comprises)"
+    if [[ -n $animated && $animated -ge 48 && $animated -le 96 ]]; then
+        ok "animations PNJ : $animated PNJ animés en 1 s au plus (48 à la fois, relèves comprises)"
     else
-        ko "animations PNJ : ${animated:-?} PNJ animés en 1 s au plus (24 à 48 attendu)"; grep "Bilan animations" "$g"
+        ko "animations PNJ : ${animated:-?} PNJ animés en 1 s au plus (48 à 96 attendu)"; grep "Bilan animations" "$g"
     fi
     with_params=$(grep -cE "^.*  PNJ netid=[0-9]+ .* Motion=[1-9][0-9]* MotionParam=[1-9]" "$g")
-    if [[ $with_params -ge 24 ]]; then ok "animations PNJ : $with_params PNJ avec Motion et MotionParam au bilan"; else ko "animations PNJ : ${with_params:-0} PNJ animés au bilan (24 au moins attendus)"; fi
+    if [[ $with_params -ge 48 ]]; then ok "animations PNJ : $with_params PNJ avec Motion et MotionParam au bilan"; else ko "animations PNJ : ${with_params:-0} PNJ animés au bilan (48 au moins attendus)"; fi
 fi
 
 # --- Story 3.5 : HitRequest du faux invité (v12) → ApplyHit chez l'hôte ; NetId inconnu refusé ------

@@ -18,6 +18,14 @@ enum class LogLevel { Info, Debug };
 const char* log_level_name(LogLevel level);  // "info" / "debug"
 
 inline constexpr std::uint16_t kDefaultPort = 27960;
+// Story 3.4f : portée de traitement des entités (mètres) réglée en session, et son maximum. Test du
+// 2026-11-22 : sans effet sur la liste des PNJ (sphères de cache des entités figées au chargement) et
+// PNJ en T-pose chez l'hôte : 0 (portée du moteur inchangée) par défaut, story 4.5.
+inline constexpr std::uint32_t kDefaultProcessingRange = 0;
+inline constexpr std::uint32_t kMaxProcessingRange = 1000;
+// Story 4.5 : distance maximale de l'invité à l'hôte (mètres), et son maximum.
+inline constexpr std::uint32_t kDefaultLeashRadius = 35;
+inline constexpr std::uint32_t kMaxLeashRadius = 1000;
 inline constexpr std::size_t kMaxNicknameLength = 32;  // en octets (UTF-8)
 
 struct Config {
@@ -45,6 +53,14 @@ struct Config {
     // Diagnostic (2026-11-01) : journal des scripts de perception (Assess*, Do*Damage) qui touchent le
     // héros local ou l'avatar. 0 par défaut.
     bool trace_assess = false;
+    // Story 3.4f : portée de traitement des entités du moteur (sphère « EntityROI » autour de la caméra,
+    // 40 m dans ConfigDefault.xml), en mètres, réglée à l'exécution sur les deux machines. Au-delà, le
+    // moteur ne traite pas les PNJ (ni IA, ni liste des PNJ de l'hôte). 0 = portée du moteur inchangée.
+    std::uint32_t processing_range = kDefaultProcessingRange;
+    // Story 4.5, invité : champ de force. Au-delà de cette distance horizontale de l'hôte (mètres), son
+    // héros est ramené sur le bord. Le moteur de l'hôte ne traite les PNJ qu'à ~40 m de lui : plus loin,
+    // le monde de l'invité serait figé. 0 = pas de champ de force. Sans effet chez l'hôte.
+    std::uint32_t leash_radius = kDefaultLeashRadius;
     // Overlay à l'écran (rôle, pseudo, état de session), détour de IDirect3DDevice9::Present.
     // 0 = pas de détour.
     bool overlay = true;
@@ -68,7 +84,8 @@ struct ConfigResult {
 // port (vide = défaut), nickname, guest_equipment (liste de templates, core/equipment.h), probe (0|1, vide = défaut 0),
 // log_level (debug|info, insensible à la casse, vide = défaut info), damage_hook (0|1, vide = défaut 1),
 // native_attacks (0|1, vide = défaut 1), dialogues (0|1, vide = défaut 1), overlay (0|1, vide = défaut 1),
-// trace_assess (0|1, vide = défaut 0).
+// trace_assess (0|1, vide = défaut 0), processing_range et
+// leash_radius (mètres, 0 à 1000, vide = défaut).
 ConfigResult parse_config(std::string_view text);
 
 }  // namespace mp

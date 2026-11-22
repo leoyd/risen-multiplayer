@@ -2451,14 +2451,15 @@ TEST("armure : file pleine de Weapon → l'Armor en attente n'est pas évincé")
 
 namespace {
 
-proto::Guid guid_of(std::uint8_t n) {
+proto::Guid guid_of(unsigned n) {
     proto::Guid g{};
     for (std::size_t i = 0; i < g.size(); ++i) g[i] = static_cast<std::uint8_t>(n + i);
+    g[g.size() - 1] ^= static_cast<std::uint8_t>(n >> 8);  // n ≥ 256 (story 3.4f : 400 PNJ) ; inchangé en dessous
     return g;
 }
 
 // PNJ à `dz` cm devant le héros de loaded_world() (100, -50.5, 2000).
-NpcState npc_at(std::uint8_t n, float dz, int hp = 100, bool alive = true) {
+NpcState npc_at(unsigned n, float dz, int hp = 100, bool alive = true) {
     NpcState s;
     s.guid = guid_of(n);
     s.pose = Pose{100.0f, -50.5f, 2000.0f + dz, 0.25f};
@@ -2589,8 +2590,8 @@ TEST("PNJ hôte : sortie du rayon → Despawn, mort → Death (3.4b) ; retour �
     Session s = host_in_session();
     s.tick(1050, host_world({npc_at(1, 1000.0f), npc_at(2, 2000.0f)}), {});
     CHECK_EQ(s.npc_count(), 2u);
-    // PNJ 1 à 100,01 m, PNJ 2 mort.
-    Output out = s.tick(1100, host_world({npc_at(1, 10001.0f), npc_at(2, 2000.0f, 0, false)}), {});
+    // PNJ 1 à 200,01 m, PNJ 2 mort.
+    Output out = s.tick(1100, host_world({npc_at(1, 20001.0f), npc_at(2, 2000.0f, 0, false)}), {});
     const auto despawns = sent_of<proto::Despawn>(out);
     CHECK(despawns.size() == 1 && despawns[0].net_id == 1000u);
     CHECK(has_log(out, "PNJ 1000 retiré (Despawn) : hors du rayon"));
@@ -2600,8 +2601,8 @@ TEST("PNJ hôte : sortie du rayon → Despawn, mort → Death (3.4b) ; retour �
     const auto sn = snapshots_sent(out);
     CHECK(sn.size() == 1 && sn[0].entities.size() == 1);  // héros seul
     CHECK_EQ(s.npc_count(), 0u);
-    // Exactement 100 m : dans le rayon. Même GUID → même NetId.
-    out = s.tick(1150, host_world({npc_at(1, 10000.0f)}), {});
+    // Exactement 200 m : dans le rayon. Même GUID → même NetId.
+    out = s.tick(1150, host_world({npc_at(1, 20000.0f)}), {});
     auto spawns = npc_spawns_sent(out);
     CHECK(spawns.size() == 1 && spawns[0].net_id == 1000u);
     // Absent de la liste : retiré seulement après kNpcAbsentGraceTicks ticks ; un nouveau GUID
@@ -2649,10 +2650,10 @@ TEST("PNJ hôte : absent de la liste puis revenu pendant le délai de grâce →
     CHECK_EQ(s.npc_count(), 1u);
 }
 
-TEST("PNJ hôte : plus de 200 PNJ → les 200 plus proches, en 4 datagrammes de même tick ; les autres attendent") {
+TEST("PNJ hôte : plus de 400 PNJ → les 400 plus proches, en 8 datagrammes de même tick ; les autres attendent") {
     Session s = host_in_session();
-    std::vector<NpcState> npcs;  // PNJ 1 (le plus loin, 90 m) … PNJ 210 (6,4 m)
-    for (int i = 0; i < 210; ++i) npcs.push_back(npc_at(static_cast<std::uint8_t>(1 + i), 9000.0f - 40.0f * i));
+    std::vector<NpcState> npcs;  // PNJ 1 (le plus loin, 180 m) … PNJ 410 (16,4 m)
+    for (unsigned i = 0; i < 410; ++i) npcs.push_back(npc_at(1 + i, 18000.0f - 40.0f * i));
     Output out = s.tick(1050, host_world(npcs), {});
     CHECK_EQ(npc_spawns_sent(out).size(), kMaxSnapshotNpcs);
     bool far_spawned = false;
@@ -2670,21 +2671,21 @@ TEST("PNJ hôte : plus de 200 PNJ → les 200 plus proches, en 4 datagrammes de 
     }
     CHECK(same_tick);
     CHECK_EQ(entities, kMaxSnapshotNpcs + 1);
-    // Le héros en tête du premier ; puis les plus proches : le PNJ 210 (à 6,4 m).
+    // Le héros en tête du premier ; puis les plus proches : le PNJ 410 (à 16,4 m).
     if (!sn.empty() && sn[0].entities.size() > 1) {
         CHECK_EQ(sn[0].entities[0].net_id, proto::kHostNetId);
-        CHECK(sn[0].entities[1].z == 2000.0f + 9000.0f - 40.0f * 209);
+        CHECK(sn[0].entities[1].z == 2000.0f + 18000.0f - 40.0f * 409);
     }
     CHECK(npc_spawns_sent(out).empty());
     // Un des retenus meurt (Death, story 3.4b) : le suivant (PNJ 10) entre.
-    npcs[209].alive = false;
+    npcs[409].alive = false;
     out = s.tick(1150, host_world(npcs), {});
     CHECK_EQ(sent_of<proto::Death>(out).size(), 1u);
     CHECK(sent_of<proto::Despawn>(out).empty());
     const auto spawns = npc_spawns_sent(out);
     CHECK(spawns.size() == 1 && spawns[0].guid == guid_of(10));
     // Un PNJ plus proche que tous évince le plus lointain des retenus.
-    npcs.push_back(npc_at(250, 10.0f));
+    npcs.push_back(npc_at(1000, 10.0f));
     out = s.tick(1200, host_world(npcs), {});
     CHECK(has_log(out, "évincé par plus proche"));
     CHECK_EQ(sent_of<proto::Despawn>(out).size(), 1u);
@@ -2693,12 +2694,12 @@ TEST("PNJ hôte : plus de 200 PNJ → les 200 plus proches, en 4 datagrammes de 
 
 TEST("PNJ hôte : rayon autour de l'avatar de l'invité aussi") {
     Session s = host_with_avatar();  // t0 = 1000, avatar créé à 1100
-    // L'avatar est affiché à x = 100, z = 20000 (180 m du héros).
+    // L'avatar est affiché à x = 100, z = 40000 (380 m du héros).
     proto::SnapshotEntity e;
     e.net_id = proto::kGuestNetId;
     e.x = 100.0f;
     e.y = -50.5f;
-    e.z = 20000.0f;
+    e.z = 40000.0f;
     proto::Snapshot sn;
     sn.tick = 2;
     sn.entities = {e};
@@ -2706,12 +2707,12 @@ TEST("PNJ hôte : rayon autour de l'avatar de l'invité aussi") {
     CHECK(proto::encode_snapshot(sn, b));
     s.tick(1120, loaded_world(), snapshot_in(b));
     s.tick(1130, loaded_world(), {});  // MoveAvatar : pose de l'avatar connue
-    NpcState near_avatar = npc_at(1, 18000.0f);  // z = 20000 : sur l'avatar, à 180 m du héros
-    NpcState far_both = npc_at(2, -11000.0f);                        // à 110 m du héros, 290 m de l'avatar
+    NpcState near_avatar = npc_at(1, 38000.0f);  // z = 40000 : sur l'avatar, à 380 m du héros
+    NpcState far_both = npc_at(2, -21000.0f);    // à 210 m du héros, 590 m de l'avatar
     const Output out = s.tick(1150, host_world({near_avatar, far_both}), {});
     const auto spawns = npc_spawns_sent(out);
     CHECK(spawns.size() == 1 && spawns[0].guid == guid_of(1));
-    // L'avatar est retiré : son ancienne pose ne compte plus, le PNJ (à 180 m du héros) sort.
+    // L'avatar est retiré : son ancienne pose ne compte plus, le PNJ (à 380 m du héros) sort.
     s.tick(1160, loaded_world(), reliable(encode_r(proto::Despawn{proto::kGuestNetId})));
     CHECK(!s.avatar_present());
     const Output gone = s.tick(1200, host_world({near_avatar, far_both}), {});
@@ -2955,33 +2956,33 @@ proto::MotionParam host_npc_param(std::uint32_t net_id, std::uint32_t ms, std::u
 
 }  // namespace
 
-TEST("animations PNJ hôte : les 24 plus proches sont capturés (CaptureNpc avec GUID), pas le 25e") {
+TEST("animations PNJ hôte : les 48 plus proches sont capturés (CaptureNpc avec GUID), pas le 49e") {
     Session s = host_in_session();
-    const Output out = s.tick(1050, host_world(npcs_in_line(30)), {});
+    const Output out = s.tick(1050, host_world(npcs_in_line(60)), {});
     const auto caps = commands_of<CaptureNpc>(out);
     CHECK_EQ(caps.size(), kMaxAnimatedNpcs);
-    // NetId attribués dans l'ordre des distances : 1000 (PNJ 1) … 1023 (PNJ 24).
+    // NetId attribués dans l'ordre des distances : 1000 (PNJ 1) … 1047 (PNJ 48).
     for (std::size_t i = 0; i < caps.size(); ++i) {
         CHECK_EQ(caps[i]->net_id, 1000u + static_cast<std::uint32_t>(i));
         CHECK(caps[i]->guid == guid_of(static_cast<std::uint8_t>(i + 1)));
     }
     CHECK_EQ(s.animated_npc_count(), kMaxAnimatedNpcs);
-    CHECK_EQ(s.npc_count(), 30u);
+    CHECK_EQ(s.npc_count(), 60u);
     // Rien ne change : pas de nouvelle commande.
-    const Output same = s.tick(1100, host_world(npcs_in_line(30)), {});
+    const Output same = s.tick(1100, host_world(npcs_in_line(60)), {});
     CHECK(commands_of<CaptureNpc>(same).empty() && commands_of<UncaptureNpc>(same).empty());
 }
 
-TEST("animations PNJ hôte : entrée et sortie du groupe des 24 suivent la sélection, Despawn et Ended") {
+TEST("animations PNJ hôte : entrée et sortie du groupe des 48 suivent la sélection, Despawn et Ended") {
     constexpr auto k = static_cast<std::uint32_t>(kMaxAnimatedNpcs);
-    Session s = host_with_animated(k + 1);  // 1000…1023 animés, 1024 (PNJ 25) annoncé seulement
-    // Le PNJ 25 passe devant tous les autres : il entre, le PNJ 24 (1023) sort.
+    Session s = host_with_animated(k + 1);  // 1000…1047 animés, 1048 (PNJ 49) annoncé seulement
+    // Le PNJ 49 passe devant tous les autres : il entre, le PNJ 48 (1047) sort.
     std::vector<NpcState> npcs = npcs_in_line(static_cast<std::uint8_t>(k));
     npcs.push_back(npc_at(static_cast<std::uint8_t>(k + 1), 10.0f));
     Output out = s.tick(1100, host_world(npcs), {});
     CHECK(captured_ids(out) == std::vector<std::uint32_t>{1000u + k});
     CHECK(uncaptured_ids(out) == std::vector<std::uint32_t>{1000u + k - 1});
-    // Le PNJ 1 (1000) meurt : Death (story 3.4b), il sort du groupe ; le PNJ 24 (1023) y revient.
+    // Le PNJ 1 (1000) meurt : Death (story 3.4b), il sort du groupe ; le PNJ 48 (1047) y revient.
     npcs[0].alive = false;
     out = s.tick(1150, host_world(npcs), {});
     CHECK(uncaptured_ids(out) == std::vector<std::uint32_t>{1000u});
@@ -3011,14 +3012,14 @@ TEST("animations PNJ hôte : Motion d'un PNJ animé → AniName puis Motion sous
     CHECK(!hero.empty() && hero[0].net_id == proto::kHostNetId);
 }
 
-TEST("animations PNJ hôte : PNJ hors des 24 ou inconnu → rien n'est envoyé, compté au bilan") {
-    Session s = host_with_animated(25);  // 1024 annoncé, pas animé
-    Output out = s.tick(1060, host_world({}), {npc_motion_in(1024, "Wolf_Run"), npc_motion_in(4242, "Wolf_Run"),
-                                              npc_param_in(1024, 0, proto::MotionParamKind::PlaySpeed, 1.0f)});
+TEST("animations PNJ hôte : PNJ hors des 48 ou inconnu → rien n'est envoyé, compté au bilan") {
+    Session s = host_with_animated(49);  // 1048 annoncé, pas animé
+    Output out = s.tick(1060, host_world({}), {npc_motion_in(1048, "Wolf_Run"), npc_motion_in(4242, "Wolf_Run"),
+                                              npc_param_in(1048, 0, proto::MotionParamKind::PlaySpeed, 1.0f)});
     CHECK(reliables_sent(out).empty());
     for (std::uint64_t t = 1100; t < 6000; t += 500) s.tick(t, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
     out = s.tick(6000, host_world({}, false), {});
-    CHECK(has_log(out, "animations des PNJ : animés 24, Motion envoyés 0, rejoués 0, écrasés 0, ignorés 2"));
+    CHECK(has_log(out, "animations des PNJ : animés 48, Motion envoyés 0, rejoués 0, écrasés 0, ignorés 2"));
     CHECK(has_log(out, "MotionParam envoyés 0, regroupés 0, rejoués 0, ignorés 1, 0 o/s"));
 }
 
@@ -3075,33 +3076,33 @@ TEST("animations PNJ hôte : un Motion fait partir avant lui les réglages de so
 }
 
 TEST("animations PNJ hôte : PNJ sorti du groupe → ses réglages en attente ne partent pas ; revenu, filtre à neuf") {
-    Session s = host_with_animated(25);
-    s.tick(1060, host_world({}), {npc_param_in(1023, 0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)});
-    // 1023 sort du groupe au tick 1100 (PNJ 25 devant) : un réglage capturé avant la sélection part encore.
-    std::vector<NpcState> npcs = npcs_in_line(24);
-    npcs.push_back(npc_at(25, 10.0f));
+    Session s = host_with_animated(49);
+    s.tick(1060, host_world({}), {npc_param_in(1047, 0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)});
+    // 1047 sort du groupe au tick 1100 (PNJ 49 devant) : un réglage capturé avant la sélection part encore.
+    std::vector<NpcState> npcs = npcs_in_line(48);
+    npcs.push_back(npc_at(49, 10.0f));
     s.tick(1100, host_world(npcs), {});
-    Output out = s.tick(1110, host_world({}), {npc_param_in(1023, 0, proto::MotionParamKind::TargetWeight, 0.5f, 0.25f)});
+    Output out = s.tick(1110, host_world({}), {npc_param_in(1047, 0, proto::MotionParamKind::TargetWeight, 0.5f, 0.25f)});
     CHECK(sent_of<proto::MotionParam>(out).empty());
     // Il revient : le même réglage qu'avant repart (filtre à neuf).
-    s.tick(1150, host_world(npcs_in_line(24)), {});
-    out = s.tick(1160, host_world({}), {npc_param_in(1023, 0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)});
+    s.tick(1150, host_world(npcs_in_line(48)), {});
+    out = s.tick(1160, host_world({}), {npc_param_in(1047, 0, proto::MotionParamKind::TargetWeight, 1.0f, 0.25f)});
     CHECK_EQ(sent_of<proto::MotionParam>(out).size(), 1u);
 }
 
-TEST("animations PNJ hôte : budget de 32 Ko/s dépassé → une ligne par bilan, octets par seconde au bilan") {
+TEST("animations PNJ hôte : budget de 64 Ko/s dépassé → une ligne par bilan, octets par seconde au bilan") {
     Session s = host_with_animated(1);
     std::vector<Input> in;
-    for (int i = 0; i < 4100; ++i) in.push_back(npc_motion_in(1000, "Wolf_Run"));
+    for (int i = 0; i < 8200; ++i) in.push_back(npc_motion_in(1000, "Wolf_Run"));
     s.tick(1060, host_world({}), in);
     for (std::uint64_t t = 1100; t < 6000; t += 500) s.tick(t, host_world({}, false), reliable(encode_r(proto::Heartbeat{})));
     Output out = s.tick(6000, host_world({}, false), {});
-    // (12 + 4100 × 41) octets en 5 s = 33622 o/s.
-    CHECK(has_log(out, "Motion envoyés 4100"));
-    CHECK(has_log(out, "33622 o/s"));
+    // (12 + 8200 × 41) octets en 5 s = 67242 o/s.
+    CHECK(has_log(out, "Motion envoyés 8200"));
+    CHECK(has_log(out, "67242 o/s"));
     std::size_t warns = 0;
     for (const auto& l : out.logs) {
-        if (l.level == Level::Warn && l.text.find("au-delà du budget de 32768 o/s") != std::string::npos) ++warns;
+        if (l.level == Level::Warn && l.text.find("au-delà du budget de 65536 o/s") != std::string::npos) ++warns;
     }
     CHECK_EQ(warns, 1u);
     // Bilan suivant, sous le budget : pas de ligne.
@@ -4831,7 +4832,7 @@ TEST("dialogues 4.2 hôte : PNJ tenu mort ou retiré de la sélection → Unhold
     CHECK(has_log(out, "[sync] PNJ 1000 rendu (routine reprise) : mort"));
     s.tick(1110, host_world({}, false), reliable(encode_r(proto::DialogState{1001, 1})));
     NpcState far = npc_at(2, 200.0f);
-    far.pose.z += 10000.0f;  // hors du rayon
+    far.pose.z += 20000.0f;  // hors du rayon
     out = s.tick(1150, host_world({far}), {});
     unhold = commands_of<UnholdNpc>(out);
     CHECK(unhold.size() == 1 && unhold[0]->net_id == 1001u);
@@ -5064,4 +5065,194 @@ TEST("arme des PNJ 3.8c invité : Weapon{1001} → NpcWeapon ; réplique absente
     out = g.tick(410, loaded_world(), reliable(encode_r(proto::Weapon{1500, "It_1H_Sword"})));
     CHECK(commands_of<NpcWeapon>(out).empty());
     CHECK(has_log(out, "ignoré (réplique absente)"));
+}
+
+// --- Story 4.5 : téléportation commune (Regroup, v19) et champ de force de l'invité ------------
+
+namespace {
+
+World world_at(float x, float z = 0.0f) {
+    World w = loaded_world();
+    w.x = x;
+    w.y = 0.0f;
+    w.z = z;
+    w.yaw = 0.0f;
+    return w;
+}
+
+// Invité au champ de force de 35 m, Welcome à t = 100 (pause jusqu'à 3100), héros en `w`, avatar de
+// l'hôte affiché en (host_x, 0, 0).
+Session guest_leashed(const World& w, float host_x = 0.0f) {
+    Settings st = guest_settings();
+    st.leash_radius = 3500.0f;
+    Session g(st);
+    g.tick(0, w, {});
+    g.tick(100, w, control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    CHECK(g.state() == State::InSession);
+    g.tick(170, w, reliable(encode_r(spawn_of(proto::kHostNetId))));
+    const Output out = g.tick(190, w, snapshot_in(snapshot_bytes(2, proto::kHostNetId, host_x)));
+    CHECK_EQ(commands_of<MoveAvatar>(out).size(), 1u);
+    return g;
+}
+
+std::vector<const Teleport*> teleports(const Output& out, TeleportReason reason) {
+    std::vector<const Teleport*> v;
+    for (const Teleport* t : commands_of<Teleport>(out)) {
+        if (t->reason == reason) v.push_back(t);
+    }
+    return v;
+}
+
+}  // namespace
+
+TEST("champ de force 4.5 invité : à 40 m de l'hôte → ramené à 34,5 m, message une fois par 3 s") {
+    const World far = world_at(4000.0f);
+    Session g = guest_leashed(far);
+    // Pause de 3 s après le Welcome : rien.
+    CHECK(commands_of<Teleport>(g.tick(3000, far, {})).empty());
+    Output out = g.tick(3200, far, heartbeat_in());
+    auto t = teleports(out, TeleportReason::Leash);
+    CHECK(t.size() == 1 && std::fabs(t[0]->pose.x - 3450.0f) < 0.5f && t[0]->pose.z == 0.0f && t[0]->pose.y == 0.0f);
+    auto msgs = commands_of<ShowMessage>(out);
+    CHECK(msgs.size() == 1 && msgs[0]->text == "Trop loin de l'hôte (35 m au plus).");
+    CHECK(has_log_at(out, Level::Info, "[sync] champ de force : invité à 40.0 m de l'hôte, ramené à 35 m"));
+    CHECK(sent_of<proto::Regroup>(out).empty());
+    // Toujours trop loin (le jeu n'a pas encore bougé le héros) : ramené, sans nouveau message.
+    out = g.tick(3220, far, {});
+    CHECK_EQ(teleports(out, TeleportReason::Leash).size(), 1u);
+    CHECK(commands_of<ShowMessage>(out).empty());
+    // Dans le cercle : rien.
+    CHECK(commands_of<Teleport>(g.tick(3240, world_at(3400.0f), {})).empty());
+    out = g.tick(6300, far, heartbeat_in());
+    CHECK_EQ(commands_of<ShowMessage>(out).size(), 1u);
+}
+
+TEST("champ de force 4.5 : distance horizontale seulement ; leash_radius = 0 ou hôte → jamais") {
+    World high = world_at(3000.0f);
+    high.y = 5000.0f;  // 50 m plus haut, 30 m à l'horizontale
+    Session g = guest_leashed(high);
+    CHECK(commands_of<Teleport>(g.tick(3200, high, {})).empty());
+    Settings st = guest_settings();
+    Session off(st);  // leash_radius = 0
+    const World far = world_at(4000.0f);
+    off.tick(0, far, {});
+    off.tick(100, far, control_from(kHost, encode(welcome_at(1, 2, 3, 0))));
+    off.tick(170, far, reliable(encode_r(spawn_of(proto::kHostNetId))));
+    off.tick(190, far, snapshot_in(snapshot_bytes(2, proto::kHostNetId, 0.0f)));
+    CHECK(commands_of<Teleport>(off.tick(3200, far, {})).empty());
+    Session h = host_with_avatar();
+    h.tick(1200, loaded_world(), snapshot_in(snapshot_bytes(2, proto::kGuestNetId, 90000.0f)));
+    CHECK(commands_of<Teleport>(h.tick(4500, loaded_world(), {})).empty());
+}
+
+TEST("champ de force 4.5 invité : à 100 m → Regroup attendu 3 s, puis placé devant l'hôte (Rejoin)") {
+    const World far = world_at(10000.0f);
+    Session g = guest_leashed(far);
+    Output out = g.tick(3200, far, heartbeat_in());
+    CHECK(commands_of<Teleport>(out).empty());
+    CHECK(has_log_at(out, Level::Info, "[sync] champ de force : invité à 100.0 m de l'hôte, Regroup attendu"));
+    CHECK(commands_of<Teleport>(g.tick(6000, far, heartbeat_in())).empty());
+    out = g.tick(6300, far, {});
+    const auto t = teleports(out, TeleportReason::Rejoin);
+    CHECK(t.size() == 1 && std::fabs(t[0]->pose.z - 200.0f) < 0.01f && std::fabs(t[0]->pose.x) < 0.01f);
+    CHECK(has_log_at(out, Level::Warn, "depuis 3 s sans Regroup : placé devant l'hôte"));
+    // Replacé : pause de 3 s.
+    CHECK(commands_of<Teleport>(g.tick(6400, far, {})).empty());
+}
+
+TEST("champ de force 4.5 invité : suspendu à terre, et 3 s après un saut de la pose affichée de l'hôte") {
+    const World far = world_at(4000.0f);
+    Session g = guest_leashed(far);
+    g.tick(3150, far, {LocalDown{kDownCauseHitOnGuest}});
+    CHECK(commands_of<Teleport>(g.tick(3200, far, {})).empty());
+    Session h = guest_leashed(far);
+    // L'hôte saute de 0 à 3000 (affiché tel quel : un seul échantillon récent) : pause de 3 s.
+    h.tick(3150, far, snapshot_in(snapshot_bytes(70, proto::kHostNetId, -50000.0f)));
+    CHECK(commands_of<Teleport>(h.tick(3200, far, {})).empty());
+}
+
+TEST("regroupement 4.5 : saut de plus de 15 m d'un tick → Regroup{pose} envoyé, puis 3 s sans signal") {
+    Session g = guest_leashed(world_at(100.0f), 100.0f);
+    // Saut pendant la pause du Welcome : non signalé.
+    CHECK(sent_of<proto::Regroup>(g.tick(500, world_at(3000.0f), {})).empty());
+    Session s = guest_leashed(world_at(100.0f), 100.0f);
+    s.tick(3200, world_at(100.0f), {});
+    CHECK(sent_of<proto::Regroup>(s.tick(3220, world_at(1500.0f), {})).empty());  // 14 m : pas un saut
+    Output out = s.tick(3240, world_at(50000.0f, 20.0f), {});
+    const auto sent = sent_of<proto::Regroup>(out);
+    CHECK(sent.size() == 1 && sent[0].x == 50000.0f && sent[0].z == 20.0f);
+    CHECK(has_log_at(out, Level::Info, "[sync] téléportation du héros (saut de 485.0 m) : Regroup envoyé"));
+    CHECK(commands_of<Teleport>(out).empty());  // champ de force suspendu (l'hôte va suivre)
+    CHECK(sent_of<proto::Regroup>(s.tick(3260, world_at(90000.0f), {})).empty());
+    CHECK(commands_of<Teleport>(s.tick(3280, world_at(90000.0f), {})).empty());
+    // Côté hôte aussi.
+    Session h = host_with_avatar();
+    h.tick(1200, world_at(100.0f), {});
+    out = h.tick(4200, world_at(100.0f), {});
+    out = h.tick(4220, world_at(-80000.0f), {});
+    CHECK_EQ(sent_of<proto::Regroup>(out).size(), 1u);
+}
+
+TEST("regroupement 4.5 : Regroup reçu → Teleport{Regroup} à 2 m devant la pose, sauts propres non signalés") {
+    Session g = guest_leashed(world_at(100.0f), 100.0f);
+    g.tick(3200, world_at(100.0f), {});
+    Output out = g.tick(3300, world_at(100.0f), reliable(encode_r(proto::Regroup{70000.0f, 10.0f, 500.0f, 0.0f})));
+    auto t = teleports(out, TeleportReason::Regroup);
+    CHECK(t.size() == 1 && t[0]->pose.x == 70000.0f && t[0]->pose.y == 10.0f && std::fabs(t[0]->pose.z - 700.0f) < 0.01f);
+    CHECK(has_log_at(out, Level::Info, "[sync] Regroup reçu ((70000.0, 10.0, 500.0) lacet=0.000) : héros placé à côté du pair"));
+    // Le saut qui suit (exécution du Teleport) n'est pas renvoyé.
+    CHECK(sent_of<proto::Regroup>(g.tick(3320, world_at(70000.0f, 700.0f), {})).empty());
+    // Hôte : même règle.
+    Session h = host_with_avatar();
+    out = h.tick(1300, loaded_world(), reliable(encode_r(proto::Regroup{1.0f, 2.0f, 3.0f, 0.0f})));
+    CHECK_EQ(teleports(out, TeleportReason::Regroup).size(), 1u);
+}
+
+TEST("regroupement 4.5 : Regroup ignoré (pose non finie, invité à terre, héros mort), Warn") {
+    Session g = guest_leashed(world_at(100.0f), 100.0f);
+    Output out = g.tick(3300, world_at(100.0f), reliable(encode_r(proto::Regroup{std::nanf(""), 0, 0, 0})));
+    CHECK(commands_of<Teleport>(out).empty() && has_log_at(out, Level::Warn, "ignoré (pose non finie)"));
+    g.tick(3310, world_at(100.0f), {LocalDown{kDownCauseHitOnGuest}});
+    out = g.tick(3320, world_at(100.0f), reliable(encode_r(proto::Regroup{1, 2, 3, 0})));
+    CHECK(commands_of<Teleport>(out).empty() && has_log_at(out, Level::Warn, "ignoré (invité à terre)"));
+    Session s = guest_leashed(world_at(100.0f), 100.0f);
+    World dead = world_at(100.0f);
+    dead.dead = true;
+    s.tick(3300, dead, {});
+    out = s.tick(3310, dead, reliable(encode_r(proto::Regroup{1, 2, 3, 0})));
+    CHECK(commands_of<Teleport>(out).empty() && has_log_at(out, Level::Warn, "ignoré (héros mort)"));
+}
+
+TEST("diagnostic moonwalk : avatar qui avance à rebours de son orientation → Debug, une ligne par seconde") {
+    Session s = host_with_avatar();  // avatar créé à 1100
+    // x += 20 cm par tick de 50 ms (4 m/s), lacet −π/2 (avant = −x) : déplacement à 180°.
+    bool seen = false;
+    unsigned lines = 0;
+    for (std::uint32_t tick = 0; tick <= 30; ++tick) {
+        const Output out = s.tick(1200 + tick * 50, loaded_world(),
+                                  snapshot_in(snapshot_bytes(tick, proto::kGuestNetId, tick * 20.0f, -1.5707964f)));
+        for (const LogLine& l : out.logs) {
+            if (l.text.find("[sync] avatar : déplacement à rebours, 4.0 m/s à 180°") != std::string::npos) {
+                seen = true;
+                ++lines;
+            }
+        }
+    }
+    CHECK(seen);
+    CHECK(lines <= 2);  // 1,5 s de déplacement : une ligne par seconde au plus
+}
+
+TEST("champ de force 4.5 invité : leash_distance suit la distance à l'hôte, même champ suspendu ; −1 hors cas") {
+    const World w = world_at(3000.0f, 1000.0f);  // 31,6 m de l'hôte en (0, 0, 0)
+    Session g = guest_leashed(w);
+    g.tick(500, w, {});  // pause du Welcome : distance connue quand même
+    CHECK(std::fabs(g.leash_distance() - std::sqrt(3000.0f * 3000.0f + 1000.0f * 1000.0f)) < 0.5f);
+    CHECK(g.leash_radius() == 3500.0f);
+    World unread = w;
+    unread.pose_ok = false;
+    g.tick(520, unread, {});
+    CHECK(g.leash_distance() < 0.0f);
+    Session h = host_with_avatar();
+    h.tick(1200, loaded_world(), snapshot_in(snapshot_bytes(2, proto::kGuestNetId, 9000.0f)));
+    CHECK(h.leash_distance() < 0.0f);
 }

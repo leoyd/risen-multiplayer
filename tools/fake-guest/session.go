@@ -856,6 +856,8 @@ func (g *guest) drain() (sessionResult, bool) {
 			g.log.printf("<- DialogState pnj=%d actif=%d", m.NpcNetId, m.Active)
 		case protocol.Respawn:
 			g.respawn(m)
+		case protocol.Regroup: // v19, story 4.5 : journalisé, jamais appliqué
+			g.log.printf("<- Regroup pose=(%.1f, %.1f, %.1f, %.3f)", m.X, m.Y, m.Z, m.Yaw)
 		case protocol.SessionEnd:
 			g.log.printf("<- SessionEnd raison=%d (%s)", m.Reason, protocol.EndReasonName(m.Reason))
 			g.kcp.Flush() // acquitte le SessionEnd avant de fermer

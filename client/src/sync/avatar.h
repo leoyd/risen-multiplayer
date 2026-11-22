@@ -83,7 +83,8 @@ void* entity();
 // Déplace le héros local par Entity::MoveTo : invité, à l'entrée en session (« placé devant
 // l'hôte ») et, story 3.7, à la réapparition (sync/guest_health). `what` complète la ligne Info.
 // False (Error au log) si le héros manque ou sur SEH.
-bool teleport_player(const core::session::Pose& pose, const char* what = "placé devant l'hôte");
+// Story 4.5 : `quiet` (champ de force, à chaque frame) : pas de ligne Info en cas de succès.
+bool teleport_player(const core::session::Pose& pose, const char* what = "placé devant l'hôte", bool quiet = false);
 
 // Hooks eCAnimation_PS::PlayMotion et SetRagDollEnabled en session : capturent les appels sur
 // le PS du héros local (AnimFilter), retournent false pour bloquer ceux du moteur sur un avatar.

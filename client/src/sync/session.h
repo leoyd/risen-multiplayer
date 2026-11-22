@@ -31,6 +31,9 @@ void on_frame() noexcept;
 // n'en dépend pas) ; nul = pas d'overlay. À appeler depuis ScriptInit, avant la première frame.
 using OverlaySink = void (*)(const std::string& utf8, std::uint32_t argb);
 void set_overlay_sink(OverlaySink sink);
+// Story 4.5 : alerte du champ de force (niveau 0 à 1, texte UTF-8), poussée quand elle change.
+using WarningSink = void (*)(float level, const std::string& utf8);
+void set_warning_sink(WarningSink sink);
 
 // Diagnostic (trace_assess = 1) : détours de sync/assess_trace posés ; la frame en vide l'anneau.
 void set_assess_trace(bool active);

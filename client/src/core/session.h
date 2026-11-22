@@ -194,6 +194,8 @@ struct Settings {
     bool native_attacks = true;
     // Story 4.1 : DialogLine envoyés (hôte) et rejoués (invité). Faux : ignorés et comptés.
     bool dialogues = true;
+    // Story 4.5, invité : rayon du champ de force autour de l'hôte (unités du monde = cm), 0 = aucun.
+    float leash_radius = 0.0f;
 };
 
 using core::Pose;
@@ -241,17 +243,19 @@ struct World {
     bool loaded() const { return player != 0 && running; }  // monde chargé
 };
 
-// Story 3.4e (test du 2026-11-01) : 50 → 100 m, avec EntityROI = 10000 dans ConfigLocal.xml.
-inline constexpr float kNpcRadius = 10000.0f;  // 100 m (unités du monde = cm) autour d'un joueur
-// Test en jeu du 2026-10-22 : Entity::ms_arrNPCs ne garde que les PNJ traités par le moteur
-// (EntityROI de ConfigDefault.xml : 40 m ; story 3.4e : 100 m si ConfigLocal.xml le relève), qui y
+// Story 3.4e : 50 → 100 m ; story 3.4f : 200 m, avec la portée de traitement du moteur relevée en
+// session (processing_range, 250 m par défaut, sync/session).
+inline constexpr float kNpcRadius = 20000.0f;  // 200 m (unités du monde = cm) autour d'un joueur
+// Test en jeu du 2026-10-22 : Entity::ms_arrNPCs ne garde que les PNJ traités par le moteur (sphère
+// EntityROI autour de la caméra : 40 m dans ConfigDefault.xml ; story 3.4f : processing_range), qui y
 // entrent et en sortent sans cesse à cette limite. Un PNJ annoncé absent
 // de la liste n'est retiré qu'après ce nombre de ticks de snapshot (2 s) ; il n'est plus dans les
 // snapshots pendant ce temps, et revenu, il garde son NetId sans nouveau Spawn.
 inline constexpr std::uint32_t kNpcAbsentGraceTicks = 40;
 // Un datagramme de snapshot porte au plus 54 entités (AD-7). Story 3.4e : le snapshot d'un tick est
-// découpé en datagrammes de même tick (le premier porte le héros) ; 200 PNJ au plus, soit 4 datagrammes.
-inline constexpr std::size_t kMaxSnapshotNpcs = 200;
+// découpé en datagrammes de même tick (le premier porte le héros) ; story 3.4f : 400 PNJ au plus, soit
+// 8 datagrammes (≈ 9 Ko par snapshot, ≈ 180 Ko/s à 20 Hz).
+inline constexpr std::size_t kMaxSnapshotNpcs = 400;
 inline constexpr std::size_t kMaxSnapshotParts =
     (kMaxSnapshotNpcs + 2 + protocol::kMaxSnapshotEntities - 1) / protocol::kMaxSnapshotEntities;
 inline constexpr std::size_t kMaxNpcHpChanges = 16;  // PV d'une réplique en attente d'affichage
@@ -396,8 +400,20 @@ struct SendReliable {
 };
 struct CloseReliable {};
 struct Stop {};
-struct Teleport {  // invité : déplacer son propre héros (Entity::MoveTo)
+// Déplacer son propre héros (Entity::MoveTo). Story 4.5 : aussi chez l'hôte (Regroup reçu).
+enum class TeleportReason : std::uint8_t {
+    Welcome = 0,  // invité : placé devant l'hôte à l'entrée en session
+    Regroup = 1,  // story 4.5 : placé à côté du pair qui vient de se téléporter
+    Leash = 2,    // story 4.5, invité : ramené sur le bord du champ de force (à chaque frame : sans journal)
+    Rejoin = 3,   // story 4.5, invité : trop loin de l'hôte depuis kLeashFarMs, placé devant lui
+};
+struct Teleport {
     Pose pose;
+    TeleportReason reason = TeleportReason::Welcome;
+};
+// Story 4.5 : message dans le journal en jeu (GUI2::PrintGameLog), texte UTF-8.
+struct ShowMessage {
+    std::string text;
 };
 struct SpawnAvatar {  // créer l'avatar du pair
     std::uint32_t net_id = 0;
@@ -548,7 +564,7 @@ using Command = std::variant<Start, Send, OpenReliable, SendReliable, CloseRelia
                              AvatarWeapon, EquipHero, EquipAvatar, AvatarArmor, SpawnNpc, MoveNpc, SetNpcHp,
                              ReleaseNpc, CaptureNpc, UncaptureNpc, PlayNpcMotion, PlayNpcParam, NpcDeath, ApplyHit,
                              ApplyHitOnGuest, RespawnHero, ApplyNpcAttack, ApplyAvatarAttack, ApplyDialogLine, HoldNpc,
-                             UnholdNpc, FreeReplica, NpcWeapon>;
+                             UnholdNpc, FreeReplica, NpcWeapon, ShowMessage>;
 
 inline constexpr float kParamEpsilon = 0.01f;       // écart minimal pour renvoyer un poids
 inline constexpr float kParamSpeedEpsilon = 0.02f;  // écart minimal pour renvoyer une vitesse de lecture
@@ -567,13 +583,21 @@ inline constexpr std::uint64_t kSnapshotStatsMs = 5000;  // bilan debug des snap
 inline constexpr std::uint64_t kRespawnTimeoutMs = 10000;
 inline constexpr std::uint64_t kRespawnAckTimeoutMs = 5000;
 
+// Story 4.5 : téléportation commune (Regroup, protocole v19) et champ de force de l'invité.
+inline constexpr float kTeleportJumpCm = 1500.0f;        // saut d'un tick au-delà duquel le héros s'est téléporté
+inline constexpr std::uint64_t kRegroupQuietMs = 3000;   // après un déplacement imposé : sauts non signalés
+inline constexpr float kLeashMarginCm = 50.0f;           // ramené à leash_radius − 0,5 m
+inline constexpr float kLeashPullMaxCm = 2000.0f;        // au-delà de leash_radius + 20 m : Regroup attendu
+inline constexpr std::uint64_t kLeashFarMs = 3000;       // écart trop grand aussi longtemps : placé devant l'hôte
+inline constexpr std::uint64_t kLeashMessageMs = 3000;   // message à l'écran au plus aussi souvent
+
 // Story 4.2, hôte : un PNJ tenu sans DialogState{…, 0} est rendu après ce délai (Warn).
 inline constexpr std::uint64_t kDialogHoldTimeoutMs = 60000;
 
 // Story 3.4 (Q12, option A) : PNJ animés au plus (les plus proches), et budget visé de leurs
 // Motion, MotionParam et AniName (octets des messages par seconde, journalisé s'il est dépassé).
-inline constexpr std::size_t kMaxAnimatedNpcs = 24;  // story 3.4e : 8 → 24
-inline constexpr std::uint32_t kNpcAnimBudgetBytesPerSec = 32 * 1024;
+inline constexpr std::size_t kMaxAnimatedNpcs = 48;  // story 3.4e : 8 → 24 ; story 3.4f : 48
+inline constexpr std::uint32_t kNpcAnimBudgetBytesPerSec = 64 * 1024;
 
 enum class Level { Debug, Info, Warn, Error };
 struct LogLine {
@@ -616,6 +640,10 @@ public:
     // Story 4.2. Hôte : NetId du PNJ tenu (0 : aucun). Invité : NetId de la réplique libérée (0 : aucune).
     std::uint32_t held_npc() const { return held_npc_; }
     std::uint32_t freed_replica() const { return guest_dialog_npc_; }
+    // Story 4.5, invité au champ de force : distance horizontale à l'hôte affiché (unités du monde) au
+    // dernier tick, et rayon. −1 : sans objet (hôte, champ désactivé, hors session, pose inconnue).
+    float leash_distance() const { return leash_distance_; }
+    float leash_radius() const { return settings_.leash_radius; }
     // Story 4.3 : PNJ occupé par l'autre joueur, à qui le héros local ne peut pas parler (0 : aucun).
     // Hôte : le PNJ tenu pour le dialogue de l'invité ; invité : celui que l'hôte a annoncé
     // (DialogState reçu). Hors session ou dialogues = 0 : 0.
@@ -721,6 +749,32 @@ private:
     void apply_pending_death(std::uint32_t id, Replica& r, Output& out);
     void release_npcs(const std::string& why, Output& out);  // invité : toutes ; hôte : oubli des NetId
     void place_avatar(std::uint64_t now, Output& out);
+    // Story 4.5 : saut de son héros (Regroup envoyé), champ de force de l'invité, Regroup reçu ;
+    // moved_self : déplacement imposé par la session (Teleport, RespawnHero), sauts non signalés.
+    void regroup(std::uint64_t now, const World& world, Output& out);
+    void on_regroup(std::uint64_t now, const protocol::Regroup& m, Output& out);
+    void moved_self(std::uint64_t now);
+    void regroup_stats(Output& out);
+    // Diagnostic du « moonwalk » (test du 2026-11-22) : déplacement affiché de l'avatar comparé à son
+    // orientation et à ses animations de locomotion en cours (Debug, une ligne par seconde au plus).
+    void check_avatar_gait(std::uint64_t now, Output& out);
+    std::string avatar_gait_[2];  // dernier Motion de type 0 et 1 rejoué sur l'avatar
+    Pose gait_ref_;
+    std::uint64_t gait_ref_at_ = 0;
+    std::uint64_t gait_logged_at_ = 0;
+    unsigned gait_reports_ = 0;
+    Pose own_prev_;
+    bool own_prev_ok_ = false;
+    std::uint64_t jump_quiet_until_ = 0;   // sauts de son héros non signalés jusque-là
+    std::uint64_t leash_pause_until_ = 0;  // invité : champ de force suspendu jusque-là
+    std::uint64_t far_since_ = 0;          // invité : écart > leash_radius + 20 m depuis (0 : non)
+    std::uint64_t leash_message_at_ = 0;   // invité : prochain message à l'écran permis
+    float leash_distance_ = -1.0f;         // invité : distance à l'hôte au dernier tick (−1 : inconnue)
+    Pose peer_prev_;                       // invité : pose affichée de l'hôte au tick précédent
+    bool peer_prev_ok_ = false;
+    struct RegroupCounters {
+        unsigned sent = 0, received = 0, ignored = 0, pulls = 0, rejoins = 0;
+    } regroup_;
     // Story 3.8b, hôte : attaques de l'avatar dues à l'instant affiché `shown` (tout si `!ready`).
     void apply_due_avatar_attacks(bool ready, double shown, Output& out);
     void drop_avatar_attacks();  // story 3.8b : file de l'avatar vidée, comptée ignorée

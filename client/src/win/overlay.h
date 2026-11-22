@@ -20,4 +20,9 @@ void remove();
 // depuis n'importe quel thread.
 void set_text(const std::string& utf8, std::uint32_t argb);
 
+// Story 4.5 : alerte du champ de force. Niveau 0 à 1 : bordure rouge en dégradé sur les bords de l'écran,
+// d'autant plus opaque que le niveau est haut, pulsée au niveau 1 ; texte (UTF-8) centré en haut. Niveau 0 :
+// rien. Même verrou que set_text.
+void set_warning(float level, const std::string& utf8);
+
 }  // namespace mp::win::overlay

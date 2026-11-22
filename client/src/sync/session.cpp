@@ -4,7 +4,9 @@
 #include "core/overlay_text.h"
 #include "core/session.h"
 #include "game/combat.h"
+#include "game/dialogue.h"
 #include "game/entity.h"
+#include "game/scene.h"
 #include "net/transport.h"
 #include "sync/anim_filter.h"
 #include "sync/assess_trace.h"
@@ -35,6 +37,7 @@ namespace mp::sync::session {
 namespace {
 
 bool g_assess_trace = false;  // diagnostic, posé par win/hooks avant la première frame
+float g_processing_range = 0.0f;  // story 3.4f : portée de traitement voulue (cm), 0 = moteur inchangé
 
 
 namespace cs = mp::core::session;
@@ -53,6 +56,9 @@ std::string g_overlay_nickname;
 std::string g_overlay_host_ip;
 std::uint16_t g_overlay_port = kDefaultPort;
 std::string g_overlay_text;
+std::atomic<WarningSink> g_warning_sink{nullptr};  // story 4.5
+int g_warning_step = -1;                           // niveau poussé, en pas de 1/50
+std::string g_warning_text;
 std::vector<cs::Input> g_inputs;  // réutilisé d'une frame à l'autre
 
 // Captures du héros local (story 2.4) : PS suivi par l'AnimFilter, noms des ressources (vidés
@@ -186,7 +192,22 @@ void execute(cs::Output out) {
             }
             // Avatars (story 2.2) : appels au jeu, sur ce thread (AD-2).
             if (const auto* t = std::get_if<cs::Teleport>(&cmd)) {
-                avatar::teleport_player(t->pose);
+                switch (t->reason) {  // story 4.5 : Regroup, champ de force
+                    case cs::TeleportReason::Regroup: avatar::teleport_player(t->pose, "placé à côté du pair (Regroup)"); break;
+                    case cs::TeleportReason::Leash: avatar::teleport_player(t->pose, "ramené (champ de force)", true); break;
+                    case cs::TeleportReason::Rejoin: avatar::teleport_player(t->pose, "replacé devant l'hôte (champ de force)"); break;
+                    default: avatar::teleport_player(t->pose); break;
+                }
+                continue;
+            }
+            if (const auto* sm = std::get_if<cs::ShowMessage>(&cmd)) {  // story 4.5
+                wchar_t wide[256];
+                const int n = MultiByteToWideChar(CP_UTF8, 0, sm->text.data(), static_cast<int>(sm->text.size()), wide,
+                                                  static_cast<int>(sizeof wide / sizeof wide[0]) - 1);
+                wide[n > 0 ? n : 0] = L'\0';
+                if (n > 0 && !game::print_game_log(wide)) {
+                    log::debug("[sync] message à l'écran impossible (GUI2::PrintGameLog absent ou SEH)");
+                }
                 continue;
             }
             if (const auto* sa = std::get_if<cs::SpawnAvatar>(&cmd)) {
@@ -447,9 +468,55 @@ void push_overlay() {
     if (sink == nullptr) return;
     std::string text = core::overlay_text(g_role, g_overlay_nickname, g_session->state(), g_overlay_host_ip,
                                           g_overlay_port);
-    if (text == g_overlay_text) return;
-    g_overlay_text = std::move(text);
-    sink(g_overlay_text, core::overlay_color(g_role));
+    if (text != g_overlay_text) {
+        g_overlay_text = std::move(text);
+        sink(g_overlay_text, core::overlay_color(g_role));
+    }
+    // Story 4.5 : alerte du champ de force, poussée quand son niveau (pas de 2 %) ou son texte change.
+    const WarningSink warn = g_warning_sink.load(std::memory_order_acquire);
+    if (warn == nullptr) return;
+    const bool live = g_session->state() == cs::State::InSession;
+    const float distance = live ? g_session->leash_distance() : -1.0f;
+    const float level = core::leash_warning_level(distance, g_session->leash_radius());
+    const int step = static_cast<int>(level * 50.0f + 0.5f);
+    std::string wtext = core::leash_warning_text(distance, g_session->leash_radius());
+    if (step == g_warning_step && wtext == g_warning_text) return;
+    g_warning_step = step;
+    g_warning_text = std::move(wtext);
+    warn(level, g_warning_text);
+}
+
+// Story 3.4f : portée de traitement du moteur (sphère ROI) relevée à processing_range, vérifiée chaque
+// seconde environ (le jeu la remet à EntityROI quand il réapplique sa config : Info à chaque reprise).
+void keep_processing_range(bool loaded) {
+    static unsigned frames = 0;
+    static bool error_logged = false;
+    static unsigned applied = 0;
+    if (g_processing_range <= 0.0f || !loaded || ++frames % 60 != 1) return;
+    game::scene::Ranges r;
+    std::string error;
+    if (!game::scene::read_ranges(r, error)) {
+        if (!error_logged) {
+            error_logged = true;
+            log::warn("[sync] portée de traitement non réglée (" + error + ") : PNJ limités à la portée du jeu");
+        }
+        return;
+    }
+    if (std::fabs(r.roi - g_processing_range) < 1.0f) return;
+    const float prefetch = g_processing_range + 2000.0f;
+    if (!game::scene::set_ranges(g_processing_range, prefetch, error)) {
+        if (!error_logged) {
+            error_logged = true;
+            log::warn("[sync] portée de traitement non réglée (" + error + ") : PNJ limités à la portée du jeu");
+        }
+        return;
+    }
+    game::scene::Ranges now;
+    if (!game::scene::read_ranges(now, error)) now = {};
+    auto m = [](float cm) { return std::to_string(static_cast<int>(cm / 100.0f)) + " m"; };
+    log::info(std::string("[sync] portée de traitement ") + (applied++ == 0 ? "" : "de nouveau ") + "réglée : " +
+              m(r.roi) + " → " + m(now.roi) + " (cache " + m(r.cache_in) + " → " + m(now.cache_in) +
+              ", préchargement " + m(r.prefetch) + " → " + m(now.prefetch) + ")");
 }
 
 void frame() {
@@ -466,6 +533,7 @@ void frame() {
         npc::release_all("fin de monde");
     }
     g_last_world_player = world.player;
+    keep_processing_range(world.loaded());
     // Hôte : PNJ lus seulement au tick qui enverra un snapshot (story 3.3).
     if (g_session->wants_npcs(now)) npc::read_host(world);
     g_inputs.clear();
@@ -544,6 +612,7 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
         return;
     }
     g_role = config.role;
+    g_processing_range = static_cast<float>(config.processing_range) * 100.0f;
     g_overlay_nickname = config.nickname;
     g_overlay_host_ip = config.host_ip;
     g_overlay_port = config.port;
@@ -562,6 +631,8 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
     hits::set_native_attacks(g_native_attacks);
     // Story 4.1 : dialogues seulement si la config les veut et que win/hooks a posé le détour de StartOutput.
     s.dialogues = config.dialogues && dialogue::active();
+    // Story 4.5 : champ de force de l'invité (mètres → unités du monde).
+    s.leash_radius = config.role == Role::Guest ? static_cast<float>(config.leash_radius) * 100.0f : 0.0f;
     LARGE_INTEGER t{};
     QueryPerformanceCounter(&t);
     s.seed = static_cast<std::uint64_t>(t.QuadPart) ^ (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32) ^
@@ -576,6 +647,7 @@ void configure(const Config& config, const std::array<ModuleFingerprint, 4>& fin
 }
 
 void set_overlay_sink(OverlaySink sink) { g_overlay_sink.store(sink, std::memory_order_release); }
+void set_warning_sink(WarningSink sink) { g_warning_sink.store(sink, std::memory_order_release); }
 
 void set_assess_trace(bool active) { g_assess_trace = active; }
 

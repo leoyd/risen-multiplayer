@@ -330,3 +330,34 @@ TEST("config : overlay invalide -> erreur nommant le champ") {
         CHECK_EQ(r.error_message, std::string("valeurs possibles : 0, 1"));
     }
 }
+
+TEST("config : processing_range absent -> 0 ; 0, 600, vide ; invalide -> erreur (story 3.4f, 4.5)") {
+    CHECK_EQ(parse_config("role=host\n").config.processing_range, mp::kDefaultProcessingRange);
+    CHECK_EQ(mp::kDefaultProcessingRange, 0u);
+    const auto zero = parse_config("role=host\nprocessing_range = 0\n");
+    CHECK(zero.ok && zero.config.processing_range == 0);
+    const auto big = parse_config("role=host\nprocessing_range = 600\n");
+    CHECK(big.ok && big.config.processing_range == 600);
+    const auto empty = parse_config("role=host\nprocessing_range =\n");
+    CHECK(empty.ok && empty.config.processing_range == mp::kDefaultProcessingRange && empty.warnings.empty());
+    for (const char* v : {"1001", "-5", "100m", "12.5", "99999"}) {
+        const auto bad = parse_config(std::string("role=host\nprocessing_range = ") + v + "\n");
+        CHECK(!bad.ok);
+        CHECK_EQ(bad.error_field, std::string("processing_range"));
+    }
+}
+
+TEST("config : leash_radius absent -> 35 ; 0, 50, vide ; invalide -> erreur (story 4.5)") {
+    CHECK_EQ(parse_config("role=guest\nhost_ip=127.0.0.1\n").config.leash_radius, 35u);
+    const auto zero = parse_config("role=host\nleash_radius = 0\n");
+    CHECK(zero.ok && zero.config.leash_radius == 0);
+    const auto fifty = parse_config("role=host\nleash_radius = 50\n");
+    CHECK(fifty.ok && fifty.config.leash_radius == 50 && fifty.config.processing_range == 0);
+    const auto empty = parse_config("role=host\nleash_radius =\n");
+    CHECK(empty.ok && empty.config.leash_radius == mp::kDefaultLeashRadius && empty.warnings.empty());
+    for (const char* v : {"1001", "-5", "35m", "3.5"}) {
+        const auto bad = parse_config(std::string("role=host\nleash_radius = ") + v + "\n");
+        CHECK(!bad.ok);
+        CHECK_EQ(bad.error_field, std::string("leash_radius"));
+    }
+}

@@ -1,4 +1,4 @@
-# Reprise du travail — état au 2026-11-01
+# Reprise du travail — état au 2026-11-22
 
 Note de passation : où en est le projet et quoi faire à la prochaine session. Le détail de chaque livraison est dans sa spec, sous `_bmad-output/implementation-artifacts/spec-*.md`.
 
@@ -37,7 +37,9 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 | 4.3 | PNJ occupé (`DialogState` hôte → invité, protocole **v18**) : demande de dialogue refusée au second joueur, message « *Nom* ne peut pas vous parler, il est occupé. » | fait, **blocage validé en jeu** le 2026-11-01 ; vu au test : garde natif non répliqué réagissant chez l'invité, PNJ sans riposte aux coups de l'avatar |
 | 4.4 | Robustesse (dont la course : demandes croisées au même PNJ) | à faire |
 | 3.4e | Monde de l'invité piloté par l'hôte seul : PNJ natifs non annoncés figés chez l'invité ; rayon 100 m, 200 PNJ (snapshot en plusieurs datagrammes de même tick), 24 animés | testé le 2026-11-01 : plus de garde fantôme chez l'invité, mais **aucune réaction chez l'hôte** aux coups de l'avatar (victime ni gardes) ; `EntityROI` dans `ConfigLocal.xml` **sans effet** (la liste des PNJ vient de `gCInteractionAdmin`, ~40 m), retiré de l'installeur. Trace `trace_assess = 1` (test du 2026-11-01 soir) : la ville réagit bien aux coups de l'avatar (AssessDamage → 1 sur une femme, puis AssessFighter de ~20 PNJ) ; un garde frappé une fois : AssessDamage → 0 (référence de l'hôte à faire). Non commité |
-| 3.8c | Objet en main des PNJ animés transmis à l'invité (`Weapon{NetId ≥ 1000}`, format inchangé) : la réplique attaque avec l'arme de l'hôte au lieu de l'arme naturelle de monstre | fait, tests verts, **installé, pas encore testé en jeu**, non commité |
+| 3.8c | Objet en main des PNJ animés transmis à l'invité (`Weapon{NetId ≥ 1000}`, format inchangé) : la réplique attaque avec l'arme de l'hôte au lieu de l'arme naturelle de monstre | **validé en jeu** le 2026-11-01 (armes et objets d'activité suivis : `It_1H_Club`, `It_Saw`…), commité dans `a902366` avec la 3.4e et la trace |
+| 3.4f | Zone de synchro agrandie : portée de traitement du moteur relevée en session (`processing_range`, `eCPrefetchAdmin::SetROISphere`), rayon 200 m, 400 PNJ, 48 animés | **testé le 2026-11-22 : échec** : liste des PNJ de l'hôte inchangée (32 suivis, 44 m au plus : sphères de préchargement figées au chargement, voir `client/README.md`) et PNJ en T-pose chez l'hôte après un aller-retour. `processing_range` à **0 par défaut** (code gardé) ; rayon, plafond et animés gardés |
+| 4.5 | Champ de force (invité tenu à 35 m de l'hôte, `leash_radius`) et téléportation commune (`Regroup`, protocole **v19**) ; diagnostic du moonwalk de l'avatar | fait ; **champ de force et alerte à l'écran validés en jeu** le 2026-11-22 ; téléportation commune pas encore testée ; diagnostic du moonwalk : 3 lignes vues, toutes cohérentes (course arrière) |
 
 - **Branches** (rien de poussé) : `main` contient l'epic 3 et la planification de l'epic 4. Travail en cours en chaîne : `story/4-0-spike-j3` → `story/4-1-dialogue-hote-vu-invite` → `story/4-2-dialogue-invite-vu-hote` → `story/4-3-dialogues-simultanes` (branche courante).
 - **Reports nés des tests** (`deferred-work.md`) : PNJ en T-pose en ville chez l'invité (8 PNJ animés seulement, story 3.4c proposée) ; objets tenus par les PNJ non répliqués (balai, story 3.4d proposée).
@@ -57,9 +59,19 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 
 ## Reprendre
 
-1. **Tester 3.8c et 3.4e** (installés, trace allégée active) : l'invité frappe une villageoise ; les gardes qui l'attaquent doivent tenir leur arme chez l'invité comme chez l'hôte (journal invité : `objet en main : « It_… »`). Référence : l'hôte frappe un garde une fois (comparer `AssessDamage` avec le cas de l'avatar).
-2. Selon le résultat : corriger, commiter la 3.4e, puis story 4.4 (robustesse, course des demandes croisées) ; ensuite 3.4c / 3.4d (PNJ de ville).
-3. Fusionner la chaîne 4.0 → 4.3 dans `main`.
+1. **Tester la 4.5** (`tools/installer-local.sh` déjà passé) :
+   - champ de force : l'invité s'éloigne de l'hôte ; dès 28 m, bordure rouge et « Distance de l’hôte : N m / 35 m »
+     en haut de l'écran, puis il bute à 35 m (bordure qui pulse, message « Trop loin de l'hôte ») ;
+   - téléportation : l'un des deux prend une pierre de téléportation (ou la console), l'autre doit arriver
+     à côté de lui (`Regroup envoyé` d'un côté, `Regroup reçu` de l'autre) ;
+   - T-pose : refaire l'aller-retour lointain de l'hôte, les PNJ ne doivent plus marcher en T-pose
+     (`processing_range = 0`) ;
+   - moonwalk : l'invité court droit devant ; lire chez l'hôte les lignes `[sync] avatar : déplacement à
+     rebours` / `glisse sans animation de déplacement` (angle, vitesse, animations en cours).
+2. Selon le résultat : corriger, commiter (3.4f désactivée + 4.5), puis corriger le moonwalk avec les
+   données du diagnostic ; ensuite story 4.4 (robustesse, course des demandes croisées), 3.4c / 3.4d.
+3. **Reporté à la demande de l'utilisateur** (`deferred-work.md`, story proposée 3.9) : réactions des PNJ à l'avatar comme au jeu de base (arme dégainée, intrusion, garde frappé qui ne riposte pas toujours).
+4. Fusionner la chaîne 4.0 → 4.3 (+ 4.5) dans `main`.
 
 ## Points ouverts à vérifier en jeu
 

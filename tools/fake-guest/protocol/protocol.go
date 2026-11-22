@@ -1,4 +1,4 @@
-// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 18, écrit à partir
+// Package protocol est le codec du contrat binaire hôte ⇄ invité, version 19, écrit à partir
 // de protocol/PROTOCOL.md (qui fait foi). Il suit le codec C++ client/src/core/protocol.cpp :
 // mêmes bornes, mêmes erreurs, raisons inconnues conservées telles quelles.
 //
@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = 18
+	ProtocolVersion   = 19
 	MaxDatagram       = 1200 // octets, canal compris
 	MaxModVersion     = 255
 	MinNickname       = 1
@@ -56,6 +56,7 @@ const (
 	TypeNpcAttack   MsgType = 29 // v15 (story 3.8)
 	TypeDialogLine  MsgType = 30 // v16 (story 4.1) ; v17 : aussi invité → hôte (story 4.2)
 	TypeDialogState MsgType = 31 // v17 (story 4.2) ; v18 : aussi hôte → invité (story 4.3)
+	TypeRegroup     MsgType = 32 // v19 (story 4.5)
 	TypeMotionParam MsgType = 26 // v6
 	TypeWeapon      MsgType = 27 // v7
 	TypeArmor       MsgType = 28 // v8
@@ -214,6 +215,13 @@ type Respawn struct {
 	Tick    uint32
 }
 
+// Regroup (v19, story 4.5) : téléportation commune, deux sens. Le héros de l'émetteur vient de se
+// téléporter à cette pose ; le récepteur place son héros à côté. Le décodeur ne vérifie aucune valeur.
+type Regroup struct {
+	X, Y, Z float32
+	Yaw     float32
+}
+
 // MotionParam : réglage de locomotion (v6). Nature 0 = SetTargetWeight(type, valeur, durée),
 // 1 = SetPlaySpeed(type, valeur).
 type MotionParam struct {
@@ -350,6 +358,7 @@ func (Death) Type() MsgType       { return TypeDeath }
 func (HitRequest) Type() MsgType  { return TypeHitRequest }
 func (HitOnGuest) Type() MsgType  { return TypeHitOnGuest }
 func (Respawn) Type() MsgType     { return TypeRespawn }
+func (Regroup) Type() MsgType     { return TypeRegroup }
 func (NpcAttack) Type() MsgType   { return TypeNpcAttack }
 func (DialogLine) Type() MsgType  { return TypeDialogLine }
 func (DialogState) Type() MsgType { return TypeDialogState }
@@ -455,6 +464,11 @@ func (w *writer) message(m Message) {
 		w.f32(m.Z)
 		w.f32(m.Yaw)
 		w.u32(m.Tick)
+	case Regroup:
+		w.f32(m.X)
+		w.f32(m.Y)
+		w.f32(m.Z)
+		w.f32(m.Yaw)
 	case MotionParam:
 		w.u32(m.NetId)
 		w.u32(m.Ms)
@@ -493,7 +507,7 @@ func EncodeControl(m Message) ([]byte, error) {
 
 // EncodeReliable rend le message [MsgType][charge] d'un message fiable (Heartbeat, SessionEnd,
 // Spawn, Despawn, AniName, Motion, Death, MotionParam, Weapon, Armor, HitRequest, HitOnGuest, Respawn,
-// NpcAttack, DialogLine, DialogState), sans octet de canal.
+// NpcAttack, DialogLine, DialogState, Regroup), sans octet de canal.
 func EncodeReliable(m Message) ([]byte, error) {
 	switch m := m.(type) {
 	case AniName:
@@ -528,7 +542,7 @@ func EncodeReliable(m Message) ([]byte, error) {
 		if !validDialogState(m) {
 			return nil, ErrOutOfBounds
 		}
-	case Heartbeat, SessionEnd, Despawn, Death, HitRequest, HitOnGuest, Respawn, NpcAttack:
+	case Heartbeat, SessionEnd, Despawn, Death, HitRequest, HitOnGuest, Respawn, NpcAttack, Regroup:
 	default:
 		return nil, ErrOutOfBounds
 	}
@@ -783,6 +797,12 @@ func DecodeReliable(b []byte) (Message, error) {
 		return m, nil
 	case TypeRespawn:
 		m := Respawn{NetId: r.u32(), X: r.f32(), Y: r.f32(), Z: r.f32(), Yaw: r.f32(), Tick: r.u32()}
+		if err := r.finish(); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case TypeRegroup:
+		m := Regroup{X: r.f32(), Y: r.f32(), Z: r.f32(), Yaw: r.f32()}
 		if err := r.finish(); err != nil {
 			return nil, err
 		}

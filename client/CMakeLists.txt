@@ -82,6 +82,7 @@ if(WIN32)
         src/sync/dialogue.cpp
         src/sync/dialogue_rules.cpp
         src/sync/assess_trace.cpp
+        src/game/scene.cpp
         src/win/watchdog.cpp
         src/win/overlay.cpp
         ${MINHOOK_SOURCES})

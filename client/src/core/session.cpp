@@ -140,6 +140,7 @@ void Session::transition(State next, const std::string& detail, Output& out, Lev
 
 void Session::end(std::uint64_t now, const std::string& reason, std::uint8_t local_reason, bool rearm_now,
                   Level level, Output& out) {
+    leash_distance_ = -1.0f;  // story 4.5 : plus d'alerte hors session
     if (state_ == State::Ended || state_ == State::Inactive) return;
     if (state_ == State::InSession && local_reason != 0) {
         Bytes bytes;
@@ -316,6 +317,7 @@ Output Session::tick(std::uint64_t now, const World& world, const std::vector<In
         respawn_timers(now, world, out);  // story 3.7 : replis, puis Respawn dû (hôte), avant la pose
         send_snapshot(now, world, out);
         place_avatar(now, out);
+        regroup(now, world, out);  // story 4.5 : après la pose affichée de l'hôte (champ de force)
         place_held(now, out);  // story 4.2 : gestes et pose du partenaire de l'invité
         place_npcs(now, out);
         announce_host_dialog(out);  // story 4.3 : PNJ occupé par l'hôte, avant la tenue
@@ -715,6 +717,10 @@ void Session::on_reliable(std::uint64_t now, const ReliableIn& in, Output& out) 
         on_respawn(now, *rs, out);
         return;
     }
+    if (const auto* rg = std::get_if<proto::Regroup>(&decoded.message)) {  // story 4.5
+        on_regroup(now, *rg, out);
+        return;
+    }
     const auto& e = std::get<proto::SessionEnd>(decoded.message);
     out.logs.push_back({Level::Info, "[sync] SessionEnd reçu : " + end_text(e.reason)});
     // L'hôte dont l'invité part se réarme aussitôt ; l'invité attend le monde suivant.
@@ -779,6 +785,14 @@ void Session::enter_session(std::uint64_t now, const Pose& own, Output& out) {
     reset_respawn();                   // story 3.7
     respawn_ = RespawnCounters{};
     avatar_pose_ok_ = false;
+    avatar_gait_[0].clear();           // diagnostic du moonwalk
+    avatar_gait_[1].clear();
+    gait_ref_at_ = 0;
+    gait_logged_at_ = 0;
+    regroup_ = RegroupCounters{};      // story 4.5 : placement du Welcome (invité) non signalé
+    leash_message_at_ = 0;
+    peer_prev_ok_ = false;
+    moved_self(now);
     proto::Spawn spawn;
     spawn.net_id = own_net_id();
     spawn.x = own.x;
@@ -2022,6 +2036,7 @@ void Session::on_respawn(std::uint64_t now, const proto::Respawn& m, Output& out
     // le snapshot du tick courant est déjà parti ou part avec la pose lue avant la téléportation.
     const auto ack_tick = static_cast<std::uint32_t>((now - t0_) / proto::kSnapshotTickMs + 1);
     out.commands.push_back(RespawnHero{pose, true});
+    moved_self(now);  // story 4.5 : saut non signalé
     guest_down_ = false;
     ++respawn_.received;
     Bytes bytes;
@@ -2498,6 +2513,7 @@ void Session::play_due(std::deque<PendingMotion>& queue, double shown, std::uint
         char lag[64];
         std::snprintf(lag, sizeof lag, " (affiché %+.0f ms)", shown >= 1e299 ? 0.0 : shown - p.motion.ms);
         out.logs.push_back({Level::Debug, "[sync] Motion rejoué : " + motion_text(p.motion) + lag + " « " + p.name + " »"});
+        if (p.motion.type <= 1) avatar_gait_[p.motion.type] = p.name;
         out.commands.push_back(PlayAvatarMotion{peer_net_id(), std::move(p.name), p.motion});
         ++anim_.played;
     }
@@ -2529,6 +2545,7 @@ void Session::place_avatar(std::uint64_t now, Output& out) {
         avatar_pose_ = s.pose;  // hôte : rayon des PNJ autour de l'avatar (story 3.3)
         avatar_pose_ok_ = true;
         out.commands.push_back(MoveAvatar{peer_net_id(), s.pose});
+        check_avatar_gait(now, out);
     }
     // Story 3.8b, hôte : attaques natives de l'avatar après les gestes, l'arme et la pose dus (aussitôt
     // si l'horloge n'est pas prête), avant une mort encore en attente (vidées par elle sinon).
@@ -2585,6 +2602,174 @@ void Session::snapshot_stats(std::uint64_t now, Output& out) {
     respawn_ = RespawnCounters{};
     attacks_ = NpcAttackCounters{};
     dialog_ = DialogCounters{};
+    regroup_stats(out);
+}
+
+// Diagnostic du moonwalk : sur 250 ms, vitesse horizontale de l'avatar et angle entre son déplacement et
+// son orientation (avant = (sin lacet, cos lacet)). Signalé si l'avatar va à plus de 1,5 m/s à plus de
+// 100° de son orientation, ou à plus de 2 m/s sans animation de course ni de marche en type 0.
+void Session::check_avatar_gait(std::uint64_t now, Output& out) {
+    constexpr std::uint64_t kWindowMs = 250;
+    if (gait_ref_at_ == 0 || now < gait_ref_at_ || now - gait_ref_at_ > 4 * kWindowMs) {
+        gait_ref_ = avatar_pose_;
+        gait_ref_at_ = now;
+        return;
+    }
+    if (now - gait_ref_at_ < kWindowMs) return;
+    const float dx = avatar_pose_.x - gait_ref_.x;
+    const float dz = avatar_pose_.z - gait_ref_.z;
+    const float dt = static_cast<float>(now - gait_ref_at_) / 1000.0f;
+    gait_ref_ = avatar_pose_;
+    gait_ref_at_ = now;
+    const float speed = std::sqrt(dx * dx + dz * dz) / dt;  // cm/s
+    if (speed < 150.0f || speed > 3000.0f) return;          // à l'arrêt, ou saut (téléportation)
+    constexpr float kPi = 3.14159265358979323846f;
+    const float move = std::atan2(dx, dz);
+    float angle = std::fabs(move - avatar_pose_.yaw);
+    while (angle > 2.0f * kPi) angle -= 2.0f * kPi;
+    if (angle > kPi) angle = 2.0f * kPi - angle;
+    const float degrees = angle * 180.0f / kPi;
+    const std::string& g0 = avatar_gait_[0];
+    const bool moving_anim = g0.find("_Move_") != std::string::npos;
+    const bool backwards = degrees > 100.0f;
+    const bool sliding = speed > 200.0f && !moving_anim;
+    if (!backwards && !sliding) return;
+    if (now < gait_logged_at_ + 1000) return;
+    gait_logged_at_ = now;
+    ++gait_reports_;
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "[sync] avatar : %s, %.1f m/s à %.0f° de son orientation (lacet %.3f)",
+                  backwards ? "déplacement à rebours" : "glisse sans animation de déplacement", speed / 100.0f,
+                  degrees, avatar_pose_.yaw);
+    out.logs.push_back({Level::Debug, std::string(buf) + " ; type 0 « " + (g0.empty() ? "?" : g0) + " », type 1 « " +
+                                          (avatar_gait_[1].empty() ? "?" : avatar_gait_[1]) + " »"});
+}
+
+// --- Story 4.5 : téléportation commune et champ de force -----------------------------------
+
+void Session::moved_self(std::uint64_t now) {
+    jump_quiet_until_ = now + kRegroupQuietMs;
+    leash_pause_until_ = now + kRegroupQuietMs;
+    own_prev_ok_ = false;
+    far_since_ = 0;
+}
+
+void Session::regroup(std::uint64_t now, const World& world, Output& out) {
+    const bool guest = settings_.role == Role::Guest;
+    const bool pose_ok = world.pose_ok && finite_pose(world.x, world.y, world.z, world.yaw);
+    const Pose own{world.x, world.y, world.z, world.yaw};
+    // Saut de son héros d'un tick à l'autre : téléportation (pierre, console…) annoncée au pair.
+    if (pose_ok && own_prev_ok_ && now >= jump_quiet_until_ && !world.dead && !guest_down_) {
+        const float jump = distance(own, own_prev_);
+        if (jump > kTeleportJumpCm) {
+            Bytes bytes;
+            if (proto::encode_reliable(proto::Regroup{own.x, own.y, own.z, own.yaw}, bytes)) {
+                out.commands.push_back(SendReliable{std::move(bytes)});
+                ++regroup_.sent;
+                char buf[64];
+                std::snprintf(buf, sizeof buf, "%.1f", jump / 100.0f);
+                out.logs.push_back({Level::Info, std::string("[sync] téléportation du héros (saut de ") + buf +
+                                                     " m) : Regroup envoyé, " + pose_text(own.x, own.y, own.z, own.yaw)});
+            }
+            jump_quiet_until_ = now + kRegroupQuietMs;
+            leash_pause_until_ = now + kRegroupQuietMs;  // invité : l'hôte va le rejoindre
+            far_since_ = 0;
+        }
+    }
+    own_prev_ = own;
+    own_prev_ok_ = pose_ok;
+    leash_distance_ = -1.0f;
+    if (!guest || settings_.leash_radius <= 0.0f) return;
+    // Invité : un saut de la pose affichée de l'hôte (sa téléportation, Regroup en route) suspend le champ.
+    if (avatar_present_ && avatar_pose_ok_) {
+        if (peer_prev_ok_ && distance(avatar_pose_, peer_prev_) > kTeleportJumpCm) {
+            leash_pause_until_ = std::max(leash_pause_until_, now + kRegroupQuietMs);
+        }
+        peer_prev_ = avatar_pose_;
+        peer_prev_ok_ = true;
+    } else {
+        peer_prev_ok_ = false;
+    }
+    if (!pose_ok || !avatar_present_ || !avatar_pose_ok_) {
+        far_since_ = 0;
+        return;
+    }
+    const float dx = own.x - avatar_pose_.x;
+    const float dz = own.z - avatar_pose_.z;
+    const float d = std::sqrt(dx * dx + dz * dz);
+    leash_distance_ = d;  // alerte à l'écran, même champ suspendu
+    if (avatar_dead_ || world.dead || guest_down_ || guest_dialog_npc_ != 0 || now < leash_pause_until_) {
+        far_since_ = 0;
+        return;
+    }
+    const float r = settings_.leash_radius;
+    if (!(d > r)) {
+        far_since_ = 0;
+        return;
+    }
+    char meters[64];
+    std::snprintf(meters, sizeof meters, "%.1f m", d / 100.0f);
+    if (d > r + kLeashPullMaxCm) {  // trop loin pour un retour au bord : Regroup attendu, puis repli
+        if (far_since_ == 0) {
+            far_since_ = now;
+            out.logs.push_back({Level::Info, std::string("[sync] champ de force : invité à ") + meters +
+                                                 " de l'hôte, Regroup attendu"});
+            return;
+        }
+        if (now - far_since_ < kLeashFarMs) return;
+        const Pose near = guest_pose_near(avatar_pose_);
+        out.commands.push_back(Teleport{near, TeleportReason::Rejoin});
+        moved_self(now);
+        ++regroup_.rejoins;
+        out.logs.push_back({Level::Warn, std::string("[sync] champ de force : invité à ") + meters +
+                                             " de l'hôte depuis " + std::to_string(kLeashFarMs / 1000) +
+                                             " s sans Regroup : placé devant l'hôte"});
+        return;
+    }
+    far_since_ = 0;
+    const float k = (r - kLeashMarginCm) / d;
+    const Pose pulled{avatar_pose_.x + dx * k, own.y, avatar_pose_.z + dz * k, own.yaw};
+    out.commands.push_back(Teleport{pulled, TeleportReason::Leash});
+    own_prev_ = pulled;
+    ++regroup_.pulls;
+    if (now >= leash_message_at_) {
+        leash_message_at_ = now + kLeashMessageMs;
+        const std::string limit = std::to_string(static_cast<unsigned>(r / 100.0f + 0.5f));
+        out.commands.push_back(ShowMessage{"Trop loin de l'hôte (" + limit + " m au plus)."});
+        out.logs.push_back({Level::Info, std::string("[sync] champ de force : invité à ") + meters +
+                                             " de l'hôte, ramené à " + limit + " m"});
+    }
+}
+
+void Session::on_regroup(std::uint64_t now, const proto::Regroup& m, Output& out) {
+    ++regroup_.received;
+    const std::string what = "[sync] Regroup reçu (" + pose_text(m.x, m.y, m.z, m.yaw) + ")";
+    auto ignore = [&](const char* why) {
+        ++regroup_.ignored;
+        out.logs.push_back({Level::Warn, what + " : ignoré (" + why + ")"});
+    };
+    if (!finite_pose(m.x, m.y, m.z, m.yaw)) return ignore("pose non finie");
+    if (world_.dead) return ignore("héros mort");
+    if (guest_down_) return ignore("invité à terre");
+    const bool talking = settings_.role == Role::Guest ? guest_dialog_npc_ != 0 : world_.dialog_running;
+    if (talking) return ignore("en dialogue");
+    const Pose near = guest_pose_near(Pose{m.x, m.y, m.z, m.yaw});
+    out.commands.push_back(Teleport{near, TeleportReason::Regroup});
+    moved_self(now);
+    out.logs.push_back({Level::Info, what + " : héros placé à côté du pair, " +
+                                         pose_text(near.x, near.y, near.z, near.yaw)});
+}
+
+void Session::regroup_stats(Output& out) {
+    const RegroupCounters& c = regroup_;
+    if (c.sent + c.received + c.ignored + c.pulls + c.rejoins != 0) {
+        out.logs.push_back({Level::Debug, "[sync] regroupement (5 s) : Regroup envoyés " + std::to_string(c.sent) +
+                                              ", reçus " + std::to_string(c.received) + ", ignorés " +
+                                              std::to_string(c.ignored) + " ; champ de force : ramené " +
+                                              std::to_string(c.pulls) + " frames, replacé " +
+                                              std::to_string(c.rejoins) + " fois"});
+    }
+    regroup_ = RegroupCounters{};
 }
 
 void Session::send_hello(Output& out) {

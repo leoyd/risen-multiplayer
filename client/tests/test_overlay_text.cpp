@@ -1,5 +1,7 @@
 #include "core/overlay_text.h"
 #include "test.h"
+#include <cmath>
+#include <string>
 
 using mp::Role;
 using mp::core::overlay_color;
@@ -26,4 +28,18 @@ TEST("overlay : autres états") {
              std::string("INVITÉ · Invite · en session"));
     CHECK_EQ(overlay_text(Role::Host, "Leoyd", State::Ended, "", 27960),
              std::string("HÔTE · Leoyd · session terminée"));
+}
+
+TEST("overlay 4.5 : alerte du champ de force — 0 sous 80 % du rayon, 1 au rayon, texte en mètres") {
+    using mp::core::leash_warning_level;
+    using mp::core::leash_warning_text;
+    CHECK(leash_warning_level(2700.0f, 3500.0f) == 0.0f);
+    CHECK(leash_warning_level(2800.0f, 3500.0f) == 0.0f);
+    CHECK(std::fabs(leash_warning_level(3150.0f, 3500.0f) - 0.5f) < 1e-4f);
+    CHECK(leash_warning_level(3500.0f, 3500.0f) == 1.0f);
+    CHECK(leash_warning_level(9000.0f, 3500.0f) == 1.0f);
+    CHECK(leash_warning_level(-1.0f, 3500.0f) == 0.0f);   // distance inconnue
+    CHECK(leash_warning_level(3400.0f, 0.0f) == 0.0f);    // champ désactivé
+    CHECK(leash_warning_text(2000.0f, 3500.0f).empty());
+    CHECK_EQ(leash_warning_text(3180.0f, 3500.0f), std::string("Distance de l’hôte : 32 m / 35 m"));
 }

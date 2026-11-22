@@ -413,14 +413,14 @@ TEST("protocole : Hello d'une version future, version lisible mais décodage ref
     CHECK(!peek_hello_version(b.data(), 3, version));
 }
 
-TEST("protocole : peek_hello_version sur v18 et sur autre chose qu'un Hello") {
+TEST("protocole : peek_hello_version sur v19 et sur autre chose qu'un Hello") {
     std::uint16_t version = 0;
     const Bytes hello = load_vector("hello.bin");
     CHECK(peek_hello_version(hello.data(), hello.size(), version));
-    CHECK_EQ(version, 18);
+    CHECK_EQ(version, 19);
     const Bytes trunc = load_vector("hello_truncated.bin");
     CHECK(peek_hello_version(trunc.data(), trunc.size(), version));
-    CHECK_EQ(version, 18);
+    CHECK_EQ(version, 19);
 
     version = 77;
     const Bytes welcome = load_vector("welcome.bin");
@@ -431,12 +431,12 @@ TEST("protocole : peek_hello_version sur v18 et sur autre chose qu'un Hello") {
     CHECK_EQ(version, 77);  // inchangée en cas d'échec
 }
 
-TEST("protocole : l'encodeur refuse une version autre que 18") {
+TEST("protocole : l'encodeur refuse une version autre que 19") {
     Hello h = sample_hello();
-    h.protocol_version = 17;
+    h.protocol_version = 18;
     Bytes out = {0xAA};
     CHECK(!encode_control(h, out));
-    h.protocol_version = 19;
+    h.protocol_version = 20;
     CHECK(!encode_control(h, out));
     CHECK(out == Bytes{0xAA});  // rien écrit
 }
@@ -498,7 +498,7 @@ TEST("protocole : canal et type inconnus") {
     CHECK(dc(load_vector("unknown_type.bin")).error == DecodeError::UnknownType);
     CHECK(dr(Bytes{99}).error == DecodeError::UnknownType);
     // Aucun type réservé (depuis la v14) ; types absents de la liste et types hors de leur canal.
-    for (std::uint8_t t : {std::uint8_t{4}, std::uint8_t{15}, std::uint8_t{32}}) {
+    for (std::uint8_t t : {std::uint8_t{4}, std::uint8_t{15}, std::uint8_t{33}}) {
         CHECK(dr(Bytes{t}).error == DecodeError::UnknownType);
     }
     CHECK(dc(Bytes{2, 19}).error == DecodeError::UnknownType);  // Motion en contrôle
@@ -568,7 +568,7 @@ TEST("protocole : noms lisibles des raisons") {
 // --- Valeurs figées ---------------------------------------------------------------
 
 TEST("protocole : valeurs figées du contrat") {
-    CHECK_EQ(kProtocolVersion, 18);
+    CHECK_EQ(kProtocolVersion, 19);
     CHECK_EQ(static_cast<int>(kSpawnTypeHero), 0);
     CHECK_EQ(static_cast<int>(kSpawnTypeNpc), 1);
     CHECK_EQ(kFirstNpcNetId, 1000u);
@@ -596,6 +596,7 @@ TEST("protocole : valeurs figées du contrat") {
     CHECK_EQ(static_cast<int>(MsgType::NpcAttack), 29);
     CHECK_EQ(static_cast<int>(MsgType::DialogLine), 30);
     CHECK_EQ(static_cast<int>(MsgType::DialogState), 31);
+    CHECK_EQ(static_cast<int>(MsgType::Regroup), 32);
     CHECK_EQ(static_cast<int>(kMaxDialogOutputType), 3);
     CHECK_EQ(kMaxDialogSample, std::size_t{128});
     CHECK_EQ(kHostNetId, 1u);
@@ -944,6 +945,27 @@ TEST("protocole : vecteur respawn.bin (v14) : Respawn") {
     const auto u = dr(enc(Respawn{7, std::nanf(""), 0.0f, 0.0f, 0.0f, 0}));
     const Respawn* g7 = std::get_if<Respawn>(&u.message);
     CHECK(u.ok() && g7 != nullptr && g7->net_id == 7 && std::isnan(g7->x));
+}
+
+// v19 (story 4.5) : téléportation de l'émetteur en (100, 0, −50), lacet 1,5.
+TEST("protocole : vecteur regroup.bin (v19) : Regroup") {
+    const Bytes b = load_vector("regroup.bin");
+    CHECK(b == (Bytes{0x20, 0x00, 0x00, 0xc8, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0xc2, 0x00, 0x00,
+                      0xc0, 0x3f}));
+    const auto d = dr(b);
+    const Regroup* got = std::get_if<Regroup>(&d.message);
+    CHECK(d.ok() && got != nullptr);
+    if (got != nullptr) CHECK(got->x == 100.0f && got->y == 0.0f && got->z == -50.0f && got->yaw == 1.5f);
+    CHECK(enc(Regroup{100.0f, 0.0f, -50.0f, 1.5f}) == b);
+    Bytes trunc(b.begin(), b.end() - 1);
+    CHECK(dr(trunc).error == DecodeError::Truncated);
+    Bytes trailing = b;
+    trailing.push_back(0);
+    CHECK(dr(trailing).error == DecodeError::TrailingBytes);
+    // Le décodeur ne vérifie aucune valeur : pose non finie acceptée (le récepteur l'ignore).
+    const auto u = dr(enc(Regroup{std::nanf(""), 0.0f, 0.0f, 0.0f}));
+    const Regroup* gn = std::get_if<Regroup>(&u.message);
+    CHECK(u.ok() && gn != nullptr && std::isnan(gn->x));
 }
 
 TEST("protocole : AniName — 255 octets acceptés, vide ou 256 refusés à l'encodage") {

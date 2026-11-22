@@ -206,6 +206,14 @@ void write(Writer& w, const Respawn& m) {
     w.u32(m.tick);
 }
 
+void write(Writer& w, const Regroup& m) {
+    w.u8(static_cast<std::uint8_t>(MsgType::Regroup));
+    w.f32(m.x);
+    w.f32(m.y);
+    w.f32(m.z);
+    w.f32(m.yaw);
+}
+
 void write(Writer& w, const Weapon& m) {
     w.u8(static_cast<std::uint8_t>(MsgType::Weapon));
     w.u32(m.net_id);
@@ -431,6 +439,14 @@ DecodeError read(Reader& r, Respawn& m) {
     return r.finish();
 }
 
+DecodeError read(Reader& r, Regroup& m) {
+    m.x = r.f32();
+    m.y = r.f32();
+    m.z = r.f32();
+    m.yaw = r.f32();
+    return r.finish();
+}
+
 DecodeError read(Reader& r, Weapon& m) {
     m.net_id = r.u32();
     r.str8(m.name, 0, kMaxWeaponName);
@@ -545,6 +561,7 @@ Decoded<ReliableMessage> decode_reliable(const std::uint8_t* data, std::size_t s
         case MsgType::NpcAttack: return decode_as<NpcAttack, ReliableMessage>(r);
         case MsgType::DialogLine: return decode_as<DialogLine, ReliableMessage>(r);
         case MsgType::DialogState: return decode_as<DialogState, ReliableMessage>(r);
+        case MsgType::Regroup: return decode_as<Regroup, ReliableMessage>(r);
         case MsgType::MotionParam: return decode_as<MotionParam, ReliableMessage>(r);
         case MsgType::Weapon: return decode_as<Weapon, ReliableMessage>(r);
         case MsgType::Armor: return decode_as<Armor, ReliableMessage>(r);

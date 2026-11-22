@@ -437,8 +437,8 @@ les lectures (`[sync] armure du héros : …`) et le diagnostic d'inventaire. La
 ### Répliques des PNJ en jeu (story 3.3)
 
 L'hôte fait autorité sur les PNJ (protocole v9). À chaque snapshot, il lit `Entity::ms_arrNPCs`
-(après `UpdateEntityLists`), garde les PNJ vivants à 100 m au plus de son héros ou de l'avatar de
-l'invité, du plus proche au plus loin (200 au plus, story 3.4e ; snapshot en plusieurs datagrammes), leur attribue un NetId ≥ 1000 lié à leur GUID
+(après `UpdateEntityLists`), garde les PNJ vivants à 200 m au plus de son héros ou de l'avatar de
+l'invité, du plus proche au plus loin (400 au plus, story 3.4f ; snapshot en plusieurs datagrammes), leur attribue un NetId ≥ 1000 lié à leur GUID
 pour la session, annonce chaque entrée par `Spawn{1, pose, GUID}` et chaque sortie par `Despawn`,
 puis met leur pose et leurs PV dans le snapshot. L'invité retrouve chaque PNJ natif par
 `gCRuntimeInfo::GetEntity(GUID)`, l'inscrit au registre comme réplique (son
@@ -990,11 +990,50 @@ un PNJ. Désormais :
 - **Hôte** : rayon 100 m (au lieu de 50), 200 PNJ au plus (au lieu de 53), 24 animés (au lieu de 8). Le
   snapshot part en plusieurs datagrammes de même tick : le bilan `snapshots (5 s)` compte des
   datagrammes (jusqu'à 400 par 5 s).
-- **Portée du moteur** : `tools/installer-local.sh` écrit `<Scene EntityROI="10000.000000">` dans
-  `data/ini/ConfigLocal.xml` des deux copies (40 m par défaut ; `ROI=…` pour une autre valeur). Sans
-  cela, l'hôte ne voit pas les PNJ au-delà de 40 m. À vérifier : PNJ annoncés à plus de 40 m (`annoncé
-  (Spawn) : GUID …, 6x.x m`), coût en images par seconde.
+- **Story 3.4f** : rayon 200 m, 400 PNJ au plus (8 datagrammes par snapshot), 48 animés, budget des
+  animations 64 Ko/s.
+- **Portée du moteur (story 3.4f, désactivée par défaut depuis la 4.5)** : le moteur ne traite que les entités dans une sphère autour de la
+  caméra (`EntityROI`, 40 m dans `ConfigDefault.xml`) ; au-delà, l'hôte ne voit pas les PNJ. La clé
+  `processing_range` (mètres, **0 par défaut** = inchangée) la relève en session sur les deux
+  machines : `eCModuleAdmin::FindModule("eCSceneAdmin")` (vtable vérifiée) → `GetPrefetchAdmin` →
+  `SetROISphere` (la portée de cache par défaut suit) et `SetPrefetchRange` (relevée à la portée + 20 m
+  si elle est plus petite). Vérifiée environ chaque seconde, refaite si le jeu la remet. Info
+  `[sync] portée de traitement réglée : 40 m → 250 m (cache …, préchargement …)`. La tentative par
+  `ConfigLocal.xml` (story 3.4e) était restée sans effet ; elle est retirée. **Test du 2026-11-22 à
+  250 m** : la liste des PNJ de l'hôte ne grandit pas (32 suivis, 44 m au plus), et des PNJ de l'hôte
+  marchent en T-pose après un aller-retour lointain. Cause trouvée dans Engine.dll : une entité n'est
+  traitée qu'une fois « chargée » (arbre de scène de `eCPrefetchAdmin`, +0x2a8), et elle se charge quand
+  la caméra entre dans sa sphère de préchargement, calculée par entité à son ajout (`GetPrefetchSphere` :
+  rayon propre +0xd0/+0xcc, sinon portée de cache par défaut +0x28) ; relever la portée en cours de
+  partie ne recalcule que les entités qui bougent (`UpdateEntity`). `eCAnimation_PS` charge ses
+  animations à `OnEnterProcessingRange`. Remplacé par le champ de force de l'invité (story 4.5).
 - **Limite** : loin de l'hôte (hors de sa portée), l'invité voit des PNJ figés.
+
+### Champ de force et téléportation commune (story 4.5, protocole v19, à valider en jeu)
+
+- **Champ de force** (invité, clé `leash_radius`, 35 m par défaut, 0 = aucun) : le moteur de l'hôte ne
+  fait vivre les PNJ qu'à ~40 m de lui. À chaque frame, si le héros de l'invité est à plus de 35 m (à
+  l'horizontale) de l'hôte affiché, il est ramené à 34,5 m (`Entity::MoveTo`, même hauteur), avec le
+  message « Trop loin de l'hôte (35 m au plus). » dans le journal en jeu (toutes les 3 s au plus) et
+  Info `[sync] champ de force : invité à 40.2 m de l'hôte, ramené à 35 m`. À plus de 55 m (téléportation
+  de l'hôte), rien n'est ramené : Info `… Regroup attendu` ; après 3 s, l'invité est placé devant l'hôte
+  (Warn `… placé devant l'hôte`). Suspendu à terre, en dialogue et 3 s après une téléportation.
+- **Alerte à l'écran** (invité, avec `overlay = 1`) : dès 80 % du rayon (28 m), une bordure rouge en
+  dégradé apparaît sur les bords de l'écran, de plus en plus opaque jusqu'à la limite, où elle pulse
+  (2 Hz), avec le texte centré « Distance de l’hôte : 32 m / 35 m ». Dessinée par le détour de `Present`
+  (sommets transformés, état du device sauvé et rendu par un state block `D3DSBT_ALL`).
+- **Téléportation commune** (`Regroup`, deux sens) : un saut de plus de 15 m d'une frame à l'autre est
+  une téléportation (pierre de téléportation, console). Info `[sync] téléportation du héros (saut de
+  480.3 m) : Regroup envoyé, (…)` ; chez le pair, Info `[sync] Regroup reçu (…) : héros placé à côté du
+  pair, (…)` et `[sync] héros local placé à côté du pair (Regroup) : …`. Les sauts causés par la session
+  (Welcome, Respawn, Regroup reçu, champ de force) ne sont pas renvoyés. Un changement de monde n'est
+  pas couvert (il finit la session).
+- **Bilan** : Debug `[sync] regroupement (5 s) : Regroup envoyés N, reçus N, ignorés N ; champ de force :
+  ramené N frames, replacé N fois`, seulement s'il s'est passé quelque chose.
+- **Diagnostic du moonwalk** (test du 2026-11-22) : Debug `[sync] avatar : déplacement à rebours, 4.0 m/s
+  à 180° de son orientation (lacet …) ; type 0 « … », type 1 « … »` quand l'avatar affiché va à plus de
+  1,5 m/s à plus de 100° de son orientation, ou `glisse sans animation de déplacement` à plus de 2 m/s
+  sans animation `_Move_` en type 0. Une ligne par seconde au plus.
 
 ### PNJ occupé : un seul joueur parle à un PNJ (story 4.3, protocole v18, à valider en jeu)
 
