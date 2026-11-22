@@ -71,7 +71,7 @@ Note de passation : où en est le projet et quoi faire à la prochaine session. 
 2. Selon le résultat : corriger, commiter (3.4f désactivée + 4.5), puis corriger le moonwalk avec les
    données du diagnostic ; ensuite story 4.4 (robustesse, course des demandes croisées), 3.4c / 3.4d.
 3. **Reporté à la demande de l'utilisateur** (`deferred-work.md`, story proposée 3.9) : réactions des PNJ à l'avatar comme au jeu de base (arme dégainée, intrusion, garde frappé qui ne riposte pas toujours).
-4. Fusionner la chaîne 4.0 → 4.3 (+ 4.5) dans `main`.
+4. ~~Fusionner la chaîne 4.0 → 4.5 dans `main`~~ : fait le 2026-11-22, version **0.2.0** poussée (`main` et étiquette `v0.2.0`).
 
 ## Points ouverts à vérifier en jeu
 
